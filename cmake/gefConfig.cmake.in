@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Note: sdsl-lite is fetched automatically when building gef
+# Consumers don't need to find it separately
+
+# Include the targets file
+include("${CMAKE_CURRENT_LIST_DIR}/gefTargets.cmake")
+
+check_required_components(gef) 

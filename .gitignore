@@ -1,0 +1,17 @@
+# CMake
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Binaries
+*.out
+*.a
+*.so
+*.dylib 
