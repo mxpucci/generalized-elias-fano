@@ -17,6 +17,7 @@ public:
     virtual std::unique_ptr<IBitVector> create(const std::vector<bool>& bits) = 0;
     
     virtual std::unique_ptr<IBitVector> from_file(const std::filesystem::path& filepath) = 0;
+    virtual std::unique_ptr<IBitVector> from_stream(std::ifstream& in) = 0;
 };
 
 #endif 

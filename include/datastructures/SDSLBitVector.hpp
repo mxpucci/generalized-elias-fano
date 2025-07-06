@@ -173,18 +173,22 @@ public:
         bv_.serialize(out);
     }
 
-    static SDSLBitVector load(const std::filesystem::path& filepath) {
-        std::ifstream in(filepath, std::ios::binary);
+
+    static SDSLBitVector load(std::ifstream& in) {
         if (!in) {
-            throw std::runtime_error("Cannot open file for reading: " + filepath.string());
+            throw std::runtime_error("Cannot open stream");
         }
-        
+
         sdsl::bit_vector bv;
         bv.load(in);
-        
+
         SDSLBitVector result(std::move(bv));
-        
         return result;
+    }
+
+    static SDSLBitVector load(const std::filesystem::path& filepath) {
+        std::ifstream in(filepath, std::ios::binary);
+        return load(in);
     }
 
     void enable_rank() override {

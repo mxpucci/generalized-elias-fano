@@ -22,6 +22,11 @@ public:
         auto loaded = SDSLBitVector::load(filepath);
         return std::make_unique<SDSLBitVector>(std::move(loaded));
     }
+
+    std::unique_ptr<IBitVector> from_stream(std::ifstream& in) override {
+        auto loaded = SDSLBitVector::load(in);
+        return std::make_unique<SDSLBitVector>(std::move(loaded));
+    }
 };
 
 #endif 

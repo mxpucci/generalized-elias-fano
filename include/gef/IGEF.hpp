@@ -116,6 +116,17 @@ public:
 
 	virtual void serialize(std::ofstream& ofs) const = 0;
 
+	virtual void load(std::ifstream& ifs) = 0;
+
+	virtual void load(std::filesystem::path& filepath, std::shared_ptr<IBitVectorFactory> bit_vector_factory) {
+		std::ifstream ifs(filepath, std::ios::binary);
+		if (!ifs.is_open()) {
+			throw std::runtime_error("Failed to open file");
+		}
+		deserialize(filepath, bit_vector_factory);
+		ifs.close();
+	}
+
 protected:
 	IGEF() = default;
 };
