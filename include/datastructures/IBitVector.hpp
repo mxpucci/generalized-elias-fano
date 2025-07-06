@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <filesystem>
+#include <fstream>
 
 
 class IBitVector {
@@ -74,7 +75,17 @@ public:
     virtual size_t size_in_bytes() const = 0;
     virtual size_t size_in_megabytes() const = 0;
 
-    virtual void serialize(const std::filesystem::path& filepath) const = 0;
+
+    virtual void serialize(std::ofstream& out) const = 0;
+
+    void serialize(const std::filesystem::path& filepath) const {
+        std::ofstream ofs(filepath, std::ios::binary);
+        if (!ofs.is_open()) {
+            throw std::runtime_error("Failed to open file");
+        }
+        this->serialize(ofs);
+        ofs.close();
+    }
     
     
     bool empty() const {

@@ -28,6 +28,7 @@ public:
     // Bring inherited methods into scope to avoid name hiding
     using IBitVector::rank;
     using IBitVector::rank0;
+    using IBitVector::serialize;
 
     SDSLBitVector(sdsl::bit_vector bv) 
         : bv_(std::move(bv)) {
@@ -168,13 +169,7 @@ public:
         return (size_in_bytes() + 1024 * 1024 - 1) / (1024 * 1024);
     }
 
-    void serialize(const std::filesystem::path& filepath) const override {
-        std::ofstream out(filepath, std::ios::binary);
-        if (!out) {
-            throw std::runtime_error("Cannot open file for writing: " + filepath.string());
-        }
-        
-        // Serialize bit vector
+    void serialize(std::ofstream& out) const override {
         bv_.serialize(out);
     }
 
