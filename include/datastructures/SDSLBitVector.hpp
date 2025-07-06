@@ -31,13 +31,13 @@ public:
     using IBitVector::serialize;
 
     SDSLBitVector(sdsl::bit_vector bv) 
-        : bv_(std::move(bv)) {
+        : IBitVector(), bv_(std::move(bv)) {
     }
 
     SDSLBitVector(size_t size)
         : SDSLBitVector(sdsl::bit_vector(size, 0)) {}
 
-    SDSLBitVector(const std::vector<bool>& bits) {
+    SDSLBitVector(const std::vector<bool>& bits) : IBitVector() {
         bv_ = sdsl::bit_vector(bits.size());
         for (size_t i = 0; i < bits.size(); ++i) {
             bv_[i] = bits[i];
@@ -48,7 +48,7 @@ public:
     ~SDSLBitVector() = default;
 
     // Rule of 5: Copy constructor
-    SDSLBitVector(const SDSLBitVector& other) : bv_(other.bv_) {
+    SDSLBitVector(const SDSLBitVector& other) : IBitVector(), bv_(other.bv_) {
         if (other.rank_support_) {
             rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
         }
@@ -82,7 +82,7 @@ public:
     }
 
     // Rule of 5: Move constructor
-    SDSLBitVector(SDSLBitVector&& other) noexcept : bv_(std::move(other.bv_)) {
+    SDSLBitVector(SDSLBitVector&& other) noexcept : IBitVector(), bv_(std::move(other.bv_)) {
         if (other.rank_support_) {
             rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
         }
@@ -117,6 +117,10 @@ public:
 
     bool operator[](size_t index) const override {
         return bv_[index];
+    }
+
+    void set(size_t index, bool value) override {
+        bv_[index] = value;
     }
 
     /**
@@ -191,6 +195,10 @@ public:
         return load(in);
     }
 
+    std::unique_ptr<IBitVector> clone() const override {
+        return std::make_unique<SDSLBitVector>(*this);
+    }
+
     void enable_rank() override {
         if (!rank_support_) {
             rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
@@ -210,4 +218,4 @@ public:
 
 };
 
-#endif 
+#endif

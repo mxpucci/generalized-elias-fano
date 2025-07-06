@@ -6,13 +6,20 @@
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 
 class IBitVector {
 public:
+    IBitVector() = default;
     virtual ~IBitVector() = default;
+    IBitVector(const IBitVector& other) = default;
+    IBitVector(IBitVector&& other) = default;
+    IBitVector& operator=(const IBitVector& other) = default;
+    IBitVector& operator=(IBitVector&& other) = default;
 
     virtual bool operator[](size_t index) const = 0;
+    virtual void set(size_t index, bool value) = 0;
     virtual size_t size() const = 0;
 
     /**
@@ -91,6 +98,8 @@ public:
     bool empty() const {
         return size() == 0;
     }
+
+    virtual std::unique_ptr<IBitVector> clone() const = 0;
 
     virtual void enable_rank() = 0;
     virtual void enable_select1() = 0;

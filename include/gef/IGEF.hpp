@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <string>
 #include <stdexcept>
+#include "../datastructures/IBitVectorFactory.hpp"
 
 // C++20 concepts support
 #if __cplusplus >= 202002L
@@ -116,14 +117,14 @@ public:
 
 	virtual void serialize(std::ofstream& ofs) const = 0;
 
-	virtual void load(std::ifstream& ifs) = 0;
+	virtual void load(std::ifstream& ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) = 0;
 
-	virtual void load(std::filesystem::path& filepath, std::shared_ptr<IBitVectorFactory> bit_vector_factory) {
+	void load(const std::filesystem::path& filepath, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) {
 		std::ifstream ifs(filepath, std::ios::binary);
 		if (!ifs.is_open()) {
 			throw std::runtime_error("Failed to open file");
 		}
-		deserialize(filepath, bit_vector_factory);
+		load(ifs, bit_vector_factory);
 		ifs.close();
 	}
 
