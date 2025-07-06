@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <type_traits>
+#include "gef/U_GEF.hpp"
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
 // e.g., get_value_type<gef::RLE_GEF<int32_t>>::type will be int32_t.
@@ -35,14 +36,14 @@ protected:
 
 // Define the list of all implementations and types we want to test with.
 using Implementations = ::testing::Types<
-    gef::RLE_GEF<int8_t>,
-    gef::RLE_GEF<uint8_t>,
-    gef::RLE_GEF<int16_t>,
-    gef::RLE_GEF<uint16_t>,
-    gef::RLE_GEF<int32_t>,
-    gef::RLE_GEF<uint32_t>,
-    gef::RLE_GEF<int64_t>,
-    gef::RLE_GEF<uint64_t>
+    gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>,
+    gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>,
+    gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>,
+    gef::RLE_GEF<uint16_t>, gef::U_GEF<uint16_t>,
+    gef::RLE_GEF<int32_t>, gef::U_GEF<int32_t>,
+    gef::RLE_GEF<uint32_t>, gef::U_GEF<uint32_t>,
+    gef::RLE_GEF<int64_t>, gef::U_GEF<int64_t>,
+    gef::RLE_GEF<uint64_t>, gef::U_GEF<uint64_t>
 >;
 
 TYPED_TEST_CASE(GEF_Implementation_TypedTest, Implementations);
