@@ -1,6 +1,4 @@
-file(GLOB_RECURSE GEF_SOURCES "*.cpp")
-
-add_library(gef ${GEF_SOURCES})
+add_library(gef gef.cpp)
 add_library(gef::gef ALIAS gef)
 
 # Set library properties
@@ -18,4 +16,12 @@ target_include_directories(gef
 
 # Link against sdsl publicly so consumers get access to sdsl functionality
 # This is appropriate for a library that exposes sdsl types in its interface
-target_link_libraries(gef PUBLIC sdsl) 
+target_link_libraries(gef PUBLIC sdsl)
+
+add_executable(ugef ugef.cpp)
+target_compile_options(ugef PRIVATE -D_FILE_OFFSET_BITS=64)
+target_link_libraries(ugef PRIVATE gef)
+
+add_executable(rle_gef rle_gef.cpp)
+target_compile_options(rle_gef PRIVATE -D_FILE_OFFSET_BITS=64)
+target_link_libraries(rle_gef PRIVATE gef) 
