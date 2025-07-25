@@ -18,7 +18,7 @@
 namespace gef {
     template<typename T>
     class RLE_GEF : public IGEF<T> {
-    private:
+    public:
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
         std::unique_ptr<IBitVector> B;
 

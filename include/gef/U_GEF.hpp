@@ -14,6 +14,7 @@
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
 #include "IGEF.hpp"
+#include "RLE_GEF.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -49,16 +50,126 @@ namespace gef {
          */
         T base;
 
+        static size_t evaluate_space(const std::vector<T> &S, const uint8_t total_bits, uint8_t b) {
+            const size_t N = S.size();
+            if (N == 0) {
+                return sizeof(T) + sizeof(uint8_t) * 2; // Overhead for base, h, b
+            }
 
-        static uint8_t optimal_split_point(const std::vector<T> S, const uint8_t total_bits, const T min, const T max) {
+            // Handle edge cases for the split point 'b'
+            if (b == 0) {
+                return std::numeric_limits<size_t>::max();
+            }
+            if (b >= total_bits) {
+                // In this case, only the L vector exists, storing the full values (h=0).
+                size_t bits = N * total_bits;
+                return (bits + 7) / 8 + sizeof(T) + sizeof(uint8_t) * 2;
+            }
+
+            const T base = *std::min_element(S.begin(), S.end());
+            const uint8_t h = total_bits - b;
+
+            size_t num_exceptions = 0;
+            size_t g_unary_bits = 0;
+            T lastHighBits = 0;
+
+            // 1. Simulate the creation of B, H, and G to find their required sizes
+            for (size_t i = 0; i < N; ++i) {
+                const T element = S[i] - base;
+                const T currentHighBits = highPart(element, total_bits, h);
+
+                const bool is_exception = (i == 0 || currentHighBits < lastHighBits || currentHighBits >= lastHighBits +
+                                           h);
+
+                if (is_exception) {
+                    num_exceptions++;
+                } else {
+                    // This is a regular gap; add its size to G's unary encoded part
+                    g_unary_bits += (currentHighBits - lastHighBits);
+                }
+                lastHighBits = currentHighBits;
+            }
+
+            // 2. Calculate the total size in bits for all data structures
+            const size_t L_bits = N * b; // L stores low bits for all N elements
+            const size_t B_bits = N; // B has one bit per element
+            const size_t H_bits = num_exceptions * h; // H stores h bits for each exception
+            const size_t G_bits = g_unary_bits + N; // G stores unary gaps + N terminators
+
+            const size_t total_data_bits = L_bits + B_bits + H_bits + G_bits;
+
+            // 3. Convert total bits to bytes and add fixed member overhead
+            size_t total_bytes = (total_data_bits + 7) / 8; // (bits + 7) / 8 is ceiling division
+            total_bytes += sizeof(T); // for base
+            total_bytes += sizeof(uint8_t); // for h
+            total_bytes += sizeof(uint8_t); // for b
+
+            return total_bytes;
+        }
+
+        static uint8_t really_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T /*min*/,
+                                          const T /*max*/) {
+            if (total_bits <= 1) {
+                // Handle trivial cases where a search is not possible.
+                size_t space0 = evaluate_space(S, total_bits, 0);
+                if (total_bits == 0) return 0;
+                size_t space1 = evaluate_space(S, total_bits, 1);
+                return (space0 < space1) ? 0 : 1;
+            }
+
+            uint8_t lo = 0, hi = total_bits;
+
+            // Golden ratio constant, used to determine the probe points.
+            // We use the reciprocal (1/phi) for interval reduction.
+            const double inv_phi = (std::sqrt(5.0) - 1.0) / 2.0; // approx 0.618
+
+            // Calculate the initial two interior points.
+            uint8_t c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
+            uint8_t d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
+
+            // Initial evaluations for the two points.
+            size_t space_c = evaluate_space(S, total_bits, c);
+            size_t space_d = evaluate_space(S, total_bits, d);
+
+            while (c < d) {
+                if (space_c < space_d) {
+                    // The minimum is in the lower interval [lo, d].
+                    // The old 'c' becomes the new 'd'.
+                    hi = d - 1;
+                    d = c;
+                    space_d = space_c;
+
+                    // We only need to compute a new 'c'.
+                    c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
+                    space_c = evaluate_space(S, total_bits, c);
+                } else {
+                    // The minimum is in the upper interval [c, hi].
+                    // The old 'd' becomes the new 'c'.
+                    lo = c + 1;
+                    c = d;
+                    space_c = space_d;
+
+                    // We only need to compute a new 'd'.
+                    d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
+                    space_d = evaluate_space(S, total_bits, d);
+                }
+            }
+
+            // The minimum is at lo (or hi, which will be the same).
+            return lo;
+        }
+
+        static uint8_t optimal_split_point(const std::vector<T> S, const uint8_t total_bits, const T min,
+                                                        const T max) {
             size_t g = 0;
+            size_t negatives = 0;
             for (size_t i = 1; i < S.size(); i++) {
                 if (S[i] >= S[i - 1])
                     g += S[i] - S[i - 1];
                 else
-                    g += max - min;
+                    negatives++;
             }
-            return ceil(log2(g / S.size()));
+            return ceil(log2(g / (S.size() - negatives)));
         }
 
         static T highPart(const T x, const uint8_t total_bits, const uint8_t highBits) {
@@ -176,10 +287,10 @@ namespace gef {
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
 
 
-            b = optimal_split_point(S,
-                                    total_bits,
-                                    min_val,
-                                    max_val);
+            b = really_optimal_split_point(S,
+                                           total_bits,
+                                           min_val,
+                                           max_val);
             h = total_bits - b;
 
             L = sdsl::int_vector<>(S.size(), 0, b);
@@ -240,8 +351,7 @@ namespace gef {
             const size_t run_index = B->rank(index + 1);
             const T base_high_val = H[run_index - 1];
             const size_t run_start_pos = B->select(run_index);
-            const size_t gap_sum_before_run = run_start_pos > 0 ?
-                G->rank(G->select0(run_start_pos + 1)) : 0;
+            const size_t gap_sum_before_run = run_start_pos > 0 ? G->rank(G->select0(run_start_pos + 1)) : 0;
             const size_t total_gap = G->rank(G->select0(index + 1));
             const size_t gap_in_run = total_gap - gap_sum_before_run;
 

@@ -42,7 +42,7 @@ int main(const int argc, char* argv[]) {
         auto factory = std::make_shared<SDSLBitVectorFactory>();
         double input_size_mb = static_cast<double>(input_data.size() * sizeof(int64_t)) / (1024.0 * 1024.0);
 
-        std::vector<size_t> k_values = {128, 256, 512, 1024, 2048, 4096, 8192};
+        std::vector<size_t> k_values = {(size_t) 128e3};
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
