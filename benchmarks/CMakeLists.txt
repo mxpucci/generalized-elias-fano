@@ -1,4 +1,4 @@
-file(GLOB BENCHMARK_FILES "*.cpp")
+file(GLOB BENCHMARK_FILES "*.cpp" "compression_benchmark.cpp")
 
 foreach(benchmark_file ${BENCHMARK_FILES})
     get_filename_component(benchmark_name ${benchmark_file} NAME_WE)
