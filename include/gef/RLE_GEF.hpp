@@ -278,11 +278,11 @@ namespace gef {
             }
         }
 
-        size_t size() const override {
+        [[nodiscard]] size_t size() const override {
             return L.size();
         }
 
-        size_t size_in_bytes() const override {
+        [[nodiscard]] size_t size_in_bytes() const override {
             size_t total_bytes = 0;
             if (B) {
                 total_bytes += B->size_in_bytes();
@@ -294,6 +294,12 @@ namespace gef {
             total_bytes += sizeof(b);
             return total_bytes;
         }
+
+        [[nodiscard]] uint8_t split_point() const override {
+            return this -> b;
+        }
+
+
     };
 } // namespace gef
 

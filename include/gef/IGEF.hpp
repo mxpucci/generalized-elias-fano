@@ -21,6 +21,12 @@
 
 namespace gef {
 
+enum SplitPointStrategy {
+    BINARY_SEARCH_SPLIT_POINT,
+    APPROXIMATE_SPLIT_POINT,
+    BRUTE_FORCE_SPLIT_POINT
+};
+
 #if __cplusplus >= 202002L
 template<typename T>
 concept IntegralType = std::integral<T>;
@@ -127,6 +133,8 @@ public:
 		load(ifs, bit_vector_factory);
 		ifs.close();
 	}
+
+	virtual uint8_t split_point() const = 0;
 
 protected:
 	IGEF() = default;

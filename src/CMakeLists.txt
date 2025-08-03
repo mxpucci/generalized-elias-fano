@@ -24,4 +24,8 @@ target_link_libraries(ugef PRIVATE gef)
 
 add_executable(rle_gef rle_gef.cpp)
 target_compile_options(rle_gef PRIVATE -D_FILE_OFFSET_BITS=64)
-target_link_libraries(rle_gef PRIVATE gef) 
+target_link_libraries(rle_gef PRIVATE gef)
+
+add_executable(bgef bgef.cpp)
+target_compile_options(bgef PRIVATE -D_FILE_OFFSET_BITS=64)
+target_link_libraries(bgef PRIVATE gef)

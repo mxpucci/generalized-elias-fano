@@ -102,6 +102,10 @@ public:
         return (*m_partitions.at(partition_index))[index_in_partition];
     }
 
+    uint8_t split_point() const override {
+        return 0;
+    }
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Serialization
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
