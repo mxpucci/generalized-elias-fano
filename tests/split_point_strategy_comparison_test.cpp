@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
+#include "gef/B_GEF_NO_RLE.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
@@ -29,10 +30,10 @@ protected:
 
 // Define the list of implementations and types to test with.
 using Implementations = ::testing::Types<
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>
+    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_NO_RLE<int16_t>,
+    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_NO_RLE<uint16_t>,
+    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_NO_RLE<int32_t>,
+    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_NO_RLE<uint32_t>
 >;
 
 TYPED_TEST_CASE(GEF_SplitPointStrategyComparison_TypedTest, Implementations);
