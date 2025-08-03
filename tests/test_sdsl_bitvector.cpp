@@ -479,4 +479,122 @@ TEST_F(SDSLBitVectorTest, AllZerosVector) {
     EXPECT_EQ(bv.select0(50), 49); // 50th zero is at position 49
     // Check total ones via rank
     EXPECT_EQ(bv.rank(100), 0);
-} 
+}
+
+// --- Tests for new bulk modification methods ---
+
+TEST_F(SDSLBitVectorTest, SetRangeSetsBitsToTrue) {
+    SDSLBitVector bv(200); // More than 2*64 bits
+    bv.set_range(70, 60, true);
+
+    // Verify before the range
+    for (size_t i = 0; i < 70; ++i) {
+        EXPECT_FALSE(bv[i]) << "Bit at index " << i << " should be false.";
+    }
+
+    // Verify inside the range
+    for (size_t i = 70; i < 130; ++i) {
+        EXPECT_TRUE(bv[i]) << "Bit at index " << i << " should be true.";
+    }
+
+    // Verify after the range
+    for (size_t i = 130; i < 200; ++i) {
+        EXPECT_FALSE(bv[i]) << "Bit at index " << i << " should be false.";
+    }
+}
+
+TEST_F(SDSLBitVectorTest, SetRangeClearsBitsToFalse) {
+    SDSLBitVector bv(200);
+    // Set all bits to 1 first
+    bv.set_range(0, 200, true);
+
+    // Clear a range in the middle
+    bv.set_range(70, 60, false);
+
+    // Verify before the range
+    for (size_t i = 0; i < 70; ++i) {
+        EXPECT_TRUE(bv[i]) << "Bit at index " << i << " should be true.";
+    }
+
+    // Verify inside the range
+    for (size_t i = 70; i < 130; ++i) {
+        EXPECT_FALSE(bv[i]) << "Bit at index " << i << " should be false.";
+    }
+
+    // Verify after the range
+    for (size_t i = 130; i < 200; ++i) {
+        EXPECT_TRUE(bv[i]) << "Bit at index " << i << " should be true.";
+    }
+}
+
+TEST_F(SDSLBitVectorTest, SetRangeEdgeCases) {
+    SDSLBitVector bv(100);
+
+    // Set range starting at 0
+    bv.set_range(0, 10, true);
+    for(size_t i = 0; i < 10; ++i) EXPECT_TRUE(bv[i]);
+    EXPECT_FALSE(bv[10]);
+
+    // Set range ending at size-1
+    bv.set_range(90, 10, true);
+    EXPECT_FALSE(bv[89]);
+    for(size_t i = 90; i < 100; ++i) EXPECT_TRUE(bv[i]);
+
+    // Set range with count = 0 (should be a no-op)
+    bv.set_range(50, 0, true);
+    EXPECT_FALSE(bv[50]);
+}
+
+TEST_F(SDSLBitVectorTest, SetRangeSingleWord) {
+    SDSLBitVector bv(100);
+    bv.set_range(5, 20, true); // Stays within the first 64-bit word
+    EXPECT_FALSE(bv[4]);
+    for(size_t i = 5; i < 25; ++i) EXPECT_TRUE(bv[i]);
+    EXPECT_FALSE(bv[25]);
+}
+
+TEST_F(SDSLBitVectorTest, SetRangeOutOfBounds) {
+    SDSLBitVector bv(100);
+    EXPECT_THROW(bv.set_range(90, 20, true), std::out_of_range);
+    EXPECT_THROW(bv.set_range(100, 1, true), std::out_of_range);
+}
+
+TEST_F(SDSLBitVectorTest, SetBitsBasic) {
+    SDSLBitVector bv(100);
+    uint64_t pattern = 0b110101; // Represents 53
+    uint8_t num_bits = 6;
+
+    bv.set_bits(10, pattern, num_bits);
+
+    EXPECT_FALSE(bv[9]);
+    EXPECT_TRUE(bv[10]);  // LSB
+    EXPECT_FALSE(bv[11]);
+    EXPECT_TRUE(bv[12]);
+    EXPECT_FALSE(bv[13]);
+    EXPECT_TRUE(bv[14]);
+    EXPECT_TRUE(bv[15]);  // MSB
+    EXPECT_FALSE(bv[16]);
+}
+
+TEST_F(SDSLBitVectorTest, SetBitsAcrossWordBoundary) {
+    SDSLBitVector bv(100);
+    uint64_t pattern = 0xFFFF0000FFFF0000;
+    uint8_t num_bits = 32;
+
+    // Write 32 bits starting at position 50
+    // This will write 14 bits in the first word and 18 in the second.
+    bv.set_bits(50, pattern, num_bits);
+
+    for (size_t i = 0; i < 16; ++i) {
+        EXPECT_FALSE(bv[50 + i]); // Corresponds to the low 16 zero bits of the pattern
+    }
+    for (size_t i = 16; i < 32; ++i) {
+        EXPECT_TRUE(bv[50 + i]); // Corresponds to the next 16 one bits of the pattern
+    }
+}
+
+TEST_F(SDSLBitVectorTest, SetBitsOutOfBounds) {
+    SDSLBitVector bv(100);
+    EXPECT_THROW(bv.set_bits(90, 0x01, 20), std::out_of_range);
+    EXPECT_THROW(bv.set_bits(10, 0x01, 65), std::invalid_argument);
+}

@@ -123,6 +123,76 @@ public:
         bv_[index] = value;
     }
 
+    void set_range(size_t start, size_t count, bool value) override {
+        if (count == 0) {
+            return;
+        }
+        if (start + count > size()) {
+            throw std::out_of_range("set_range writes out of bounds");
+        }
+
+        uint64_t* data = bv_.data();
+        size_t end = start + count - 1;
+
+        const size_t start_word = start / 64;
+        const size_t end_word = end / 64;
+        const size_t start_offset = start % 64;
+        const size_t end_offset = end % 64;
+
+        if (start_word == end_word) {
+            // Case 1: The entire range is within a single 64-bit word.
+            // Create a mask for 'count' bits and shift it to the start_offset.
+            uint64_t mask = (count == 64) ? ~0ULL : ((1ULL << count) - 1);
+            mask <<= start_offset;
+
+            if (value) {
+                data[start_word] |= mask;
+            } else {
+                data[start_word] &= ~mask;
+            }
+        } else {
+            // Case 2: The range spans multiple words.
+
+            // Part 1: Handle the "head" in the first word.
+            // Create a mask for bits from start_offset to 63.
+            const uint64_t head_mask = ~0ULL << start_offset;
+            if (value) {
+                data[start_word] |= head_mask;
+            } else {
+                data[start_word] &= ~head_mask;
+            }
+
+            // Part 2: Handle the "body" of full words.
+            const uint64_t fill_val = value ? ~0ULL : 0ULL;
+            // Use std::fill for a fast loop over the full words.
+            if (end_word > start_word + 1) {
+                std::fill(data + start_word + 1, data + end_word, fill_val);
+            }
+
+            // Part 3: Handle the "tail" in the last word.
+            // Create a mask for bits from 0 to end_offset.
+            uint64_t tail_mask = sdsl::bits::lo_set[end_offset + 1];
+            if (value) {
+                data[end_word] |= tail_mask;
+            } else {
+                data[end_word] &= ~tail_mask;
+            }
+        }
+    }
+
+    void set_bits(size_t start_index, uint64_t bits, uint8_t num_bits) override {
+        if (num_bits == 0) return;
+        if (num_bits > 64) {
+            throw std::invalid_argument("num_bits cannot exceed 64");
+        }
+        if (start_index + num_bits > size()) {
+            throw std::out_of_range("set_bits out of bounds");
+        }
+
+        // Use SDSL's built-in integer setting method
+        bv_.set_int(start_index, bits, num_bits);
+    }
+
     /**
      * @brief Set/get bit at given index (non-const version)
      */

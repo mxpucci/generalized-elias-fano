@@ -8,14 +8,14 @@
 #include "gef/UniformedPartitioner.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
-
+#include "gef/IGEF.hpp"
 
 // Wrapper to adapt B_GEF constructor for UniformedPartitioner
 template<typename T>
 struct B_GEF_Wrapper : public gef::B_GEF<T> {
     // Constructor for compression
     B_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF<T>(factory, data) {}
+            : gef::B_GEF<T>(factory, data, gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
     B_GEF_Wrapper() : gef::B_GEF<T>() {}

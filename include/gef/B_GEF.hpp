@@ -62,21 +62,19 @@ namespace gef {
                 return sizeof(T) + sizeof(uint8_t) * 2; // Overhead for base, h, b
             }
 
-            // Handle edge cases for the split point 'b'
-            if (b == 0) {
-                return std::numeric_limits<size_t>::max();
-            }
             if (b >= total_bits) {
-                // In this case, only the L vector exists, storing the full values (h=0).
-                size_t bits = N * total_bits;
-                return (bits + 7) / 8 + sizeof(T) + sizeof(uint8_t) * 2;
+                return N * total_bits;
             }
+
+            if (b == 0)
+                return std::numeric_limits<size_t>::max();
 
             const T base = *std::min_element(S.begin(), S.end());
             const uint8_t h = total_bits - b;
 
             size_t num_exceptions = 0;
-            size_t g_unary_bits = 0;
+            size_t g_plus_unary_bits = 0;
+            size_t g_minus_unary_bits = 0;
             T lastHighBits = 0;
 
             // 1. Simulate the creation of B, H, and G to find their required sizes
@@ -84,14 +82,15 @@ namespace gef {
                 const T element = S[i] - base;
                 const T currentHighBits = highPart(element, total_bits, h);
 
-                const bool is_exception = (i == 0 || currentHighBits + h <= lastHighBits || currentHighBits >= lastHighBits +
-                                           h);
+                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+                const bool is_exception = (i == 0 || std::abs(gap) > h);
 
                 if (is_exception) {
                     num_exceptions++;
-                } else {
-                    // This is a regular gap; add its size to G's unary encoded part
-                    g_unary_bits += currentHighBits >= lastHighBits ? currentHighBits - lastHighBits : lastHighBits - currentHighBits;
+                } else if (gap > 0) {
+                    g_plus_unary_bits += gap;
+                } else if (gap < 0) {
+                    g_minus_unary_bits += -gap;
                 }
                 lastHighBits = currentHighBits;
             }
@@ -100,15 +99,16 @@ namespace gef {
             const size_t L_bits = N * b; // L stores low bits for all N elements
             const size_t B_bits = N; // B has one bit per element
             const size_t H_bits = num_exceptions * h; // H stores h bits for each exception
-            const size_t G_bits = g_unary_bits + 2 * N; // G stores unary gaps + N terminators
+            const size_t G_plus_bits = g_plus_unary_bits + N; // N terminators
+            const size_t G_minus_bits = g_minus_unary_bits + N; // N terminators
 
-            const size_t total_data_bits = L_bits + B_bits + H_bits + G_bits;
-
+            const size_t total_data_bits = L_bits + B_bits + H_bits + G_plus_bits + G_minus_bits;
             return total_data_bits;
         }
 
-        static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T /*min*/,
-                                          const T /*max*/) {
+        static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits,
+                                                         const T /*min*/,
+                                                         const T /*max*/) {
             if (total_bits <= 1) {
                 // Handle trivial cases where a search is not possible.
                 size_t space0 = evaluate_space(S, total_bits, 0);
@@ -160,7 +160,7 @@ namespace gef {
         }
 
         static uint8_t approximate_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
-                                                        const T max) {
+                                                       const T max) {
             if (S.size() <= 1) {
                 return 0;
             }
@@ -176,12 +176,12 @@ namespace gef {
         }
 
 
-        static uint8_t brute_force_optima_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min, const T max) {
+        static uint8_t brute_force_optima_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
+                                                      const T max) {
             uint8_t best_split_point = 0;
             size_t best_space = evaluate_space(S, total_bits, best_split_point);
-            for (uint8_t b = 1; b <= total_bits; b++) {
-                const size_t space = evaluate_space(S, total_bits, b);
-                if (space < best_space) {
+            for (uint8_t b = 0; b <= total_bits; b++) {
+                if (const size_t space = evaluate_space(S, total_bits, b); space < best_space) {
                     best_split_point = b;
                     best_space = space;
                 }
@@ -266,7 +266,7 @@ namespace gef {
             : IGEF<T>(std::move(other)),
               B(std::move(other.B)),
               G_plus(std::move(other.G_plus)),
-                G_minus(std::move(other.G_minus)),
+              G_minus(std::move(other.G_minus)),
               H(std::move(other.H)),
               L(std::move(other.L)),
               h(other.h),
@@ -295,10 +295,11 @@ namespace gef {
 
 
         // Constructor
-        B_GEF(const std::shared_ptr<IBitVectorFactory>& bit_vector_factory,
+        B_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
               const std::vector<T> &S,
               SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
-            if (S.empty()) {
+            const size_t N = S.size();
+            if (N == 0) {
                 b = 0;
                 h = 0;
                 base = T{};
@@ -307,29 +308,29 @@ namespace gef {
             }
 
             base = *std::min_element(S.begin(), S.end());
-            const int64_t max_val = *std::max_element(S.begin(), S.end());
-            const int64_t min_val = base;
-            const uint64_t u = max_val - min_val + 1;
+            const T max_val = *std::max_element(S.begin(), S.end());
+            const uint64_t u = max_val - base + 1;
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
-
 
             switch (strategy) {
                 case BINARY_SEARCH_SPLIT_POINT:
-                    b = binary_search_optimal_split_point(S, total_bits, min_val, max_val);
+                    b = binary_search_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case APPROXIMATE_SPLIT_POINT:
-                    b = approximate_optimal_split_point(S, total_bits, min_val, max_val);
+                    b = approximate_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case BRUTE_FORCE_SPLIT_POINT:
-                    b = brute_force_optima_split_point(S, total_bits, min_val, max_val);
+                    b = brute_force_optima_split_point(S, total_bits, base, max_val);
                     break;
             }
             h = total_bits - b;
 
-            L = sdsl::int_vector<>(S.size(), 0, b);
+            L = sdsl::int_vector<>(N, 0, b);
             if (h == 0) {
-                for (size_t i = 0; i < S.size(); i++)
+                // Special case: no high bits, only L is needed.
+                for (size_t i = 0; i < N; ++i) {
                     L[i] = S[i] - base;
+                }
                 B = nullptr;
                 G_plus = nullptr;
                 G_minus = nullptr;
@@ -337,78 +338,78 @@ namespace gef {
                 return;
             }
 
-            B = bit_vector_factory->create(S.size());
+            // --- PASS 1: Analyze the sequence and determine exact sizes ---
+            std::vector<bool> is_exception(N);
+            std::vector<T> high_parts(N);
+            size_t h_size = 0;
+            size_t g_plus_unary_bits = 0;
+            size_t g_minus_unary_bits = 0;
+
             T lastHighBits = 0;
-            std::vector<T> tempH;
-            tempH.reserve(S.size());
-
-            std::vector<T> tempGPlus;
-            tempGPlus.reserve(S.size());
-            std::vector<T> tempGMinus;
-            tempGMinus.reserve(S.size());
-
-            size_t g_plus_size = 0;
-            size_t g_minus_size = 0;
-
-            for (size_t i = 0; i < S.size(); i++) {
+            for (size_t i = 0; i < N; ++i) {
                 const T element = S[i] - base;
-                const T highBits = highPart(element, total_bits, total_bits - b);
-                const T lowBits = lowPart(element, b);
-                L[i] = lowBits;
+                high_parts[i] = highPart(element, total_bits, h);
 
-                const int64_t gap = static_cast<int64_t>(highBits) - static_cast<int64_t>(lastHighBits);
+                const int64_t gap = static_cast<int64_t>(high_parts[i]) - static_cast<int64_t>(lastHighBits);
+                const bool exception = (i == 0 || std::abs(gap) > h);
+                is_exception[i] = exception;
 
-                B->set(i, i == 0 || std::abs(gap) > h);
-
-                if ((*B)[i] == 1) {
-                    tempH.push_back(highBits);
-                }
-
-                if ((*B)[i] == 0 && gap > 0) {
-                    tempGPlus.push_back(gap);
-                    tempGMinus.push_back(0);
-                    g_plus_size += gap;
-                } else if ((*B)[i] == 0 && gap <= 0) { // gap <= 0
-                    tempGPlus.push_back(0);
-                    tempGMinus.push_back(-gap); // -gap is the magnitude
-                    g_minus_size += -gap;
+                if (exception) {
+                    h_size++;
                 } else {
-                    tempGPlus.push_back(0);
-                    tempGMinus.push_back(0);
+                    if (gap > 0) {
+                        g_plus_unary_bits += gap;
+                    } else { // gap <= 0
+                        g_minus_unary_bits += -gap;
+                    }
                 }
-
-                // Appending trailing zeros
-                g_plus_size++;
-                g_minus_size++;
-
-                lastHighBits = highBits;
+                lastHighBits = high_parts[i];
             }
+
+            const size_t g_plus_bits = g_plus_unary_bits + N;
+            const size_t g_minus_bits = g_minus_unary_bits + N;
+
+            // --- PASS 2: Allocate memory and populate structures ---
+            B = bit_vector_factory->create(N);
+            H = sdsl::int_vector<>(h_size, 0, h);
+            G_plus = bit_vector_factory->create(g_plus_bits);
+            G_minus = bit_vector_factory->create(g_minus_bits);
+
+            size_t h_idx = 0;
+            size_t g_plus_pos = 0;
+            size_t g_minus_pos = 0;
+            lastHighBits = 0;
+
+            for (size_t i = 0; i < N; ++i) {
+                const T element = S[i] - base;
+                L[i] = lowPart(element, b);
+
+                B->set(i, is_exception[i]);
+                if (is_exception[i]) {
+                    H[h_idx++] = high_parts[i];
+                } else {
+                    const int64_t gap = static_cast<int64_t>(high_parts[i]) - static_cast<int64_t>(lastHighBits);
+
+                    if (gap > 0) {
+                        G_plus->set_range(g_plus_pos, gap, true);
+                        g_plus_pos += gap;
+                    } else { // gap <= 0
+                        G_minus->set_range(g_minus_pos, -gap, true);
+                        g_minus_pos += -gap;
+                    }
+                }
+                // Adding terminators
+                G_minus->set(g_minus_pos++, false);
+                G_plus->set(g_plus_pos++, false);
+
+                lastHighBits = high_parts[i];
+            }
+
+            // Enable rank/select support
             B->enable_rank();
             B->enable_select1();
-
-            H = sdsl::int_vector<>(tempH.size(), 0, total_bits - b);
-            for (size_t i = 0; i < tempH.size(); i++)
-                H[i] = tempH[i];
-
-            G_plus = bit_vector_factory->create(g_plus_size);
-            size_t pos = 0;
-            for (size_t i = 0; i < tempGPlus.size(); i++) {
-                auto val = tempGPlus[i];
-                for (size_t j = 0; j < val; j++)
-                    G_plus->set(pos++, true);
-                G_plus->set(pos++, false);
-            }
             G_plus->enable_rank();
             G_plus->enable_select0();
-
-            G_minus = bit_vector_factory->create(g_minus_size);
-            pos = 0;
-            for (size_t i = 0; i < tempGMinus.size(); i++) {
-                auto val = tempGMinus[i];
-                for (size_t j = 0; j < val; j++)
-                    G_minus->set(pos++, true);
-                G_minus->set(pos++, false);
-            }
             G_minus->enable_rank();
             G_minus->enable_select0();
         }
@@ -421,11 +422,15 @@ namespace gef {
             const T base_high_val = H[run_index - 1];
             const size_t run_start_pos = B->select(run_index);
 
-            const size_t pos_gap_sum_before_run = run_start_pos > 0 ? G_plus->rank(G_plus->select0(run_start_pos + 1)) : 0;
+            const size_t pos_gap_sum_before_run = run_start_pos > 0
+                                                      ? G_plus->rank(G_plus->select0(run_start_pos + 1))
+                                                      : 0;
             const size_t total_pos_gap = G_plus->rank(G_plus->select0(index + 1));
             const size_t pos_gap_in_run = total_pos_gap - pos_gap_sum_before_run;
 
-            const size_t neg_gap_sum_before_run = run_start_pos > 0 ? G_minus->rank(G_minus->select0(run_start_pos + 1)) : 0;
+            const size_t neg_gap_sum_before_run = run_start_pos > 0
+                                                      ? G_minus->rank(G_minus->select0(run_start_pos + 1))
+                                                      : 0;
             const size_t total_neg_gap = G_minus->rank(G_minus->select0(index + 1));
             const size_t neg_gap_in_run = total_neg_gap - neg_gap_sum_before_run;
 
@@ -494,7 +499,7 @@ namespace gef {
         }
 
         [[nodiscard]] uint8_t split_point() const override {
-            return this -> b;
+            return this->b;
         }
     };
 } // namespace gef

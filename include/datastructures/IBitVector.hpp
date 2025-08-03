@@ -12,14 +12,38 @@
 class IBitVector {
 public:
     IBitVector() = default;
+
     virtual ~IBitVector() = default;
-    IBitVector(const IBitVector& other) = default;
-    IBitVector(IBitVector&& other) = default;
-    IBitVector& operator=(const IBitVector& other) = default;
-    IBitVector& operator=(IBitVector&& other) = default;
+
+    IBitVector(const IBitVector &other) = default;
+
+    IBitVector(IBitVector &&other) = default;
+
+    IBitVector &operator=(const IBitVector &other) = default;
+
+    IBitVector &operator=(IBitVector &&other) = default;
 
     virtual bool operator[](size_t index) const = 0;
+
     virtual void set(size_t index, bool value) = 0;
+
+    /**
+     * @brief Sets a contiguous range of bits to a specific value.
+     * @param start The starting index of the range (inclusive).
+     * @param count The number of bits to set.
+     * @param value The boolean value (0 or 1) to set the bits to.
+     */
+    virtual void set_range(size_t start, size_t count, bool value) = 0;
+
+    /**
+     * @brief Writes a block of bits from an integer into the vector.
+     * @param start_index The starting position in the bitvector.
+     * @param bits The integer containing the bits to write.
+     * @param num_bits The number of (least significant) bits from 'bits' to write.
+     */
+    virtual void set_bits(size_t start_index, uint64_t bits, uint8_t num_bits) = 0;
+
+
     virtual size_t size() const = 0;
 
     /**
@@ -80,12 +104,13 @@ public:
     virtual size_t select0(size_t k) const = 0;
 
     virtual size_t size_in_bytes() const = 0;
+
     virtual size_t size_in_megabytes() const = 0;
 
 
-    virtual void serialize(std::ofstream& out) const = 0;
+    virtual void serialize(std::ofstream &out) const = 0;
 
-    void serialize(const std::filesystem::path& filepath) const {
+    void serialize(const std::filesystem::path &filepath) const {
         std::ofstream ofs(filepath, std::ios::binary);
         if (!ofs.is_open()) {
             throw std::runtime_error("Failed to open file");
@@ -93,8 +118,8 @@ public:
         this->serialize(ofs);
         ofs.close();
     }
-    
-    
+
+
     bool empty() const {
         return size() == 0;
     }
@@ -102,7 +127,9 @@ public:
     virtual std::unique_ptr<IBitVector> clone() const = 0;
 
     virtual void enable_rank() = 0;
+
     virtual void enable_select1() = 0;
+
     virtual void enable_select0() = 0;
 };
 

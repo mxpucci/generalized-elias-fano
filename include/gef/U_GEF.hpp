@@ -62,8 +62,7 @@ namespace gef {
             }
             if (b >= total_bits) {
                 // In this case, only the L vector exists, storing the full values (h=0).
-                size_t bits = N * total_bits;
-                return (bits + 7) / 8 + sizeof(T) + sizeof(uint8_t) * 2;
+                return N * total_bits;
             }
 
             const T base = *std::min_element(S.begin(), S.end());
@@ -96,15 +95,7 @@ namespace gef {
             const size_t H_bits = num_exceptions * h; // H stores h bits for each exception
             const size_t G_bits = g_unary_bits + N; // G stores unary gaps + N terminators
 
-            const size_t total_data_bits = L_bits + B_bits + H_bits + G_bits;
-
-            // 3. Convert total bits to bytes and add fixed member overhead
-            size_t total_bytes = (total_data_bits + 7) / 8; // (bits + 7) / 8 is ceiling division
-            total_bytes += sizeof(T); // for base
-            total_bytes += sizeof(uint8_t); // for h
-            total_bytes += sizeof(uint8_t); // for b
-
-            return total_bytes;
+            return L_bits + B_bits + H_bits + G_bits;
         }
 
         static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T /*min*/,
@@ -293,10 +284,11 @@ namespace gef {
 
 
         // Constructor
-        U_GEF(std::shared_ptr<IBitVectorFactory> bit_vector_factory,
+        U_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
               const std::vector<T> &S,
               SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
-            if (S.empty()) {
+            const size_t N = S.size();
+            if (N == 0) {
                 b = 0;
                 h = 0;
                 base = T{};
@@ -305,72 +297,89 @@ namespace gef {
             }
 
             base = *std::min_element(S.begin(), S.end());
-            const int64_t max_val = *std::max_element(S.begin(), S.end());
-            const int64_t min_val = base;
-            const uint64_t u = max_val - min_val + 1;
+            const T max_val = *std::max_element(S.begin(), S.end());
+            const uint64_t u = max_val - base + 1;
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
-
 
             switch (strategy) {
                 case BINARY_SEARCH_SPLIT_POINT:
-                    b = binary_search_optimal_split_point(S, total_bits, min_val, max_val);
+                    b = binary_search_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case APPROXIMATE_SPLIT_POINT:
-                    b = approximate_optimal_split_point(S, total_bits, min_val, max_val);
+                    b = approximate_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case BRUTE_FORCE_SPLIT_POINT:
-                    b = brute_force_optimal_split_point(S, total_bits, min_val, max_val);
+                    b = brute_force_optimal_split_point(S, total_bits, base, max_val);
                     break;
             }
             h = total_bits - b;
 
-            L = sdsl::int_vector<>(S.size(), 0, b);
+            L = sdsl::int_vector<>(N, 0, b);
             if (h == 0) {
-                for (size_t i = 0; i < S.size(); i++)
+                // Special case: no high bits, only L is needed.
+                for (size_t i = 0; i < N; ++i) {
                     L[i] = S[i] - base;
+                }
                 B = nullptr;
                 G = nullptr;
                 H.resize(0);
                 return;
             }
 
-            B = bit_vector_factory->create(S.size());
+            // --- PASS 1: Analyze the sequence and determine exact sizes ---
+            std::vector<bool> is_exception(N);
+            std::vector<T> high_parts(N);
+            size_t h_size = 0;
+            size_t g_unary_bits = 0;
+
             T lastHighBits = 0;
-            std::vector<T> tempH;
-            tempH.reserve(S.size());
-            std::vector<T> tempG;
-            tempG.reserve(S.size());
-            size_t g_size = 0;
-            for (size_t i = 0; i < S.size(); i++) {
+            for (size_t i = 0; i < N; ++i) {
                 const T element = S[i] - base;
-                const T highBits = highPart(element, total_bits, total_bits - b);
-                const T lowBits = lowPart(element, b);
-                L[i] = lowBits;
-                B->set(i, i == 0 || highBits < lastHighBits || highBits >= lastHighBits + h);
-                if ((*B)[i] == 1)
-                    tempH.push_back(highBits);
+                high_parts[i] = highPart(element, total_bits, h);
 
-                tempG.push_back((1 - (*B)[i]) * (highBits - lastHighBits));
-                g_size += (1 - (*B)[i]) * (highBits - lastHighBits) + 1;
+                const bool exception = (i == 0 || high_parts[i] < lastHighBits || high_parts[i] >= lastHighBits + h);
+                is_exception[i] = exception;
 
-                lastHighBits = highBits;
+                if (exception) {
+                    h_size++;
+                } else {
+                    g_unary_bits += high_parts[i] - lastHighBits;
+                }
+                lastHighBits = high_parts[i];
             }
+
+            const size_t g_bits = g_unary_bits + N;
+
+            // --- PASS 2: Allocate memory and populate structures ---
+            B = bit_vector_factory->create(N);
+            H = sdsl::int_vector<>(h_size, 0, h);
+            G = bit_vector_factory->create(g_bits);
+
+            size_t h_idx = 0;
+            size_t g_pos = 0;
+            lastHighBits = 0;
+
+            for (size_t i = 0; i < N; ++i) {
+                const T element = S[i] - base;
+                L[i] = lowPart(element, b);
+
+                B->set(i, is_exception[i]);
+                if (is_exception[i]) {
+                    H[h_idx++] = high_parts[i];
+                } else {
+                    const T gap = high_parts[i] - lastHighBits;
+                    G->set_range(g_pos, gap, true);
+                    g_pos += gap;
+                }
+                // Adding terminators
+                G->set(g_pos++, false);
+
+                lastHighBits = high_parts[i];
+            }
+
+            // Enable rank/select support
             B->enable_rank();
             B->enable_select1();
-
-            H = sdsl::int_vector<>(tempH.size(), 0, total_bits - b);
-            for (size_t i = 0; i < tempH.size(); i++)
-                H[i] = tempH[i];
-
-            G = bit_vector_factory->create(g_size);
-            size_t pos = 0;
-            for (size_t i = 0; i < tempG.size(); i++) {
-                auto val = tempG[i];
-                for (size_t j = 0; j < val; j++)
-                    G->set(pos++, true);
-                G->set(pos++, false);
-            }
-
             G->enable_rank();
             G->enable_select0();
         }
