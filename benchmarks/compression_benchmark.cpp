@@ -20,8 +20,10 @@
 #pragma region Compressor Wrappers and Globals
 template<typename T>
 struct U_GEF_Wrapper : public gef::U_GEF<T> {
-    U_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-        : gef::U_GEF<T>(factory, data) {}
+    // This constructor now matches B_GEF's, taking a strategy.
+    // It is assumed the base class gef::U_GEF has been updated to accept this parameter.
+    U_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory, gef::SplitPointStrategy strategy)
+        : gef::U_GEF<T>(factory, data, strategy) {}
     U_GEF_Wrapper() : gef::U_GEF<T>() {}
 };
 
@@ -139,17 +141,19 @@ BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Compression)(benc
 }
 
 BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, U_GEF_Compression)(benchmark::State& state) {
-    state.SetLabel(current_basename);
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    state.SetLabel(current_basename + "/" + strategyToString(strategy));
+
     for (auto _ : state) {
         state.PauseTiming();
         std::vector<int64_t> data_copy = input_data;
         state.ResumeTiming();
-        gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> compressor(
-            data_copy, FIXED_PARTITION_SIZE, g_factory);
+        gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
+            data_copy, FIXED_PARTITION_SIZE, g_factory, strategy);
         benchmark::DoNotOptimize(compressor);
     }
-    gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> final_compressor(
-        input_data, FIXED_PARTITION_SIZE, g_factory);
+    gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
+        input_data, FIXED_PARTITION_SIZE, g_factory, strategy);
     state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
     state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
 
@@ -223,8 +227,9 @@ BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Lookup)(benchmark
 }
 
 BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, U_GEF_Lookup)(benchmark::State& state) {
-    state.SetLabel(current_basename);
-    LookupBenchmark<U_GEF_Wrapper>(state, input_data, FIXED_PARTITION_SIZE, g_factory);
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    state.SetLabel(current_basename + "/" + strategyToString(strategy));
+    LookupBenchmark<U_GEF_Wrapper>(state, input_data, FIXED_PARTITION_SIZE, g_factory, strategy);
 }
 
 BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, RLE_GEF_Lookup)(benchmark::State& state) {
@@ -245,7 +250,10 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, U_GEF_Compression)
-        ->Arg(file_idx)->ArgNames({"file_idx"});
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, RLE_GEF_Compression)
         ->Arg(file_idx)->ArgNames({"file_idx"});
 
@@ -261,7 +269,10 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, U_GEF_Lookup)
-        ->Arg(file_idx)->ArgNames({"file_idx"});
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, RLE_GEF_Lookup)
         ->Arg(file_idx)->ArgNames({"file_idx"});
 }

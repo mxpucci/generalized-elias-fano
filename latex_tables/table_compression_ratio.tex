@@ -1,0 +1,31 @@
+\begin{table*}[htbp]
+\caption{GEF Variants: Compression ratio (\%). Lower is better.}
+\label{tab:gef_ratio}
+\centering
+\small
+\setlength{\tabcolsep}{4pt} % Reduce space between columns
+\begin{tabular}{lcccccccccc}
+\toprule
+\textbf{Dataset} & \textbf{RLE-GEF} & \multicolumn{3}{c}{\textbf{U-GEF}} & \multicolumn{3}{c}{\textbf{B-GEF}} & \multicolumn{3}{c}{\textbf{B'-GEF}} \\
+\textbf{(\%)} &   & Approximate & Binary Search & Brute Force & Approximate & Binary Search & Brute Force & Approximate & Binary Search & Brute Force \\
+\cmidrule(lr){3-5} \cmidrule(lr){6-8} \cmidrule(lr){9-11} 
+\midrule
+AP & 94.72 & 20.47 & 17.24 & \textbf{16.85} & 20.49 & 18.43 & 17.89 & 18.68 & 18.10 & 17.64 \\
+BM & 24.04 & 25.60 & 25.11 & 25.07 & 26.75 & 23.78 & \textbf{23.61} & 25.55 & 25.35 & 25.35 \\
+BP & 36.40 & 38.03 & 37.72 & 37.72 & 37.40 & 37.11 & 37.11 & 35.46 & \textbf{35.26} & \textbf{35.26} \\
+BT & 52.80 & 54.33 & 54.13 & 54.13 & 54.15 & 53.79 & 53.79 & 52.27 & \textbf{51.85} & \textbf{51.85} \\
+BW & \textbf{45.37} & 47.55 & 46.91 & 46.91 & 49.13 & 46.32 & 45.57 & 47.95 & 47.50 & 47.50 \\
+CT & 13.77 & 15.14 & 15.24 & 15.13 & 15.93 & 16.18 & 15.54 & 14.00 & 14.52 & \textbf{13.66} \\
+DP & 16.02 & 17.68 & 18.56 & 17.22 & 16.66 & 16.65 & 16.30 & 14.79 & 14.91 & \textbf{14.45} \\
+DU & \textbf{8.45} & 41.79 & 16.97 & 9.64 & 25.81 & 17.37 & 10.09 & 24.32 & 17.49 & 9.85 \\
+ECG & 18.64 & 13.86 & 14.05 & 13.75 & 14.10 & 16.26 & 13.53 & 12.20 & 13.00 & \textbf{11.84} \\
+GE & 12.14 & 20.57 & 15.55 & 13.45 & 17.25 & 23.41 & 12.87 & 15.35 & 19.94 & \textbf{11.01} \\
+IT & 12.26 & 15.38 & 15.52 & 13.14 & 14.88 & 59.54 & 12.63 & 12.99 & 39.27 & \textbf{11.02} \\
+LAT & 23.53 & 25.43 & 23.94 & 23.86 & 25.00 & 22.54 & \textbf{22.37} & 23.86 & 23.77 & 23.63 \\
+LON & 18.34 & 20.44 & 19.36 & 19.10 & 20.36 & 18.00 & \textbf{17.64} & 19.22 & 19.35 & 18.99 \\
+UK & 14.91 & 37.88 & 22.68 & 10.28 & 34.28 & 26.21 & 10.11 & 32.41 & 23.96 & \textbf{8.33} \\
+US & 7.81 & 59.12 & 35.88 & 9.09 & 49.16 & 36.48 & 9.10 & 47.26 & 34.46 & \textbf{7.22} \\
+WD & \textbf{22.78} & 24.44 & 24.18 & 24.14 & 25.82 & 24.55 & 24.40 & 24.12 & 23.76 & 23.74 \\
+\bottomrule
+\end{tabular}
+\end{table*}

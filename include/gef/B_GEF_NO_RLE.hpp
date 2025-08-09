@@ -18,6 +18,12 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 
+#if defined(__AVX2__) || defined(__SSE4_2__)
+  #include <immintrin.h>
+#endif
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace gef {
     template<typename T>
@@ -50,7 +56,7 @@ namespace gef {
          */
         T base;
 
-        static size_t evaluate_space(const std::vector<T> &S, const uint8_t total_bits, uint8_t b) {
+        static size_t evaluate_space(const std::vector<T> &S, const T &base, const uint8_t total_bits, uint8_t b) {
             const size_t N = S.size();
             if (N == 0) {
                 return sizeof(T) + sizeof(uint8_t) * 2; // Overhead for base, h, b
@@ -63,29 +69,128 @@ namespace gef {
             if (b == 0)
                 return std::numeric_limits<size_t>::max();
 
-            const T base = *std::min_element(S.begin(), S.end());
-            const uint8_t h = total_bits - b;
+            const uint8_t h = static_cast<uint8_t>(total_bits - b);
 
             size_t g_plus_unary_bits = 0;
             size_t g_minus_unary_bits = 0;
-            T lastHighBits = 0;
 
-            // 1. Simulate the creation of G to find their required sizes
-            for (size_t i = 0; i < N; ++i) {
-                const T element = S[i] - base;
-                const T currentHighBits = highPart(element, total_bits, h);
+            // lastHighBits starts at 0 (as in original)
+            uint64_t lastHighBits = 0;
 
+            // SIMD-accelerated adjacent-diff accumulation in 64-bit lanes.
+            size_t i = 0;
+
+#if defined(__AVX2__)
+    // Process 4 elements per iteration
+    for (; i + 4 <= N; i += 4) {
+        // Compute highPart for the block (preserve exact semantics)
+        const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+        const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+        const uint64_t hb2 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 2] - base), total_bits, h));
+        const uint64_t hb3 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 3] - base), total_bits, h));
+
+        // vcurr = [hb0, hb1, hb2, hb3]
+        alignas(32) uint64_t tmpCurr[4] = { hb0, hb1, hb2, hb3 };
+        const __m256i vcurr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(tmpCurr));
+
+        // vprev = [last, hb0, hb1, hb2]
+        const __m128i prev_lo = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
+        const __m128i prev_hi = _mm_set_epi64x(static_cast<long long>(hb2), static_cast<long long>(hb1));
+        const __m256i vprev = _mm256_set_m128i(prev_hi, prev_lo);
+
+        const __m256i vdiff = _mm256_sub_epi64(vcurr, vprev);
+
+        const __m256i vzero = _mm256_setzero_si256();
+        const __m256i maskPos = _mm256_cmpgt_epi64(vdiff, vzero);
+        const __m256i maskNeg = _mm256_cmpgt_epi64(vzero, vdiff);
+
+        const __m256i vpos = _mm256_blendv_epi8(vzero, vdiff, maskPos);
+        const __m256i vneg = _mm256_blendv_epi8(vzero, _mm256_sub_epi64(vzero, vdiff), maskNeg);
+
+        alignas(32) int64_t pos[4];
+        alignas(32) int64_t neg[4];
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(pos), vpos);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(neg), vneg);
+
+        g_plus_unary_bits  += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1])
+                            + static_cast<size_t>(pos[2]) + static_cast<size_t>(pos[3]);
+        g_minus_unary_bits += static_cast<size_t>(neg[0]) + static_cast<size_t>(neg[1])
+                            + static_cast<size_t>(neg[2]) + static_cast<size_t>(neg[3]);
+
+        lastHighBits = hb3;
+    }
+#elif defined(__SSE4_2__)
+    // Process 2 elements per iteration
+    for (; i + 2 <= N; i += 2) {
+        const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+        const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+
+        const __m128i vcurr = _mm_set_epi64x(static_cast<long long>(hb1), static_cast<long long>(hb0));
+        const __m128i vprev = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
+
+        const __m128i vdiff = _mm_sub_epi64(vcurr, vprev);
+
+        const __m128i vzero = _mm_setzero_si128();
+        const __m128i maskPos = _mm_cmpgt_epi64(vdiff, vzero);
+        const __m128i maskNeg = _mm_cmpgt_epi64(vzero, vdiff);
+
+        const __m128i vpos = _mm_blendv_epi8(vzero, vdiff, maskPos);
+        const __m128i vneg = _mm_blendv_epi8(vzero, _mm_sub_epi64(vzero, vdiff), maskNeg);
+
+        alignas(16) int64_t pos[2];
+        alignas(16) int64_t neg[2];
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(pos), vpos);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(neg), vneg);
+
+        g_plus_unary_bits  += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]);
+        g_minus_unary_bits += static_cast<size_t>(neg[0]) + static_cast<size_t>(neg[1]);
+
+        lastHighBits = hb1;
+    }
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+            // Process 2 elements per iteration
+            for (; i + 2 <= N; i += 2) {
+                const int64_t hb0 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+                const int64_t hb1 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+
+                int64x2_t vcurr = vsetq_lane_s64(hb0, vdupq_n_s64(0), 0);
+                vcurr = vsetq_lane_s64(hb1, vcurr, 1);
+
+                int64x2_t vprev = vsetq_lane_s64(static_cast<int64_t>(lastHighBits), vdupq_n_s64(0), 0);
+                vprev = vsetq_lane_s64(hb0, vprev, 1);
+
+                int64x2_t vdiff = vsubq_s64(vcurr, vprev);
+
+                const int64x2_t vzero = vdupq_n_s64(0);
+                const uint64x2_t maskPos = vcgtq_s64(vdiff, vzero);
+                const uint64x2_t maskNeg = vcgtq_s64(vzero, vdiff);
+
+                const int64x2_t vpos = vbslq_s64(maskPos, vdiff, vzero);
+                const int64x2_t vneg = vbslq_s64(maskNeg, vnegq_s64(vdiff), vzero);
+
+                g_plus_unary_bits += static_cast<size_t>(vgetq_lane_s64(vpos, 0))
+                        + static_cast<size_t>(vgetq_lane_s64(vpos, 1));
+                g_minus_unary_bits += static_cast<size_t>(vgetq_lane_s64(vneg, 0))
+                        + static_cast<size_t>(vgetq_lane_s64(vneg, 1));
+
+                lastHighBits = static_cast<uint64_t>(hb1);
+            }
+#endif
+
+            // Scalar tail (and full path when no SIMD)
+            for (; i < N; ++i) {
+                const T element = static_cast<T>(S[i] - base);
+                const uint64_t currentHighBits = static_cast<uint64_t>(highPart(element, total_bits, h));
                 const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-
                 if (gap > 0) {
-                    g_plus_unary_bits += gap;
+                    g_plus_unary_bits += static_cast<size_t>(gap);
                 } else if (gap < 0) {
-                    g_minus_unary_bits += -gap;
+                    g_minus_unary_bits += static_cast<size_t>(-gap);
                 }
                 lastHighBits = currentHighBits;
             }
 
-            // 2. Calculate the total size in bits for all data structures
+            // 2) Calculate the total size in bits for all data structures (unchanged)
             const size_t L_bits = N * b; // L stores low bits for all N elements
             const size_t G_plus_bits = g_plus_unary_bits + N; // N terminators
             const size_t G_minus_bits = g_minus_unary_bits + N; // N terminators
@@ -94,82 +199,158 @@ namespace gef {
             return total_data_bits;
         }
 
+        static size_t evaluate_space(const std::vector<T> &S,
+                                     uint8_t total_bits,
+                                     uint8_t b) {
+            const T base = *std::min_element(S.begin(), S.end());
+            return evaluate_space(S, base, total_bits, b);
+        }
+
         static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits,
-                                                         const T /*min*/,
+                                                         const T min,
                                                          const T /*max*/) {
-            if (total_bits <= 1) {
-                // Handle trivial cases where a search is not possible.
-                size_t space0 = evaluate_space(S, total_bits, 0);
-                if (total_bits == 0) return 0;
-                size_t space1 = evaluate_space(S, total_bits, 1);
-                return (space0 < space1) ? 0 : 1;
+            if (total_bits == 0) return 0;
+            if (total_bits == 1) {
+                size_t c0 = evaluate_space(S, min, total_bits, 0);
+                size_t c1 = evaluate_space(S, min, total_bits, 1);
+                return (c0 <= c1) ? 0 : 1;
             }
 
-            uint8_t lo = 0, hi = total_bits;
+            const uint8_t lo0 = 0, hi0 = total_bits; // inclusive domain
+            std::vector<size_t> cache(hi0 + 1, std::numeric_limits<size_t>::max());
 
-            // Golden ratio constant, used to determine the probe points.
-            // We use the reciprocal (1/phi) for interval reduction.
-            const double inv_phi = (std::sqrt(5.0) - 1.0) / 2.0; // approx 0.618
+            auto eval = [&](uint8_t b) -> size_t {
+                size_t &ref = cache[b];
+                if (ref == std::numeric_limits<size_t>::max()) {
+                    ref = evaluate_space(S, min, total_bits, b);
+                }
+                return ref;
+            };
 
-            // Calculate the initial two interior points.
-            uint8_t c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
-            uint8_t d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
+            // Optional: use your approximate heuristic to shrink the bracket
+            // This is typically very effective and saves more evals:
+            // uint8_t guess = approximate_optimal_split_point(S, total_bits, base, max_val);
+            // uint8_t lo = (guess > 8) ? (guess - 8) : 0;
+            // uint8_t hi = std::min<uint8_t>(total_bits, guess + 8);
 
-            // Initial evaluations for the two points.
-            size_t space_c = evaluate_space(S, total_bits, c);
-            size_t space_d = evaluate_space(S, total_bits, d);
-
-            while (c < d) {
-                if (space_c < space_d) {
-                    // The minimum is in the lower interval [lo, d].
-                    // The old 'c' becomes the new 'd'.
-                    hi = d - 1;
-                    d = c;
-                    space_d = space_c;
-
-                    // We only need to compute a new 'c'.
-                    c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
-                    space_c = evaluate_space(S, total_bits, c);
+            uint8_t lo = lo0, hi = hi0;
+            while (hi - lo > 3) {
+                uint8_t m1 = lo + (hi - lo) / 3;
+                uint8_t m2 = hi - (hi - lo) / 3;
+                size_t f1 = eval(m1);
+                size_t f2 = eval(m2);
+                if (f1 > f2) {
+                    lo = static_cast<uint8_t>(m1 + 1);
                 } else {
-                    // The minimum is in the upper interval [c, hi].
-                    // The old 'd' becomes the new 'c'.
-                    lo = c + 1;
-                    c = d;
-                    space_c = space_d;
-
-                    // We only need to compute a new 'd'.
-                    d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
-                    space_d = evaluate_space(S, total_bits, d);
+                    hi = static_cast<uint8_t>(m2 - 1);
                 }
             }
 
-            // The minimum is at lo (or hi, which will be the same).
-            return lo;
+            // Final scan of the tiny interval [lo..hi]
+            uint8_t best_b = lo;
+            size_t best_v = eval(lo);
+            for (uint8_t b = static_cast<uint8_t>(lo + 1); b <= hi; ++b) {
+                size_t v = eval(b);
+                if (v < best_v) {
+                    best_v = v;
+                    best_b = b;
+                }
+            }
+            return best_b;
         }
 
-        static uint8_t approximate_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
-                                                       const T max) {
-            if (S.size() <= 1) {
-                return 0;
+        static uint8_t approximate_optimal_split_point(const std::vector<T> &S,
+                                                       uint8_t total_bits,
+                                                       T /*min*/, T /*max*/) {
+            const size_t n = S.size();
+            if (n <= 1) return 0;
+
+            const T *p = S.data();
+            double sum = 0.0;
+            size_t i = 1;
+
+#if defined(__AVX2__)
+            // AVX2 implementation: processes 4 doubles at a time
+            __m256d sum_vec = _mm256_setzero_pd();
+            const __m256d abs_mask = _mm256_set1_pd(-0.0); // Mask to clear the sign bit for abs
+
+            for (; i + 3 < n; i += 4) {
+                // Load 4 sets of previous/current values into vectors
+                __m256d prev_vals = _mm256_set_pd((double)p[i + 2], (double)p[i + 1], (double)p[i], (double)p[i - 1]);
+                __m256d curr_vals = _mm256_set_pd((double)p[i + 3], (double)p[i + 2], (double)p[i + 1], (double)p[i]);
+
+                // Compute 4 differences in one instruction
+                __m256d diffs = _mm256_sub_pd(curr_vals, prev_vals);
+
+                // Compute absolute value for 4 differences
+                __m256d abs_diffs = _mm256_andnot_pd(abs_mask, diffs);
+
+                // Add to accumulator vector
+                sum_vec = _mm256_add_pd(sum_vec, abs_diffs);
             }
-            size_t g = 0;
-            for (size_t i = 1; i < S.size(); i++) {
-                g += S[i] >= S[i - 1] ? S[i] - S[i - 1] : S[i - 1] - S[i];
+
+            // Horizontal sum: add the 4 partial sums from the vector into the scalar `sum`
+            double temp_sum[4];
+            _mm256_storeu_pd(temp_sum, sum_vec);
+            sum = temp_sum[0] + temp_sum[1] + temp_sum[2] + temp_sum[3];
+
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+            // ARM NEON (AArch64) implementation: processes 2 doubles at a time
+            float64x2_t sum_vec = vdupq_n_f64(0.0);
+
+            for (; i + 1 < n; i += 2) {
+                // NEON vector initialization is more direct
+                float64x2_t prev_vals = {(double) p[i - 1], (double) p[i]};
+                float64x2_t curr_vals = {(double) p[i], (double) p[i + 1]};
+
+                // Compute 2 differences in one instruction
+                float64x2_t diffs = vsubq_f64(curr_vals, prev_vals);
+
+                // Compute absolute value for 2 differences
+                float64x2_t abs_diffs = vabsq_f64(diffs);
+
+                // Add to accumulator vector
+                sum_vec = vaddq_f64(sum_vec, abs_diffs);
             }
-            double avg_gap = static_cast<double>(g) / S.size();
-            if (avg_gap <= 0) {
-                return 0;
+
+            // Horizontal sum for NEON
+            sum = vaddvq_f64(sum_vec);
+
+#else
+            // Fallback for other architectures: original unrolled loop
+            for (; i + 3 < n; i += 4) {
+                double d1 = static_cast<double>(p[i]) - static_cast<double>(p[i - 1]);
+                double d2 = static_cast<double>(p[i + 1]) - static_cast<double>(p[i]);
+                double d3 = static_cast<double>(p[i + 2]) - static_cast<double>(p[i + 1]);
+                double d4 = static_cast<double>(p[i + 3]) - static_cast<double>(p[i + 2]);
+                sum += std::abs(d1) + std::abs(d2) + std::abs(d3) + std::abs(d4);
             }
-            return ceil(log2(avg_gap));
+#endif
+
+            // Remainder loop for all implementations
+            for (; i < n; ++i) {
+                double d = static_cast<double>(p[i]) - static_cast<double>(p[i - 1]);
+                sum += std::abs(d);
+            }
+
+            const double avg_gap = sum / static_cast<double>(n);
+            if (!(avg_gap > 1.0)) return 0;
+
+            int exp;
+            double m = std::frexp(avg_gap, &exp);
+            uint8_t k = static_cast<uint8_t>(exp - (m == 0.5 ? 1 : 0));
+
+            if (k > total_bits) k = total_bits;
+            return k;
         }
 
 
         static uint8_t brute_force_optima_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
                                                       const T max) {
             uint8_t best_split_point = 0;
-            size_t best_space = evaluate_space(S, total_bits, best_split_point);
+            size_t best_space = evaluate_space(S, min, total_bits, best_split_point);
             for (uint8_t b = 0; b <= total_bits; b++) {
-                if (const size_t space = evaluate_space(S, total_bits, b); space < best_space) {
+                if (const size_t space = evaluate_space(S, min, total_bits, b); space < best_space) {
                     best_split_point = b;
                     best_space = space;
                 }
@@ -272,8 +453,8 @@ namespace gef {
 
         // Constructor
         B_GEF_NO_RLE(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-              const std::vector<T> &S,
-              SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
+                     const std::vector<T> &S,
+                     SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
             const size_t N = S.size();
             if (N == 0) {
                 b = 0;
@@ -282,8 +463,9 @@ namespace gef {
                 return;
             }
 
-            base = *std::min_element(S.begin(), S.end());
-            const T max_val = *std::max_element(S.begin(), S.end());
+            auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
+            base = *min_it;
+            const T max_val = *max_it;
             const uint64_t u = max_val - base + 1;
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
 
@@ -312,22 +494,22 @@ namespace gef {
             }
 
             // --- PASS 1: Analyze the sequence and determine exact sizes ---
-            std::vector<T> high_parts(N);
             size_t g_plus_unary_bits = 0;
             size_t g_minus_unary_bits = 0;
 
+            using U = std::make_unsigned_t<T>;
             T lastHighBits = 0;
             for (size_t i = 0; i < N; ++i) {
                 const T element = S[i] - base;
-                high_parts[i] = highPart(element, total_bits, h);
+                const T currentHighBits = static_cast<T>(static_cast<U>(element) >> b);
 
-                const int64_t gap = static_cast<int64_t>(high_parts[i]) - static_cast<int64_t>(lastHighBits);
+                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
                 if (gap > 0) {
-                    g_plus_unary_bits += gap;
+                    g_plus_unary_bits += static_cast<size_t>(gap);
                 } else if (gap < 0) {
-                    g_minus_unary_bits += -gap;
+                    g_minus_unary_bits += static_cast<size_t>(-gap);
                 }
-                lastHighBits = high_parts[i];
+                lastHighBits = currentHighBits;
             }
 
             const size_t g_plus_bits = g_plus_unary_bits + N;
@@ -341,24 +523,52 @@ namespace gef {
             size_t g_minus_pos = 0;
             lastHighBits = 0;
 
-            for (size_t i = 0; i < N; ++i) {
-                const T element = S[i] - base;
-                L[i] = lowPart(element, b);
+            const U low_mask = b ? (U(~U(0)) >> (sizeof(T) * 8 - b)) : U(0);
 
-                const int64_t gap = static_cast<int64_t>(high_parts[i]) - static_cast<int64_t>(lastHighBits);
+            if (b == 0) {
+                for (size_t i = 0; i < N; ++i) {
+                    const T element = S[i] - base;
+                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> 0);
 
-                if (gap > 0) {
-                    G_plus->set_range(g_plus_pos, gap, true);
-                    g_plus_pos += gap;
-                } else { // gap <= 0
-                    G_minus->set_range(g_minus_pos, -gap, true);
-                    g_minus_pos += -gap;
+                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+
+                    if (gap > 0) {
+                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
+                        g_plus_pos += static_cast<size_t>(gap);
+                    } else {
+                        const size_t neg = static_cast<size_t>(-gap);
+                        G_minus->set_range(g_minus_pos, neg, true);
+                        g_minus_pos += neg;
+                    }
+                    // Adding terminators
+                    G_minus->set(g_minus_pos++, false);
+                    G_plus->set(g_plus_pos++, false);
+
+                    lastHighBits = currentHighBits;
                 }
-                // Adding terminators
-                G_minus->set(g_minus_pos++, false);
-                G_plus->set(g_plus_pos++, false);
+            } else {
+                for (size_t i = 0; i < N; ++i) {
+                    const T element = S[i] - base;
+                    L[i] = static_cast<T>(static_cast<U>(element) & low_mask);
 
-                lastHighBits = high_parts[i];
+                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> b);
+                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+
+                    if (gap > 0) {
+                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
+                        g_plus_pos += static_cast<size_t>(gap);
+                    } else {
+                        // gap <= 0
+                        const size_t neg = static_cast<size_t>(-gap);
+                        G_minus->set_range(g_minus_pos, neg, true);
+                        g_minus_pos += neg;
+                    }
+                    // Adding terminators
+                    G_minus->set(g_minus_pos++, false);
+                    G_plus->set(g_plus_pos++, false);
+
+                    lastHighBits = currentHighBits;
+                }
             }
 
             // Enable rank/select support

@@ -15,4 +15,10 @@ compile_commands.json
 *.out
 *.a
 *.so
-*.dylib 
+*.dylib
+
+# OS
+*.DS_Store
+
+# Python
+*/__pycache__

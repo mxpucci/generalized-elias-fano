@@ -8,6 +8,14 @@
 #include <memory>
 #include <fstream>
 #include <vector>
+#include <algorithm> // For std::fill
+
+// Include headers for SIMD intrinsics
+#if defined(__AVX2__)
+#include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 /**
  * @brief SDSL-based implementation of IBitVector
@@ -38,9 +46,27 @@ public:
         : SDSLBitVector(sdsl::bit_vector(size, 0)) {}
 
     SDSLBitVector(const std::vector<bool>& bits) : IBitVector() {
-        bv_ = sdsl::bit_vector(bits.size());
-        for (size_t i = 0; i < bits.size(); ++i) {
-            bv_[i] = bits[i];
+        bv_ = sdsl::bit_vector(bits.size(), 0);
+        uint64_t* data = bv_.data();
+        size_t n = bits.size();
+        size_t full_words = n >> 6;
+        size_t i = 0;
+
+        for (size_t w = 0; w < full_words; ++w) {
+            uint64_t x = 0;
+            for (uint32_t b = 0; b < 64; ++b, ++i) {
+                x |= static_cast<uint64_t>(bits[i]) << b;
+            }
+            data[w] = x;
+        }
+
+        uint32_t rem = static_cast<uint32_t>(n & 63);
+        if (rem) {
+            uint64_t x = 0;
+            for (uint32_t b = 0; b < rem; ++b, ++i) {
+                x |= static_cast<uint64_t>(bits[i]) << b;
+            }
+            data[full_words] = x;
         }
     }
 
@@ -124,73 +150,102 @@ public:
     }
 
     void set_range(size_t start, size_t count, bool value) override {
-        if (count == 0) {
-            return;
-        }
+        if (count == 0) return;
         if (start + count > size()) {
             throw std::out_of_range("set_range writes out of bounds");
         }
 
         uint64_t* data = bv_.data();
-        size_t end = start + count - 1;
+        const size_t end = start + count - 1;
 
-        const size_t start_word = start / 64;
-        const size_t end_word = end / 64;
-        const size_t start_offset = start % 64;
-        const size_t end_offset = end % 64;
+        const size_t start_word = start >> 6;
+        const size_t end_word   = end   >> 6;
+        const uint32_t start_off = static_cast<uint32_t>(start & 63);
+        const uint32_t end_off   = static_cast<uint32_t>(end   & 63);
+
+        const uint64_t fill_val = value ? ~0ULL : 0ULL;
 
         if (start_word == end_word) {
-            // Case 1: The entire range is within a single 64-bit word.
-            // Create a mask for 'count' bits and shift it to the start_offset.
-            uint64_t mask = (count == 64) ? ~0ULL : ((1ULL << count) - 1);
-            mask <<= start_offset;
-
-            if (value) {
-                data[start_word] |= mask;
-            } else {
-                data[start_word] &= ~mask;
-            }
-        } else {
-            // Case 2: The range spans multiple words.
-
-            // Part 1: Handle the "head" in the first word.
-            // Create a mask for bits from start_offset to 63.
-            const uint64_t head_mask = ~0ULL << start_offset;
-            if (value) {
-                data[start_word] |= head_mask;
-            } else {
-                data[start_word] &= ~head_mask;
-            }
-
-            // Part 2: Handle the "body" of full words.
-            const uint64_t fill_val = value ? ~0ULL : 0ULL;
-            // Use std::fill for a fast loop over the full words.
-            if (end_word > start_word + 1) {
-                std::fill(data + start_word + 1, data + end_word, fill_val);
-            }
-
-            // Part 3: Handle the "tail" in the last word.
-            // Create a mask for bits from 0 to end_offset.
-            uint64_t tail_mask = sdsl::bits::lo_set[end_offset + 1];
-            if (value) {
-                data[end_word] |= tail_mask;
-            } else {
-                data[end_word] &= ~tail_mask;
-            }
+            // Single word logic remains the same
+            const uint64_t mask = (count == 64) ? ~0ULL : ((1ULL << count) - 1ULL) << start_off;
+            if (value) data[start_word] |= mask;
+            else       data[start_word] &= ~mask;
+            return;
         }
+
+        // Head: Partial first word
+        const uint64_t head_mask = ~0ULL << start_off;
+        if (value) data[start_word] |= head_mask;
+        else       data[start_word] &= ~head_mask;
+
+        // Body: Full words, optimized with SIMD
+        if (end_word > start_word + 1) {
+            uint64_t* body_begin = data + start_word + 1;
+            const size_t body_words = end_word - (start_word + 1);
+
+#if defined(__AVX2__)
+            __m256i val_vec = _mm256_set1_epi64x(fill_val);
+            size_t i = 0;
+            // Process 4 words (32 bytes) at a time
+            for (; i + 4 <= body_words; i += 4) {
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(body_begin + i), val_vec);
+            }
+            // Handle remaining 0-3 words
+            for (; i < body_words; ++i) {
+                body_begin[i] = fill_val;
+            }
+#elif defined(__ARM_NEON)
+            uint64x2_t val_vec = vdupq_n_u64(fill_val);
+            size_t i = 0;
+            // Process 2 words (16 bytes) at a time
+            for (; i + 2 <= body_words; i += 2) {
+                vst1q_u64(body_begin + i, val_vec);
+            }
+            // Handle remaining 0-1 word
+            for (; i < body_words; ++i) {
+                body_begin[i] = fill_val;
+            }
+#else
+            // Fallback for other architectures or if SIMD is disabled
+            std::fill(body_begin, body_begin + body_words, fill_val);
+#endif
+        }
+
+        // Tail: Partial last word
+        const uint64_t tail_mask = (end_off == 63) ? ~0ULL : ((1ULL << (end_off + 1)) - 1ULL);
+        if (value) data[end_word] |= tail_mask;
+        else       data[end_word] &= ~tail_mask;
     }
 
-    void set_bits(size_t start_index, uint64_t bits, uint8_t num_bits) override {
+    inline void set_bits(size_t start_index, uint64_t bits, uint8_t num_bits) override {
         if (num_bits == 0) return;
-        if (num_bits > 64) {
-            throw std::invalid_argument("num_bits cannot exceed 64");
-        }
-        if (start_index + num_bits > size()) {
-            throw std::out_of_range("set_bits out of bounds");
-        }
+        if (num_bits > 64) throw std::invalid_argument("num_bits cannot exceed 64");
+        if (start_index + num_bits > size()) throw std::out_of_range("set_bits out of bounds");
 
-        // Use SDSL's built-in integer setting method
-        bv_.set_int(start_index, bits, num_bits);
+        uint64_t* data = bv_.data();
+        const size_t w = start_index >> 6;
+        const uint32_t off = static_cast<uint32_t>(start_index & 63);
+
+        if (off + num_bits <= 64) {
+            uint64_t mask = (num_bits == 64) ? ~0ULL : ((1ULL << num_bits) - 1ULL);
+            mask <<= off;
+            uint64_t v = (bits << off) & mask;
+            data[w] = (data[w] & ~mask) | v;
+        } else {
+            // Split across two words
+            const uint32_t left = 64 - off;
+            const uint32_t right = num_bits - left;
+
+            // word w
+            uint64_t mask0 = ~0ULL << off;
+            uint64_t v0 = (bits << off) & mask0;
+            data[w] = (data[w] & ~mask0) | v0;
+
+            // word w+1
+            uint64_t mask1 = (right == 64) ? ~0ULL : ((1ULL << right) - 1ULL);
+            uint64_t v1 = (bits >> left) & mask1;
+            data[w+1] = (data[w+1] & ~mask1) | v1;
+        }
     }
 
     /**

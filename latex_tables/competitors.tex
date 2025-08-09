@@ -1,0 +1,72 @@
+% NOTE: Use \usepackage{rotating} and \usepackage{adjustbox} in your LaTeX preamble.
+\begin{sidewaystable}
+\caption{Compression ratio (top), decompression speed (middle), and random access speed (bottom) achieved by general-purpose and special-purpose compressors. Best in family is bold, best overall is underlined.}
+\label{tab:combined_benchmarks}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}l *{13}{c}@{}}
+\toprule
+\textbf{Dataset} & \multicolumn{5}{c}{\textbf{General-purpose}} & \multicolumn{8}{c}{\textbf{Special-purpose}} \\
+\cmidrule(lr){2-6} \cmidrule(l){7-14}
+ & \adjustbox{angle=45,lap=\width-1em}{Xz} & \adjustbox{angle=45,lap=\width-1em}{Brotli} & \adjustbox{angle=45,lap=\width-1em}{Zstd} & \adjustbox{angle=45,lap=\width-1em}{Lz4} & \adjustbox{angle=45,lap=\width-1em}{Snappy} & \adjustbox{angle=45,lap=\width-1em}{Chimp128} & \adjustbox{angle=45,lap=\width-1em}{Chimp} & \adjustbox{angle=45,lap=\width-1em}{TSXor} & \adjustbox{angle=45,lap=\width-1em}{DAC} & \adjustbox{angle=45,lap=\width-1em}{Gorilla} & \adjustbox{angle=45,lap=\width-1em}{LeCo} & \adjustbox{angle=45,lap=\width-1em}{ALP} & \adjustbox{angle=45,lap=\width-1em}{Best GEF} \\
+\midrule
+\multicolumn{14}{l}{\textbf{Compression ratio (\%)}} \\
+\midrule
+IT & \textbf{12.86} & 14.25 & 23.46 & 41.31 & 36.96 & 29.43 & 72.30 & 30.76 & 23.83 & 78.60 & 13.62 & 16.86 & \underline{\textbf{11.02}} \\
+US & 9.18 & \textbf{8.70} & 12.82 & 27.09 & 21.51 & 18.94 & 54.55 & 18.89 & 24.95 & 57.54 & 9.16 & 10.50 & \underline{\textbf{7.22}} \\
+ECG & \textbf{12.12} & \textbf{12.12} & 17.04 & 26.14 & 33.75 & 54.11 & 43.18 & 20.03 & 25.39 & 45.26 & 15.58 & 16.23 & \underline{\textbf{11.84}} \\
+WD & \textbf{23.60} & 27.60 & 33.78 & 52.70 & 54.19 & 43.38 & 84.09 & 46.42 & 25.75 & 91.02 & 24.71 & 24.90 & \underline{\textbf{22.78}} \\
+AP & \underline{\textbf{12.35}} & 12.69 & 17.87 & 26.50 & 24.82 & 30.00 & 35.76 & 34.78 & 41.13 & 37.67 & 23.52 & 25.74 & \textbf{16.85} \\
+UK & 9.42 & \textbf{9.06} & 12.99 & 26.94 & 21.41 & 23.13 & 46.95 & 15.85 & 25.79 & 53.92 & 10.83 & 11.64 & \underline{\textbf{8.33}} \\
+GE & 11.07 & \textbf{11.04} & 15.27 & 30.25 & 23.94 & 21.08 & 66.90 & 21.44 & 29.01 & 71.49 & 13.43 & 13.88 & \underline{\textbf{11.01}} \\
+LON & \underline{\textbf{17.03}} & 18.63 & 32.72 & 49.71 & 49.28 & 58.64 & 61.70 & 71.64 & 47.27 & 63.09 & 20.74 & 26.87 & \textbf{17.64} \\
+LAT & \underline{\textbf{21.51}} & 23.67 & 40.77 & 52.12 & 51.44 & 58.09 & 61.44 & 71.93 & 47.27 & 65.02 & 25.56 & 26.70 & \textbf{22.37} \\
+DP & \textbf{16.37} & 17.02 & 29.35 & 48.61 & 47.54 & 49.53 & 77.17 & 60.91 & 26.95 & 83.53 & 17.83 & 22.04 & \underline{\textbf{14.45}} \\
+CT & \textbf{15.72} & 16.37 & 25.33 & 42.92 & 37.31 & 36.09 & 73.25 & 30.96 & 19.14 & 87.11 & 17.91 & 15.27 & \underline{\textbf{13.66}} \\
+DU & 8.21 & \underline{\textbf{7.78}} & 11.37 & 23.00 & 18.62 & 21.68 & 39.74 & 18.31 & 11.14 & 44.49 & 28.54 & 13.34 & \textbf{8.45} \\
+BT & \underline{\textbf{45.66}} & 45.69 & 58.12 & 67.20 & 68.64 & 46.90 & 84.01 & 53.88 & 57.07 & 92.88 & 58.15 & \textbf{46.25} & 51.85 \\
+BW & \underline{\textbf{36.17}} & 41.49 & 50.24 & 58.74 & 58.79 & 71.27 & 87.16 & 82.32 & 45.91 & 99.72 & 56.99 & 50.01 & \textbf{45.37} \\
+BM & \underline{\textbf{19.67}} & 20.70 & 29.52 & 43.58 & 39.39 & 40.96 & 61.96 & 48.18 & 37.42 & 74.67 & 50.72 & 30.80 & \textbf{23.61} \\
+BP & \textbf{36.97} & 39.85 & 66.43 & 69.03 & 71.22 & 72.09 & 67.84 & 87.86 & 42.79 & 82.72 & 39.03 & 38.37 & \underline{\textbf{35.26}} \\
+\midrule
+\multicolumn{14}{l}{\textbf{Decompression speed (MB/s)}} \\
+\midrule
+IT & 90.83 & 304.65 & 459.91 & \textbf{1405.36} & 1207.61 & 725.74 & 598.36 & 743.69 & 999.45 & 795.22 & 1082.45 & \underline{\textbf{2249.26}} & - \\
+US & 133.37 & 396.11 & 643.89 & 1609.06 & \textbf{1928.74} & 1109.06 & 692.86 & 1084.44 & 896.80 & 839.86 & 1097.74 & \underline{\textbf{2295.05}} & - \\
+ECG & 94.39 & 253.72 & 512.45 & 1325.59 & \textbf{1473.75} & 559.59 & 645.71 & 773.99 & 1082.36 & 790.96 & 1306.75 & \underline{\textbf{2344.27}} & - \\
+WD & 56.94 & 227.86 & 490.46 & \textbf{1443.34} & 1191.21 & 732.56 & 606.28 & 754.89 & 864.86 & 854.76 & 1035.08 & \underline{\textbf{2253.39}} & - \\
+AP & 106.07 & 332.69 & 683.65 & \textbf{1740.56} & 1599.33 & 885.36 & 893.27 & 885.33 & 705.69 & 978.22 & 1013.16 & \underline{\textbf{2116.29}} & - \\
+UK & 131.95 & 392.03 & 634.25 & 1645.54 & \textbf{1815.86} & 853.25 & 670.05 & 1102.54 & 829.75 & 863.34 & 1087.50 & \underline{\textbf{2312.32}} & - \\
+GE & 115.76 & 350.47 & 594.39 & 1611.32 & \textbf{1761.48} & 1008.27 & 656.04 & 986.84 & 962.52 & 829.82 & 1062.78 & \underline{\textbf{2307.16}} & - \\
+LON & 61.55 & 212.49 & 375.82 & \textbf{1198.19} & 963.81 & 776.44 & 801.64 & 493.81 & 1025.93 & 625.60 & 925.42 & \underline{\textbf{2113.61}} & - \\
+LAT & 53.10 & 171.93 & 376.31 & \textbf{1289.07} & 1033.77 & 758.29 & 785.61 & 492.87 & 1019.50 & 622.10 & 960.91 & \underline{\textbf{2144.64}} & - \\
+DP & 75.14 & 293.10 & 429.39 & \textbf{1456.28} & 1098.91 & 581.50 & 626.82 & 618.88 & 1056.31 & 782.95 & 963.67 & \underline{\textbf{2057.49}} & - \\
+CT & 79.93 & 298.52 & 458.10 & \textbf{1467.29} & 1225.00 & 760.50 & 556.01 & 768.86 & 1070.76 & 841.18 & 969.50 & \underline{\textbf{3290.46}} & - \\
+DU & 147.58 & 436.39 & 696.34 & 1701.39 & \textbf{2031.31} & 923.52 & 805.54 & 1093.90 & 658.38 & 948.68 & 746.33 & \underline{\textbf{5410.27}} & - \\
+BT & 33.43 & 173.70 & 414.01 & \textbf{1418.67} & 1039.45 & 662.70 & 590.54 & 672.81 & 783.96 & 805.45 & 846.57 & \underline{\textbf{4241.33}} & - \\
+BW & 41.74 & 153.77 & 378.60 & \textbf{1527.78} & 1020.14 & 607.71 & 611.78 & 655.01 & 1189.51 & 849.33 & 1501.59 & \underline{\textbf{4006.59}} & - \\
+BM & 69.31 & 235.46 & 494.08 & \textbf{1450.65} & 1283.83 & 758.16 & 626.94 & 700.60 & 802.93 & 790.78 & 1441.36 & \underline{\textbf{1677.20}} & - \\
+BP & 36.85 & 187.29 & 366.83 & \textbf{1400.66} & 1163.14 & 624.77 & 682.54 & 612.99 & 1231.05 & 803.20 & 768.30 & \underline{\textbf{1752.34}} & - \\
+\midrule
+\multicolumn{14}{l}{\textbf{Random access speed (MB/s)}} \\
+\midrule
+IT & 0.09 & 0.36 & 0.39 & \textbf{1.21} & 1.04 & 1.05 & 0.92 & 1.28 & \underline{\textbf{137.93}} & 1.09 & 19.94 & 5.43 & 50.62 \\
+US & 0.11 & 0.45 & 0.52 & 1.24 & \textbf{1.57} & 1.55 & 1.10 & 1.76 & \underline{\textbf{108.11}} & 1.22 & 22.15 & 6.36 & 71.45 \\
+ECG & 0.11 & 0.36 & 0.49 & 1.18 & \textbf{1.46} & 1.16 & 1.32 & 1.29 & \underline{\textbf{153.85}} & 1.50 & 30.08 & 3.78 & 79.08 \\
+WD & 0.05 & 0.26 & 0.42 & \textbf{1.23} & 1.01 & 1.12 & 1.02 & 1.21 & \underline{\textbf{135.59}} & 1.28 & 20.05 & 5.19 & 75.15 \\
+AP & 0.10 & 0.39 & 0.57 & \textbf{1.46} & 1.30 & 1.29 & 1.60 & 1.50 & 78.43 & 1.50 & 19.02 & 5.31 & \underline{\textbf{83.70}} \\
+UK & 0.12 & 0.50 & 0.56 & 1.46 & \textbf{1.63} & 1.20 & 1.05 & 2.01 & 131.15 & 1.26 & 25.94 & 6.26 & \underline{\textbf{135.16}} \\
+GE & 0.12 & 0.42 & 0.51 & 1.38 & \textbf{1.46} & 1.42 & 1.02 & 1.65 & \underline{\textbf{186.05}} & 1.18 & 30.75 & 4.23 & 150.11 \\
+LON & 0.07 & 0.32 & 0.38 & \textbf{1.22} & 0.99 & 1.16 & 1.26 & 0.97 & \underline{\textbf{210.53}} & 0.99 & 21.07 & 5.12 & 168.65 \\
+LAT & 0.06 & 0.25 & 0.37 & \textbf{1.22} & 1.01 & 1.14 & 1.24 & 0.98 & \underline{\textbf{210.53}} & 0.98 & 22.15 & 5.19 & 187.15 \\
+DP & 0.07 & 0.33 & 0.37 & \textbf{1.31} & 0.97 & 0.82 & 0.93 & 0.94 & \underline{\textbf{571.43}} & 1.05 & 53.48 & 5.56 & 403.77 \\
+CT & 0.07 & 0.34 & 0.41 & \textbf{1.28} & 1.10 & 1.15 & 0.90 & 1.19 & \underline{\textbf{666.67}} & 1.16 & 57.22 & 6.04 & 452.74 \\
+DU & 0.15 & 0.58 & 0.66 & 1.62 & \textbf{1.95} & 1.38 & 1.38 & 1.92 & 363.64 & 1.50 & 96.39 & 7.87 & \underline{\textbf{457.57}} \\
+BT & 0.03 & 0.18 & 0.39 & \textbf{1.31} & 0.97 & 1.05 & 1.06 & 1.15 & \underline{\textbf{666.67}} & 1.23 & 145.45 & 4.49 & 414.65 \\
+BW & 0.04 & 0.17 & 0.37 & \textbf{1.46} & 0.99 & 0.93 & 1.08 & 1.05 & \underline{\textbf{800.00}} & 1.23 & 131.15 & 4.38 & 394.47 \\
+BM & 0.07 & 0.27 & 0.47 & \textbf{1.40} & 1.25 & 1.05 & 1.06 & 1.18 & \underline{\textbf{533.33}} & 1.13 & 145.45 & 4.61 & 421.93 \\
+BP & 0.04 & 0.22 & 0.38 & \textbf{1.37} & 1.17 & 1.06 & 1.17 & 1.18 & \underline{\textbf{888.89}} & 1.35 & 181.82 & 4.55 & 415.51 \\
+\bottomrule
+\end{tabular}
+\end{sidewaystable}
