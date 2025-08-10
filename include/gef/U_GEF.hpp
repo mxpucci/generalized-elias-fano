@@ -19,6 +19,13 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 
+#if defined(__AVX2__) || defined(__SSE4_2__)
+#include <immintrin.h>
+#endif
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace gef {
     template<typename T>
@@ -28,9 +35,9 @@ namespace gef {
         std::unique_ptr<IBitVector> B;
 
         /*
-         * Bit-vector that store the gaps between consecutive high-parts
-         * such that 0 <= highPart(i) - highPart(i - 1) <= h
-         */
+        * Bit-vector that store the gaps between consecutive high-parts
+        * such that 0 <= highPart(i) - highPart(i - 1) <= h
+        */
         std::unique_ptr<IBitVector> G;
 
         // high parts
@@ -44,13 +51,14 @@ namespace gef {
         uint8_t h;
 
         /**
-         * The minimum of the encoded sequence, so that we store the shifted sequence
-         * that falls in the range [0, max S - base]
-         * This tricks may boost compression and allows us to implicitly store negative numbers
-         */
+        * The minimum of the encoded sequence, so that we store the shifted sequence
+        * that falls in the range [0, max S - base]
+        * This tricks may boost compression and allows us to implicitly store negative numbers
+        */
         T base;
 
-        static size_t evaluate_space(const std::vector<T> &S, const uint8_t total_bits, uint8_t b) {
+        static size_t evaluate_space(const std::vector<T> &S, const uint8_t total_bits, uint8_t b,
+                                     const std::shared_ptr<IBitVectorFactory> &factory) {
             const size_t N = S.size();
             if (N == 0) {
                 return sizeof(T) + sizeof(uint8_t) * 2; // Overhead for base, h, b
@@ -70,21 +78,153 @@ namespace gef {
 
             size_t num_exceptions = 0;
             size_t g_unary_bits = 0;
-            T lastHighBits = 0;
+            uint64_t lastHighBits = 0;
 
-            // 1. Simulate the creation of B, H, and G to find their required sizes
-            for (size_t i = 0; i < N; ++i) {
-                const T element = S[i] - base;
-                const T currentHighBits = highPart(element, total_bits, h);
+            size_t i = 0;
 
-                const bool is_exception = (i == 0 || currentHighBits < lastHighBits || currentHighBits >= lastHighBits +
-                                           h);
+            if (N > 0) {
+                const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[0] - base), total_bits, h));
+                num_exceptions++;
+                lastHighBits = hb0;
+                i = 1;
+            }
 
-                if (is_exception) {
+#if defined(__AVX2__)
+// Process 4 elements per iteration
+for (; i + 4 <= N; i += 4) {
+const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+const uint64_t hb2 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 2] - base), total_bits, h));
+const uint64_t hb3 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 3] - base), total_bits, h));
+
+alignas(32) uint64_t tmpCurr[4] = { hb0, hb1, hb2, hb3 };
+const __m256i vcurr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(tmpCurr));
+
+const __m128i prev_lo = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
+const __m128i prev_hi = _mm_set_epi64x(static_cast<long long>(hb2), static_cast<long long>(hb1));
+const __m256i vprev = _mm256_set_m128i(prev_hi, prev_lo);
+
+const __m256i vdiff = _mm256_sub_epi64(vcurr, vprev);
+
+const __m256i vzero = _mm256_setzero_si256();
+const __m256i maskPos = _mm256_cmpgt_epi64(vdiff, vzero);
+const __m256i maskNeg = _mm256_cmpgt_epi64(vzero, vdiff);
+
+const __m128i vh_lo = _mm_set_epi64x(static_cast<long long>(h - 1), static_cast<long long>(h - 1));
+const __m128i vh_hi = _mm_set_epi64x(static_cast<long long>(h - 1), static_cast<long long>(h - 1));
+const __m256i vHminus1 = _mm256_set_m128i(vh_hi, vh_lo);
+const __m256i maskGeH = _mm256_cmpgt_epi64(vdiff, vHminus1);
+
+const __m256i vpos = _mm256_blendv_epi8(vzero, vdiff, maskPos);
+const __m256i vposWithin = _mm256_blendv_epi8(vpos, vzero, maskGeH);
+
+alignas(32) int64_t pos[4];
+_mm256_storeu_si256(reinterpret_cast<__m256i*>(pos), vposWithin);
+
+g_unary_bits += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]) +
+static_cast<size_t>(pos[2]) + static_cast<size_t>(pos[3]);
+
+const __m128i vone_lo = _mm_set_epi64x(1, 1);
+const __m128i vone_hi = _mm_set_epi64x(1, 1);
+const __m256i vone = _mm256_set_m128i(vone_hi, vone_lo);
+
+const __m256i vexcNeg = _mm256_blendv_epi8(vzero, vone, maskNeg);
+const __m256i vexcGeH = _mm256_blendv_epi8(vzero, vone, maskGeH);
+
+alignas(32) int64_t excNeg[4], excGeH[4];
+_mm256_storeu_si256(reinterpret_cast<__m256i*>(excNeg), vexcNeg);
+_mm256_storeu_si256(reinterpret_cast<__m256i*>(excGeH), vexcGeH);
+
+num_exceptions += static_cast<size_t>(excNeg[0] + excNeg[1] + excNeg[2] + excNeg[3] +
+excGeH[0] + excGeH[1] + excGeH[2] + excGeH[3]);
+
+lastHighBits = hb3;
+}
+#elif defined(__SSE4_2__)
+// Process 2 elements per iteration
+for (; i + 2 <= N; i += 2) {
+const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+
+const __m128i vcurr = _mm_set_epi64x(static_cast<long long>(hb1), static_cast<long long>(hb0));
+const __m128i vprev = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
+
+const __m128i vdiff = _mm_sub_epi64(vcurr, vprev);
+
+const __m128i vzero = _mm_setzero_si128();
+const __m128i maskPos = _mm_cmpgt_epi64(vdiff, vzero);
+const __m128i maskNeg = _mm_cmpgt_epi64(vzero, vdiff);
+
+const __m128i vHminus1 = _mm_set_epi64x(static_cast<long long>(h - 1), static_cast<long long>(h - 1));
+const __m128i maskGeH = _mm_cmpgt_epi64(vdiff, vHminus1);
+
+const __m128i vpos = _mm_blendv_epi8(vzero, vdiff, maskPos);
+const __m128i vposWithin = _mm_blendv_epi8(vpos, vzero, maskGeH);
+
+alignas(16) int64_t pos[2];
+_mm_storeu_si128(reinterpret_cast<__m128i*>(pos), vposWithin);
+
+g_unary_bits += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]);
+
+const __m128i vone = _mm_set_epi64x(1, 1);
+const __m128i vexcNeg = _mm_blendv_epi8(vzero, vone, maskNeg);
+const __m128i vexcGeH = _mm_blendv_epi8(vzero, vone, maskGeH);
+
+alignas(16) int64_t excNeg[2], excGeH[2];
+_mm_storeu_si128(reinterpret_cast<__m128i*>(excNeg), vexcNeg);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(excGeH), vexcGeH);
+
+num_exceptions += static_cast<size_t>(excNeg[0] + excNeg[1] + excGeH[0] + excGeH[1]);
+
+lastHighBits = hb1;
+}
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+            // Process 2 elements per iteration
+            for (; i + 2 <= N; i += 2) {
+                const int64_t hb0 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
+                const int64_t hb1 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
+
+                int64x2_t vcurr = vsetq_lane_s64(hb0, vdupq_n_s64(0), 0);
+                vcurr = vsetq_lane_s64(hb1, vcurr, 1);
+
+                int64x2_t vprev = vsetq_lane_s64(static_cast<int64_t>(lastHighBits), vdupq_n_s64(0), 0);
+                vprev = vsetq_lane_s64(hb0, vprev, 1);
+
+                int64x2_t vdiff = vsubq_s64(vcurr, vprev);
+
+                const int64x2_t vzero = vdupq_n_s64(0);
+                const uint64x2_t maskPos = vcgtq_s64(vdiff, vzero);
+                const uint64x2_t maskNeg = vcgtq_s64(vzero, vdiff);
+
+                const int64x2_t vpos = vbslq_s64(maskPos, vdiff, vzero);
+
+                const int64x2_t vHminus1 = vdupq_n_s64(static_cast<int64_t>(h - 1));
+                const uint64x2_t maskGeH = vcgtq_s64(vdiff, vHminus1);
+
+                const int64x2_t vposWithin = vbslq_s64(maskGeH, vzero, vpos);
+
+                g_unary_bits += static_cast<size_t>(vgetq_lane_s64(vposWithin, 0)) +
+                        static_cast<size_t>(vgetq_lane_s64(vposWithin, 1));
+
+                const int64x2_t vone = vdupq_n_s64(1);
+                const int64x2_t vexcNeg = vbslq_s64(maskNeg, vone, vzero);
+                const int64x2_t vexcGeH = vbslq_s64(maskGeH, vone, vzero);
+
+                num_exceptions += static_cast<size_t>(vgetq_lane_s64(vexcNeg, 0) + vgetq_lane_s64(vexcNeg, 1) +
+                                                      vgetq_lane_s64(vexcGeH, 0) + vgetq_lane_s64(vexcGeH, 1));
+
+                lastHighBits = static_cast<uint64_t>(hb1);
+            }
+#endif
+
+            for (; i < N; ++i) {
+                const T element = static_cast<T>(S[i] - base);
+                const uint64_t currentHighBits = static_cast<uint64_t>(highPart(element, total_bits, h));
+                const int64_t diff = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+                if (diff < 0 || diff >= h) {
                     num_exceptions++;
                 } else {
-                    // This is a regular gap; add its size to G's unary encoded part
-                    g_unary_bits += (currentHighBits - lastHighBits);
+                    g_unary_bits += static_cast<size_t>(diff);
                 }
                 lastHighBits = currentHighBits;
             }
@@ -95,16 +235,29 @@ namespace gef {
             const size_t H_bits = num_exceptions * h; // H stores h bits for each exception
             const size_t G_bits = g_unary_bits + N; // G stores unary gaps + N terminators
 
-            return L_bits + B_bits + H_bits + G_bits;
+            size_t total_data_bits = L_bits + B_bits + H_bits + G_bits;
+            const double rank_overhead = factory->get_rank_overhead();
+            const double select1_overhead = factory->get_select1_overhead();
+            const double select0_overhead = factory->get_select0_overhead();
+            const size_t b_overhead = static_cast<size_t>(
+                std::ceil(B_bits * (rank_overhead + select1_overhead))
+            );
+            const size_t g_overhead = static_cast<size_t>(
+                std::ceil(G_bits * (rank_overhead + select0_overhead))
+            );
+            total_data_bits += b_overhead + g_overhead;
+            return total_data_bits;
         }
 
-        static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T /*min*/,
-                                          const T /*max*/) {
+        static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits,
+                                                         const T /*min*/,
+                                                         const T /*max*/,
+                                                         const std::shared_ptr<IBitVectorFactory> &factory) {
             if (total_bits <= 1) {
                 // Handle trivial cases where a search is not possible.
-                size_t space0 = evaluate_space(S, total_bits, 0);
+                size_t space0 = evaluate_space(S, total_bits, 0, factory);
                 if (total_bits == 0) return 0;
-                size_t space1 = evaluate_space(S, total_bits, 1);
+                size_t space1 = evaluate_space(S, total_bits, 1, factory);
                 return (space0 < space1) ? 0 : 1;
             }
 
@@ -119,8 +272,8 @@ namespace gef {
             uint8_t d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
 
             // Initial evaluations for the two points.
-            size_t space_c = evaluate_space(S, total_bits, c);
-            size_t space_d = evaluate_space(S, total_bits, d);
+            size_t space_c = evaluate_space(S, total_bits, c, factory);
+            size_t space_d = evaluate_space(S, total_bits, d, factory);
 
             while (c < d) {
                 if (space_c < space_d) {
@@ -132,7 +285,7 @@ namespace gef {
 
                     // We only need to compute a new 'c'.
                     c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
-                    space_c = evaluate_space(S, total_bits, c);
+                    space_c = evaluate_space(S, total_bits, c, factory);
                 } else {
                     // The minimum is in the upper interval [c, hi].
                     // The old 'd' becomes the new 'c'.
@@ -142,7 +295,7 @@ namespace gef {
 
                     // We only need to compute a new 'd'.
                     d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
-                    space_d = evaluate_space(S, total_bits, d);
+                    space_d = evaluate_space(S, total_bits, d, factory);
                 }
             }
 
@@ -151,15 +304,109 @@ namespace gef {
         }
 
         static uint8_t approximate_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
-                                                        const T max) {
+                                                       const T max) {
             if (S.size() <= 1) {
                 return 0;
             }
+
             size_t g = 0;
             size_t non_negatives = 0;
-            for (size_t i = 1; i < S.size(); i++) {
-                if (S[i] >= S[i-1]) {
-                    g += S[i] - S[i - 1];
+
+            size_t i = 1;
+
+#if defined(__AVX2__)
+// Process 4 differences per iteration
+for (; i + 3 < S.size(); i += 4) {
+const int64_t x0 = static_cast<int64_t>(S[i + 0]);
+const int64_t x1 = static_cast<int64_t>(S[i + 1]);
+const int64_t x2 = static_cast<int64_t>(S[i + 2]);
+const int64_t x3 = static_cast<int64_t>(S[i + 3]);
+
+alignas(32) int64_t currArr[4] = { x0, x1, x2, x3 };
+const __m256i vcurr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(currArr));
+
+const __m128i prev_lo = _mm_set_epi64x(static_cast<long long>(x0), static_cast<long long>(S[i - 1]));
+const __m128i prev_hi = _mm_set_epi64x(static_cast<long long>(x2), static_cast<long long>(x1));
+const __m256i vprev = _mm256_set_m128i(prev_hi, prev_lo);
+
+const __m256i vdiff = _mm256_sub_epi64(vcurr, vprev);
+
+const __m256i vzero = _mm256_setzero_si256();
+const __m256i maskPos = _mm256_cmpgt_epi64(vdiff, vzero);
+const __m256i maskNeg = _mm256_cmpgt_epi64(vzero, vdiff);
+
+const __m256i vpos = _mm256_blendv_epi8(vzero, vdiff, maskPos);
+
+alignas(32) int64_t pos[4];
+alignas(32) int64_t neg[4];
+_mm256_storeu_si256(reinterpret_cast<__m256i*>(pos), vpos);
+_mm256_storeu_si256(reinterpret_cast<__m256i*>(neg), _mm256_blendv_epi8(vzero, _mm256_set1_epi64x(1), maskNeg));
+
+g += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]) +
+static_cast<size_t>(pos[2]) + static_cast<size_t>(pos[3]);
+
+const size_t neg_cnt = static_cast<size_t>(neg[0] + neg[1] + neg[2] + neg[3]);
+non_negatives += 4 - neg_cnt;
+}
+#elif defined(__SSE4_2__)
+// Process 2 differences per iteration
+for (; i + 1 < S.size(); i += 2) {
+const int64_t x0 = static_cast<int64_t>(S[i + 0]);
+const int64_t x1 = static_cast<int64_t>(S[i + 1]);
+
+const __m128i vcurr = _mm_set_epi64x(static_cast<long long>(x1), static_cast<long long>(x0));
+const __m128i vprev = _mm_set_epi64x(static_cast<long long>(x0), static_cast<long long>(S[i - 1]));
+
+const __m128i vdiff = _mm_sub_epi64(vcurr, vprev);
+
+const __m128i vzero = _mm_setzero_si128();
+const __m128i maskPos = _mm_cmpgt_epi64(vdiff, vzero);
+const __m128i maskNeg = _mm_cmpgt_epi64(vzero, vdiff);
+
+const __m128i vpos = _mm_blendv_epi8(vzero, vdiff, maskPos);
+
+alignas(16) int64_t pos[2];
+alignas(16) int64_t neg[2];
+_mm_storeu_si128(reinterpret_cast<__m128i*>(pos), vpos);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(neg), _mm_blendv_epi8(vzero, _mm_set_epi64x(1, 1), maskNeg));
+
+g += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]);
+
+const size_t neg_cnt = static_cast<size_t>(neg[0] + neg[1]);
+non_negatives += 2 - neg_cnt;
+}
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+            // Process 2 differences per iteration
+            for (; i + 1 < S.size(); i += 2) {
+                const int64_t x0 = static_cast<int64_t>(S[i + 0]);
+                const int64_t x1 = static_cast<int64_t>(S[i + 1]);
+
+                int64x2_t vcurr = vsetq_lane_s64(x0, vdupq_n_s64(0), 0);
+                vcurr = vsetq_lane_s64(x1, vcurr, 1);
+
+                int64x2_t vprev = vsetq_lane_s64(static_cast<int64_t>(S[i - 1]), vdupq_n_s64(0), 0);
+                vprev = vsetq_lane_s64(x0, vprev, 1);
+
+                int64x2_t vdiff = vsubq_s64(vcurr, vprev);
+
+                const int64x2_t vzero = vdupq_n_s64(0);
+                const uint64x2_t maskPos = vcgtq_s64(vdiff, vzero);
+                const uint64x2_t maskNeg = vcgtq_s64(vzero, vdiff);
+
+                const int64x2_t vpos = vbslq_s64(maskPos, vdiff, vzero);
+
+                g += static_cast<size_t>(vgetq_lane_s64(vpos, 0)) + static_cast<size_t>(vgetq_lane_s64(vpos, 1));
+
+                const int64x2_t vone = vdupq_n_s64(1);
+                const int64x2_t vneg = vbslq_s64(maskNeg, vone, vzero);
+                const size_t neg_cnt = static_cast<size_t>(vgetq_lane_s64(vneg, 0) + vgetq_lane_s64(vneg, 1));
+                non_negatives += 2 - neg_cnt;
+            }
+#endif
+
+            for (; i < S.size(); i++) {
+                if (S[i] >= S[i - 1]) {
+                    g += static_cast<size_t>(S[i] - S[i - 1]);
                     non_negatives++;
                 }
             }
@@ -173,11 +420,13 @@ namespace gef {
             return ceil(log2(avg_gap));
         }
 
-        static uint8_t brute_force_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min, const T max) {
+        static uint8_t brute_force_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
+                                                       const T max,
+                                                       const std::shared_ptr<IBitVectorFactory> &factory) {
             uint8_t best_split_point = 0;
-            size_t best_space = evaluate_space(S, total_bits, best_split_point);
+            size_t best_space = evaluate_space(S, total_bits, best_split_point, factory);
             for (uint8_t b = 1; b <= total_bits; b++) {
-                const size_t space = evaluate_space(S, total_bits, b);
+                const size_t space = evaluate_space(S, total_bits, b, factory);
                 if (space < best_space) {
                     best_split_point = b;
                     best_space = space;
@@ -267,7 +516,6 @@ namespace gef {
             other.base = T{};
         }
 
-
         // 5. Move Assignment Operator
         U_GEF &operator=(U_GEF &&other) noexcept {
             if (this != &other) {
@@ -281,7 +529,6 @@ namespace gef {
             }
             return *this;
         }
-
 
         // Constructor
         U_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
@@ -303,13 +550,13 @@ namespace gef {
 
             switch (strategy) {
                 case BINARY_SEARCH_SPLIT_POINT:
-                    b = binary_search_optimal_split_point(S, total_bits, base, max_val);
+                    b = binary_search_optimal_split_point(S, total_bits, base, max_val, bit_vector_factory);
                     break;
                 case APPROXIMATE_SPLIT_POINT:
                     b = approximate_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case BRUTE_FORCE_SPLIT_POINT:
-                    b = brute_force_optimal_split_point(S, total_bits, base, max_val);
+                    b = brute_force_optimal_split_point(S, total_bits, base, max_val, bit_vector_factory);
                     break;
             }
             h = total_bits - b;
@@ -453,9 +700,8 @@ namespace gef {
         }
 
         [[nodiscard]] uint8_t split_point() const override {
-            return this -> b;
+            return this->b;
         }
-
     };
 } // namespace gef
 

@@ -33,6 +33,10 @@ private:
     
 
 public:
+    static double rank_overhead_per_bit() { return 0.0625; }
+    static double select1_overhead_per_bit() { return 0.2; }
+    static double select0_overhead_per_bit() { return 0.2; }
+
     // Bring inherited methods into scope to avoid name hiding
     using IBitVector::rank;
     using IBitVector::rank0;

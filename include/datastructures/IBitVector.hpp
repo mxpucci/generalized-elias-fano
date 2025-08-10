@@ -23,6 +23,10 @@ public:
 
     IBitVector &operator=(IBitVector &&other) = default;
 
+    static double rank_overhead_per_bit() { return 0.1; }
+    static double select1_overhead_per_bit() { return 0.1; }
+    static double select0_overhead_per_bit() { return 0.1; }
+
     virtual bool operator[](size_t index) const = 0;
 
     virtual void set(size_t index, bool value) = 0;

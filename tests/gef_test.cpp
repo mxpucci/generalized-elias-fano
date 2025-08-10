@@ -63,16 +63,18 @@ TYPED_TEST(GEF_Implementation_TypedTest, CopyConstructor) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const auto min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
-    const auto max_val = static_cast<value_type>(100);
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, min_val, max_val);
+    for (int k = 0; k < 5; ++k) {
+        const auto min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        const auto max_val = static_cast<value_type>(100);
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, min_val, max_val);
 
-    GEF_Class original(this->factory, sequence);
-    GEF_Class copy(original);
+        GEF_Class original(this->factory, sequence);
+        GEF_Class copy(original);
 
-    ASSERT_EQ(original.size(), copy.size());
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(copy.at(i), sequence[i]);
+        ASSERT_EQ(original.size(), copy.size());
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(copy.at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
@@ -92,22 +94,24 @@ TYPED_TEST(GEF_Implementation_TypedTest, CopyAssignment) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const auto min1 = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
-    const auto max1 = static_cast<value_type>(100);
-    const std::vector<value_type> seq1 = gef::test::generate_random_sequence<value_type>(100, min1, max1);
+    for (int k = 0; k < 5; ++k) {
+        const auto min1 = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        const auto max1 = static_cast<value_type>(100);
+        const std::vector<value_type> seq1 = gef::test::generate_random_sequence<value_type>(100, min1, max1);
 
-    const auto min2 = static_cast<value_type>(200);
-    const auto max2 = static_cast<value_type>(300);
-    const std::vector<value_type> seq2 = gef::test::generate_random_sequence<value_type>(50, min2, max2);
+        const auto min2 = static_cast<value_type>(200);
+        const auto max2 = static_cast<value_type>(300);
+        const std::vector<value_type> seq2 = gef::test::generate_random_sequence<value_type>(50, min2, max2);
 
-    GEF_Class gef1(this->factory, seq1);
-    GEF_Class gef2(this->factory, seq2);
+        GEF_Class gef1(this->factory, seq1);
+        GEF_Class gef2(this->factory, seq2);
 
-    gef1 = gef2;
+        gef1 = gef2;
 
-    ASSERT_EQ(gef1.size(), seq2.size());
-     for(size_t i = 0; i < seq2.size(); ++i) {
-        ASSERT_EQ(gef1.at(i), seq2[i]);
+        ASSERT_EQ(gef1.size(), seq2.size());
+         for(size_t i = 0; i < seq2.size(); ++i) {
+            ASSERT_EQ(gef1.at(i), seq2[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
@@ -115,16 +119,18 @@ TYPED_TEST(GEF_Implementation_TypedTest, MoveConstructor) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const auto min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
-    const auto max_val = static_cast<value_type>(100);
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, min_val, max_val);
+    for (int k = 0; k < 5; ++k) {
+        const auto min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        const auto max_val = static_cast<value_type>(100);
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, min_val, max_val);
 
-    GEF_Class original(this->factory, sequence);
-    GEF_Class moved_to(std::move(original));
+        GEF_Class original(this->factory, sequence);
+        GEF_Class moved_to(std::move(original));
 
-    ASSERT_EQ(moved_to.size(), sequence.size());
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(moved_to.at(i), sequence[i]);
+        ASSERT_EQ(moved_to.size(), sequence.size());
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(moved_to.at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
@@ -132,22 +138,24 @@ TYPED_TEST(GEF_Implementation_TypedTest, MoveAssignment) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const auto min1 = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
-    const auto max1 = static_cast<value_type>(100);
-    const std::vector<value_type> seq1 = gef::test::generate_random_sequence<value_type>(100, min1, max1);
+    for (int k = 0; k < 5; ++k) {
+        const auto min1 = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        const auto max1 = static_cast<value_type>(100);
+        const std::vector<value_type> seq1 = gef::test::generate_random_sequence<value_type>(100, min1, max1);
 
-    const auto min2 = static_cast<value_type>(200);
-    const auto max2 = static_cast<value_type>(300);
-    const std::vector<value_type> seq2 = gef::test::generate_random_sequence<value_type>(50, min2, max2);
+        const auto min2 = static_cast<value_type>(200);
+        const auto max2 = static_cast<value_type>(300);
+        const std::vector<value_type> seq2 = gef::test::generate_random_sequence<value_type>(50, min2, max2);
 
-    GEF_Class gef1(this->factory, seq1);
-    GEF_Class gef2(this->factory, seq2);
+        GEF_Class gef1(this->factory, seq1);
+        GEF_Class gef2(this->factory, seq2);
 
-    gef1 = std::move(gef2);
+        gef1 = std::move(gef2);
 
-    ASSERT_EQ(gef1.size(), seq2.size());
-    for(size_t i = 0; i < seq2.size(); ++i) {
-        ASSERT_EQ(gef1.at(i), seq2[i]);
+        ASSERT_EQ(gef1.size(), seq2.size());
+        for(size_t i = 0; i < seq2.size(); ++i) {
+            ASSERT_EQ(gef1.at(i), seq2[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
@@ -188,17 +196,19 @@ TYPED_TEST(GEF_Implementation_TypedTest, AlternatingValues) {
 TYPED_TEST(GEF_Implementation_TypedTest, HighlyCompressibleSequence) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
-    std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(
-        10000,
-        10,
-        127,
-        0.5, // 30% chance of duplicates
-        1000    // Allow up to 3 consecutive duplicates
-    );
+    for (int k = 0; k < 5; ++k) {
+        std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(
+            10000,
+            10,
+            127,
+            0.5, // 30% chance of duplicates
+            1000    // Allow up to 3 consecutive duplicates
+        );
 
-    auto gef_impl = std::make_unique<GEF_Class>(this->factory, sequence);
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(gef_impl->at(i), sequence[i]);
+        auto gef_impl = std::make_unique<GEF_Class>(this->factory, sequence);
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(gef_impl->at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
@@ -206,51 +216,59 @@ TYPED_TEST(GEF_Implementation_TypedTest, GeneralPurposeSequence) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(
-        1000,
-        std::is_signed_v<value_type> ? -500 : 0,
-        500,
-        0.3, // 30% chance of duplicates
-        3    // Allow up to 3 consecutive duplicates
-    );
+    for (int k = 0; k < 5; ++k) {
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(
+            1000,
+            std::is_signed_v<value_type> ? -500 : 0,
+            500,
+            0.3, // 30% chance of duplicates
+            3    // Allow up to 3 consecutive duplicates
+        );
 
-    GEF_Class gef_impl(this->factory, sequence);
+        GEF_Class gef_impl(this->factory, sequence);
 
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(gef_impl.at(i), sequence[i]);
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(gef_impl.at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
+        ASSERT_GT(gef_impl.size_in_bytes(), 0);
+        ASSERT_THROW(gef_impl.at(sequence.size()), std::out_of_range);
     }
-    ASSERT_GT(gef_impl.size_in_bytes(), 0);
-    ASSERT_THROW(gef_impl.at(sequence.size()), std::out_of_range);
 }
 
 TYPED_TEST(GEF_Implementation_TypedTest, EncodeLongSequence) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(10000, 0, 1000);
-    auto gef_impl = std::make_unique<GEF_Class>(this->factory, sequence);
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(gef_impl->at(i), sequence[i]);
+    for (int k = 0; k < 5; ++k) {
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(10000, 0, 1000);
+        auto gef_impl = std::make_unique<GEF_Class>(this->factory, sequence);
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(gef_impl->at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
 TYPED_TEST(GEF_Implementation_TypedTest, DirectAccessOperator) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, 0, 100);
-    GEF_Class gef_impl(this->factory, sequence);
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(gef_impl[i], sequence[i]);
+    for (int k = 0; k < 5; ++k) {
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, 0, 100);
+        GEF_Class gef_impl(this->factory, sequence);
+        for(size_t i = 0; i < sequence.size(); ++i) {
+            ASSERT_EQ(gef_impl[i], sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
+        }
     }
 }
 
 TYPED_TEST(GEF_Implementation_TypedTest, SizeInMegabytes) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, 0, 100);
-    GEF_Class gef_impl(this->factory, sequence);
-    double size_mb = gef_impl.size_in_megabytes();
-    double size_b = static_cast<double>(gef_impl.size_in_bytes());
-    EXPECT_NEAR(size_mb, size_b / (1024.0 * 1024.0), 1e-9);
+    for (int k = 0; k < 5; ++k) {
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(100, 0, 100);
+        GEF_Class gef_impl(this->factory, sequence);
+        double size_mb = gef_impl.size_in_megabytes();
+        double size_b = static_cast<double>(gef_impl.size_in_bytes());
+        EXPECT_NEAR(size_mb, size_b / (1024.0 * 1024.0), 1e-9);
+    }
 }
 
 // --- Serialization Tests ---
@@ -259,33 +277,35 @@ TYPED_TEST(GEF_Implementation_TypedTest, SerializationDeserialization) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const std::vector<value_type> original_sequence = gef::test::generate_random_sequence<value_type>(
-        1500, std::is_signed_v<value_type> ? -500 : 0, 500, 0.5, 4
-    );
+    for (int k = 0; k < 5; ++k) {
+        const std::vector<value_type> original_sequence = gef::test::generate_random_sequence<value_type>(
+            1500, std::is_signed_v<value_type> ? -500 : 0, 500, 0.5, 4
+        );
 
-    GEF_Class original_gef(this->factory, original_sequence);
-    const std::filesystem::path temp_path = "temp_gef_impl_test.bin";
+        GEF_Class original_gef(this->factory, original_sequence);
+        const std::filesystem::path temp_path = "temp_gef_impl_test.bin";
 
-    std::ofstream ofs(temp_path, std::ios::binary);
-    ASSERT_TRUE(ofs.is_open());
-    original_gef.serialize(ofs);
-    ofs.close();
+        std::ofstream ofs(temp_path, std::ios::binary);
+        ASSERT_TRUE(ofs.is_open());
+        original_gef.serialize(ofs);
+        ofs.close();
 
-    ASSERT_TRUE(std::filesystem::exists(temp_path));
-    ASSERT_GT(std::filesystem::file_size(temp_path), 0);
+        ASSERT_TRUE(std::filesystem::exists(temp_path));
+        ASSERT_GT(std::filesystem::file_size(temp_path), 0);
 
-    GEF_Class loaded_gef;
-    std::ifstream ifs(temp_path, std::ios::binary);
-    ASSERT_TRUE(ifs.is_open());
-    loaded_gef.load(ifs, this->factory);
-    ifs.close();
+        GEF_Class loaded_gef;
+        std::ifstream ifs(temp_path, std::ios::binary);
+        ASSERT_TRUE(ifs.is_open());
+        loaded_gef.load(ifs, this->factory);
+        ifs.close();
 
-    ASSERT_EQ(original_gef.size(), loaded_gef.size());
+        ASSERT_EQ(original_gef.size(), loaded_gef.size());
 
-    for (size_t i = 0; i < original_sequence.size(); ++i) {
-        ASSERT_EQ(original_gef.at(i), loaded_gef.at(i)) << "Mismatch at index " << i;
-        ASSERT_EQ(original_sequence[i], loaded_gef.at(i)) << "Mismatch at index " << i;
+        for (size_t i = 0; i < original_sequence.size(); ++i) {
+            ASSERT_EQ(original_gef.at(i), loaded_gef.at(i)) << "Mismatch at index " << i << " in iteration " << k;
+            ASSERT_EQ(original_sequence[i], loaded_gef.at(i)) << "Mismatch at index " << i << " in iteration " << k;
+        }
+
+        std::filesystem::remove(temp_path);
     }
-
-    std::filesystem::remove(temp_path);
 }

@@ -56,7 +56,8 @@ namespace gef {
          */
         T base;
 
-        static size_t evaluate_space(const std::vector<T> &S, const T &base, const uint8_t total_bits, uint8_t b) {
+        static size_t evaluate_space(const std::vector<T> &S, const T &base, const uint8_t total_bits, uint8_t b,
+                                     const std::shared_ptr<IBitVectorFactory> &factory) {
             const size_t N = S.size();
             if (N == 0) {
                 return sizeof(T) + sizeof(uint8_t) * 2; // Overhead for base, h, b
@@ -65,9 +66,6 @@ namespace gef {
             if (b >= total_bits) {
                 return N * total_bits;
             }
-
-            if (b == 0)
-                return std::numeric_limits<size_t>::max();
 
             const uint8_t h = static_cast<uint8_t>(total_bits - b);
 
@@ -195,24 +193,34 @@ namespace gef {
             const size_t G_plus_bits = g_plus_unary_bits + N; // N terminators
             const size_t G_minus_bits = g_minus_unary_bits + N; // N terminators
 
-            const size_t total_data_bits = L_bits + G_plus_bits + G_minus_bits;
+            size_t total_data_bits = L_bits + G_plus_bits + G_minus_bits;
+
+            const double rank_overhead = factory->get_rank_overhead();
+            const double select0_overhead = factory->get_select0_overhead();
+            const size_t overhead_bits = static_cast<size_t>(
+                std::ceil((G_plus_bits + G_minus_bits) * (rank_overhead + select0_overhead))
+            );
+            total_data_bits += overhead_bits;
+
             return total_data_bits;
         }
 
         static size_t evaluate_space(const std::vector<T> &S,
                                      uint8_t total_bits,
-                                     uint8_t b) {
+                                     uint8_t b,
+                                     const std::shared_ptr<IBitVectorFactory> &factory) {
             const T base = *std::min_element(S.begin(), S.end());
-            return evaluate_space(S, base, total_bits, b);
+            return evaluate_space(S, base, total_bits, b, factory);
         }
 
         static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits,
                                                          const T min,
-                                                         const T /*max*/) {
+                                                         const T /*max*/,
+                                                         const std::shared_ptr<IBitVectorFactory> &factory) {
             if (total_bits == 0) return 0;
             if (total_bits == 1) {
-                size_t c0 = evaluate_space(S, min, total_bits, 0);
-                size_t c1 = evaluate_space(S, min, total_bits, 1);
+                size_t c0 = evaluate_space(S, min, total_bits, 0, factory);
+                size_t c1 = evaluate_space(S, min, total_bits, 1, factory);
                 return (c0 <= c1) ? 0 : 1;
             }
 
@@ -222,7 +230,7 @@ namespace gef {
             auto eval = [&](uint8_t b) -> size_t {
                 size_t &ref = cache[b];
                 if (ref == std::numeric_limits<size_t>::max()) {
-                    ref = evaluate_space(S, min, total_bits, b);
+                    ref = evaluate_space(S, min, total_bits, b, factory);
                 }
                 return ref;
             };
@@ -346,11 +354,12 @@ namespace gef {
 
 
         static uint8_t brute_force_optima_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
-                                                      const T max) {
+                                                      const T /*max*/, const std::shared_ptr<IBitVectorFactory> &factory) {
             uint8_t best_split_point = 0;
-            size_t best_space = evaluate_space(S, min, total_bits, best_split_point);
+            size_t best_space = std::numeric_limits<size_t>::max();
             for (uint8_t b = 0; b <= total_bits; b++) {
-                if (const size_t space = evaluate_space(S, min, total_bits, b); space < best_space) {
+                const size_t space = evaluate_space(S, min, total_bits, b, factory);
+                if (space < best_space) {
                     best_split_point = b;
                     best_space = space;
                 }
@@ -471,13 +480,13 @@ namespace gef {
 
             switch (strategy) {
                 case BINARY_SEARCH_SPLIT_POINT:
-                    b = binary_search_optimal_split_point(S, total_bits, base, max_val);
+                    b = binary_search_optimal_split_point(S, total_bits, base, max_val, bit_vector_factory);
                     break;
                 case APPROXIMATE_SPLIT_POINT:
                     b = approximate_optimal_split_point(S, total_bits, base, max_val);
                     break;
                 case BRUTE_FORCE_SPLIT_POINT:
-                    b = brute_force_optima_split_point(S, total_bits, base, max_val);
+                    b = brute_force_optima_split_point(S, total_bits, base, max_val, bit_vector_factory);
                     break;
             }
             h = total_bits - b;

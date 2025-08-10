@@ -27,6 +27,18 @@ public:
         auto loaded = SDSLBitVector::load(in);
         return std::make_unique<SDSLBitVector>(std::move(loaded));
     }
+
+    double get_rank_overhead() const override {
+        return SDSLBitVector::rank_overhead_per_bit();
+    }
+
+    double get_select1_overhead() const override {
+        return SDSLBitVector::select1_overhead_per_bit();
+    }
+
+    double get_select0_overhead() const override {
+        return SDSLBitVector::select0_overhead_per_bit();
+    }
 };
 
 #endif 

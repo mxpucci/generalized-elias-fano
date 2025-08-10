@@ -18,6 +18,10 @@ public:
     
     virtual std::unique_ptr<IBitVector> from_file(const std::filesystem::path& filepath) = 0;
     virtual std::unique_ptr<IBitVector> from_stream(std::ifstream& in) = 0;
+
+    virtual double get_rank_overhead() const = 0;
+    virtual double get_select1_overhead() const = 0;
+    virtual double get_select0_overhead() const = 0;
 };
 
 #endif 
