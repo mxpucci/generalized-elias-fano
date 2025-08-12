@@ -24,7 +24,7 @@ def parse_gef_data(directory):
         "RLE_GEF_Compression": "RLE-GEF", "RLE_GEF_Lookup": "RLE-GEF",
         "U_GEF_Compression": "U-GEF", "U_GEF_Lookup": "U-GEF",
         "B_GEF_Compression": "B-GEF", "B_GEF_Lookup": "B-GEF",
-        "B_GEF_NO_RLE_Compression": "B'-GEF", "B_GEF_NO_RLE_Lookup": "B'-GEF",
+        "B_GEF_NO_RLE_Compression": "B$^*$-GEF", "B_GEF_NO_RLE_Lookup": "B$^*$-GEF",
     }
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     json_files = glob.glob(os.path.join(directory, '*.json'))
@@ -130,7 +130,7 @@ def generate_gef_table(df, caption, label, unit_name, highlight_best=None, compr
 def generate_combined_table_section(df, title, highlight_mode):
     """Generates a section of the combined LaTeX table, escaping dataset names."""
     general_purpose_cols = ['Xz', 'Brotli', 'Zstd', 'Lz4', 'Snappy']
-    special_purpose_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'Best GEF']
+    special_purpose_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'NeaTS', 'Best GEF']
     gp_cols_present = [c for c in general_purpose_cols if c in df.columns]
     sp_cols_present = [c for c in special_purpose_cols if c in df.columns]
 
@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
     # --- PART 1: Generate GEF-only tables ---
     gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir)
-    gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", "B'-GEF"]
+    gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", "B$^*$-GEF"]
 
     print("Generating GEF-only tables with compact formatting...")
     with open(os.path.join(gef_output_dir, "table_compression_ratio.tex"), 'w') as f:
@@ -216,7 +216,7 @@ if __name__ == "__main__":
 
         dataset_order = ["IT", "US", "ECG", "WD", "AP", "UK", "GE", "LON", "LAT", "DP", "CT", "DU", "BT", "BW", "BM", "BP"]
         gp_cols = ['Xz', 'Brotli', 'Zstd', 'Lz4', 'Snappy']
-        sp_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'Best GEF']
+        sp_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'NeaTS', 'Best GEF']
 
         final_ratio_df = comp_ratio_df.reindex(index=dataset_order, columns=gp_cols + sp_cols)
         final_decomp_df = comp_decomp_df.reindex(index=dataset_order, columns=gp_cols + sp_cols)
@@ -227,8 +227,8 @@ if __name__ == "__main__":
 
         # Assemble the final LaTeX file string using sidewaystable and rotated headers
         header = (
-                "% NOTE: Use \\usepackage{rotating} and \\usepackage{adjustbox} in your LaTeX preamble.\n"
-                "\\begin{sidewaystable}\n"
+                "% NOTE: You may still need \\usepackage{adjustbox} for the rotated column headers.\n"
+                "\\begin{table*}[htbp]\n"  # USE THIS INSTEAD
                 "\\caption{Compression ratio (top), decompression speed (middle), and random access speed (bottom) achieved by general-purpose and special-purpose compressors. Best in family is bold, best overall is underlined.}\n"
                 "\\label{tab:combined_benchmarks}\n"
                 "\\centering\n"
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         decomp_tex = generate_combined_table_section(final_decomp_df, "Decompression speed (MB/s)", "max")
         access_tex = generate_combined_table_section(final_access_df, "Random access speed (MB/s)", "max")
 
-        footer = "\\bottomrule\n\\end{tabular}\n\\end{sidewaystable}\n"
+        footer = "\\bottomrule\n\\end{tabular}\n\\end{table*}\n\n"
 
         full_tex_file = header + ratio_tex + "\\midrule\n" + decomp_tex + "\\midrule\n" + access_tex + footer
 

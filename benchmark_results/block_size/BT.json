@@ -1,0 +1,98 @@
+{
+  "context": {
+    "date": "2025-08-10T15:30:46+02:00",
+    "host_name": "Michelangelos-MacBook-Pro.local",
+    "executable": "./build/benchmarks/block_size_benchmark",
+    "num_cpus": 8,
+    "mhz_per_cpu": 24,
+    "cpu_scaling_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 0
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 131072,
+        "num_sharing": 0
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 4194304,
+        "num_sharing": 1
+      }
+    ],
+    "load_avg": [2.44629,2.5835,2.60938],
+    "library_build_type": "release"
+  },
+  "benchmarks": [
+    {
+      "name": "BlockSizeBenchmark/B_GEF_BlockSize/0/2048",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BlockSizeBenchmark/B_GEF_BlockSize/0/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000000,
+      "real_time": 4.0613818168640137e-01,
+      "cpu_time": 3.7595599999999996e-01,
+      "time_unit": "ns",
+      "size_in_bytes": 5.7864800000000000e+05,
+      "label": "BT.bin/B_GEF/block_size:2048"
+    },
+    {
+      "name": "BlockSizeBenchmark/B_GEF_NO_RLE_BlockSize/0/2048",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BlockSizeBenchmark/B_GEF_NO_RLE_BlockSize/0/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000000,
+      "real_time": 4.4441795349121094e-01,
+      "cpu_time": 3.8437199999999994e-01,
+      "time_unit": "ns",
+      "size_in_bytes": 5.5107200000000000e+05,
+      "label": "BT.bin/B_GEF_NO_RLE/block_size:2048"
+    },
+    {
+      "name": "BlockSizeBenchmark/U_GEF_BlockSize/0/2048",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BlockSizeBenchmark/U_GEF_BlockSize/0/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000000,
+      "real_time": 3.9957594871520996e-01,
+      "cpu_time": 3.8020899999999980e-01,
+      "time_unit": "ns",
+      "size_in_bytes": 5.7350400000000000e+05,
+      "label": "BT.bin/U_GEF/block_size:2048"
+    },
+    {
+      "name": "BlockSizeBenchmark/RLE_GEF_BlockSize/0/2048",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "BlockSizeBenchmark/RLE_GEF_BlockSize/0/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000000,
+      "real_time": 4.2192983627319336e-01,
+      "cpu_time": 3.7082600000000010e-01,
+      "time_unit": "ns",
+      "size_in_bytes": 5.4561600000000000e+05,
+      "label": "BT.bin/RLE_GEF/block_size:2048"
+    }
+  ]
+}

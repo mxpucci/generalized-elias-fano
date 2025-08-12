@@ -16,13 +16,13 @@
 
 // Wrapper to adapt U_GEF constructor for UniformedPartitioner
 template<typename T>
-struct B_GEF_Wrapper : public gef::U_GEF<T> {
+struct U_GEF_Wrapper : public gef::U_GEF<T> {
     // Constructor for compression
-    B_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
+    U_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
             : gef::U_GEF<T>(factory, data) {}
 
     // Default constructor for loading from stream
-    B_GEF_Wrapper() : gef::U_GEF<T>() {}
+    U_GEF_Wrapper() : gef::U_GEF<T>() {}
 };
 
 /**
@@ -48,7 +48,7 @@ int main(const int argc, char* argv[]) {
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
-            gef::UniformedPartitioner<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> partitioned_gef(input_data, k, factory);
+            gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> partitioned_gef(input_data, k, factory);
             double partitioned_size_mb = partitioned_gef.size_in_megabytes();
             best_compression = std::min(best_compression, (100 * partitioned_size_mb) / input_size_mb);
         }

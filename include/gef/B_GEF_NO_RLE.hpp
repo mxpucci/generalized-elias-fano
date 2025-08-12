@@ -72,123 +72,23 @@ namespace gef {
             size_t g_plus_unary_bits = 0;
             size_t g_minus_unary_bits = 0;
 
-            // lastHighBits starts at 0 (as in original)
-            uint64_t lastHighBits = 0;
+            using U = std::make_unsigned_t<T>;
+            U lastHighBits = 0;
 
-            // SIMD-accelerated adjacent-diff accumulation in 64-bit lanes.
-            size_t i = 0;
+            // Corrected scalar loop using unsigned arithmetic to prevent overflow.
+            // SIMD versions removed for correctness and clarity.
+            for (size_t i = 0; i < N; ++i) {
+                const U element = static_cast<U>(S[i]) - static_cast<U>(base);
+                const U currentHighBits = static_cast<U>(highPart(static_cast<T>(element), total_bits, h));
 
-#if defined(__AVX2__)
-    // Process 4 elements per iteration
-    for (; i + 4 <= N; i += 4) {
-        // Compute highPart for the block (preserve exact semantics)
-        const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
-        const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
-        const uint64_t hb2 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 2] - base), total_bits, h));
-        const uint64_t hb3 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 3] - base), total_bits, h));
-
-        // vcurr = [hb0, hb1, hb2, hb3]
-        alignas(32) uint64_t tmpCurr[4] = { hb0, hb1, hb2, hb3 };
-        const __m256i vcurr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(tmpCurr));
-
-        // vprev = [last, hb0, hb1, hb2]
-        const __m128i prev_lo = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
-        const __m128i prev_hi = _mm_set_epi64x(static_cast<long long>(hb2), static_cast<long long>(hb1));
-        const __m256i vprev = _mm256_set_m128i(prev_hi, prev_lo);
-
-        const __m256i vdiff = _mm256_sub_epi64(vcurr, vprev);
-
-        const __m256i vzero = _mm256_setzero_si256();
-        const __m256i maskPos = _mm256_cmpgt_epi64(vdiff, vzero);
-        const __m256i maskNeg = _mm256_cmpgt_epi64(vzero, vdiff);
-
-        const __m256i vpos = _mm256_blendv_epi8(vzero, vdiff, maskPos);
-        const __m256i vneg = _mm256_blendv_epi8(vzero, _mm256_sub_epi64(vzero, vdiff), maskNeg);
-
-        alignas(32) int64_t pos[4];
-        alignas(32) int64_t neg[4];
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(pos), vpos);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(neg), vneg);
-
-        g_plus_unary_bits  += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1])
-                            + static_cast<size_t>(pos[2]) + static_cast<size_t>(pos[3]);
-        g_minus_unary_bits += static_cast<size_t>(neg[0]) + static_cast<size_t>(neg[1])
-                            + static_cast<size_t>(neg[2]) + static_cast<size_t>(neg[3]);
-
-        lastHighBits = hb3;
-    }
-#elif defined(__SSE4_2__)
-    // Process 2 elements per iteration
-    for (; i + 2 <= N; i += 2) {
-        const uint64_t hb0 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
-        const uint64_t hb1 = static_cast<uint64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
-
-        const __m128i vcurr = _mm_set_epi64x(static_cast<long long>(hb1), static_cast<long long>(hb0));
-        const __m128i vprev = _mm_set_epi64x(static_cast<long long>(hb0), static_cast<long long>(lastHighBits));
-
-        const __m128i vdiff = _mm_sub_epi64(vcurr, vprev);
-
-        const __m128i vzero = _mm_setzero_si128();
-        const __m128i maskPos = _mm_cmpgt_epi64(vdiff, vzero);
-        const __m128i maskNeg = _mm_cmpgt_epi64(vzero, vdiff);
-
-        const __m128i vpos = _mm_blendv_epi8(vzero, vdiff, maskPos);
-        const __m128i vneg = _mm_blendv_epi8(vzero, _mm_sub_epi64(vzero, vdiff), maskNeg);
-
-        alignas(16) int64_t pos[2];
-        alignas(16) int64_t neg[2];
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(pos), vpos);
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(neg), vneg);
-
-        g_plus_unary_bits  += static_cast<size_t>(pos[0]) + static_cast<size_t>(pos[1]);
-        g_minus_unary_bits += static_cast<size_t>(neg[0]) + static_cast<size_t>(neg[1]);
-
-        lastHighBits = hb1;
-    }
-#elif defined(__aarch64__) && defined(__ARM_NEON)
-            // Process 2 elements per iteration
-            for (; i + 2 <= N; i += 2) {
-                const int64_t hb0 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 0] - base), total_bits, h));
-                const int64_t hb1 = static_cast<int64_t>(highPart(static_cast<T>(S[i + 1] - base), total_bits, h));
-
-                int64x2_t vcurr = vsetq_lane_s64(hb0, vdupq_n_s64(0), 0);
-                vcurr = vsetq_lane_s64(hb1, vcurr, 1);
-
-                int64x2_t vprev = vsetq_lane_s64(static_cast<int64_t>(lastHighBits), vdupq_n_s64(0), 0);
-                vprev = vsetq_lane_s64(hb0, vprev, 1);
-
-                int64x2_t vdiff = vsubq_s64(vcurr, vprev);
-
-                const int64x2_t vzero = vdupq_n_s64(0);
-                const uint64x2_t maskPos = vcgtq_s64(vdiff, vzero);
-                const uint64x2_t maskNeg = vcgtq_s64(vzero, vdiff);
-
-                const int64x2_t vpos = vbslq_s64(maskPos, vdiff, vzero);
-                const int64x2_t vneg = vbslq_s64(maskNeg, vnegq_s64(vdiff), vzero);
-
-                g_plus_unary_bits += static_cast<size_t>(vgetq_lane_s64(vpos, 0))
-                        + static_cast<size_t>(vgetq_lane_s64(vpos, 1));
-                g_minus_unary_bits += static_cast<size_t>(vgetq_lane_s64(vneg, 0))
-                        + static_cast<size_t>(vgetq_lane_s64(vneg, 1));
-
-                lastHighBits = static_cast<uint64_t>(hb1);
-            }
-#endif
-
-            // Scalar tail (and full path when no SIMD)
-            for (; i < N; ++i) {
-                const T element = static_cast<T>(S[i] - base);
-                const uint64_t currentHighBits = static_cast<uint64_t>(highPart(element, total_bits, h));
-                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-                if (gap > 0) {
-                    g_plus_unary_bits += static_cast<size_t>(gap);
-                } else if (gap < 0) {
-                    g_minus_unary_bits += static_cast<size_t>(-gap);
+                if (currentHighBits >= lastHighBits) {
+                    g_plus_unary_bits += static_cast<size_t>(currentHighBits - lastHighBits);
+                } else {
+                    g_minus_unary_bits += static_cast<size_t>(lastHighBits - currentHighBits);
                 }
                 lastHighBits = currentHighBits;
             }
 
-            // 2) Calculate the total size in bits for all data structures (unchanged)
             const size_t L_bits = N * b; // L stores low bits for all N elements
             const size_t G_plus_bits = g_plus_unary_bits + N; // N terminators
             const size_t G_minus_bits = g_minus_unary_bits + N; // N terminators
@@ -475,8 +375,12 @@ namespace gef {
             auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
             base = *min_it;
             const T max_val = *max_it;
-            const uint64_t u = max_val - base + 1;
-            const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
+
+            using U = std::make_unsigned_t<T>;
+            const U w = static_cast<U>(max_val) - static_cast<U>(base);
+            // Corrected total_bits calculation to avoid overflow and floating point inaccuracies.
+            // This relies on a common GCC/Clang compiler builtin.
+            const uint8_t total_bits = w > 0 ? (sizeof(U) * 8 - __builtin_clzll(static_cast<uint64_t>(w))) : 1;
 
             switch (strategy) {
                 case BINARY_SEARCH_SPLIT_POINT:
@@ -505,20 +409,17 @@ namespace gef {
             // --- PASS 1: Analyze the sequence and determine exact sizes ---
             size_t g_plus_unary_bits = 0;
             size_t g_minus_unary_bits = 0;
-
-            using U = std::make_unsigned_t<T>;
-            T lastHighBits = 0;
+            U lastHighBits_pass1 = 0;
             for (size_t i = 0; i < N; ++i) {
-                const T element = S[i] - base;
-                const T currentHighBits = static_cast<T>(static_cast<U>(element) >> b);
+                const U element = static_cast<U>(S[i]) - static_cast<U>(base);
+                const U currentHighBits = element >> b;
 
-                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-                if (gap > 0) {
-                    g_plus_unary_bits += static_cast<size_t>(gap);
-                } else if (gap < 0) {
-                    g_minus_unary_bits += static_cast<size_t>(-gap);
+                if (currentHighBits >= lastHighBits_pass1) {
+                    g_plus_unary_bits += static_cast<size_t>(currentHighBits - lastHighBits_pass1);
+                } else {
+                    g_minus_unary_bits += static_cast<size_t>(lastHighBits_pass1 - currentHighBits);
                 }
-                lastHighBits = currentHighBits;
+                lastHighBits_pass1 = currentHighBits;
             }
 
             const size_t g_plus_bits = g_plus_unary_bits + N;
@@ -530,55 +431,34 @@ namespace gef {
 
             size_t g_plus_pos = 0;
             size_t g_minus_pos = 0;
-            lastHighBits = 0;
+            U lastHighBits_pass2 = 0;
 
-            const U low_mask = b ? (U(~U(0)) >> (sizeof(T) * 8 - b)) : U(0);
+            const U low_mask = b ? (U(~U(0)) >> (sizeof(U) * 8 - b)) : U(0);
 
-            if (b == 0) {
-                for (size_t i = 0; i < N; ++i) {
-                    const T element = S[i] - base;
-                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> 0);
-
-                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-
-                    if (gap > 0) {
-                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
-                        g_plus_pos += static_cast<size_t>(gap);
-                    } else {
-                        const size_t neg = static_cast<size_t>(-gap);
-                        G_minus->set_range(g_minus_pos, neg, true);
-                        g_minus_pos += neg;
-                    }
-                    // Adding terminators
-                    G_minus->set(g_minus_pos++, false);
-                    G_plus->set(g_plus_pos++, false);
-
-                    lastHighBits = currentHighBits;
+            for (size_t i = 0; i < N; ++i) {
+                const U element = static_cast<U>(S[i]) - static_cast<U>(base);
+                if (b > 0) {
+                    L[i] = element & low_mask;
                 }
-            } else {
-                for (size_t i = 0; i < N; ++i) {
-                    const T element = S[i] - base;
-                    L[i] = static_cast<T>(static_cast<U>(element) & low_mask);
 
-                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> b);
-                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+                const U currentHighBits = element >> b;
 
-                    if (gap > 0) {
-                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
-                        g_plus_pos += static_cast<size_t>(gap);
-                    } else {
-                        // gap <= 0
-                        const size_t neg = static_cast<size_t>(-gap);
-                        G_minus->set_range(g_minus_pos, neg, true);
-                        g_minus_pos += neg;
-                    }
-                    // Adding terminators
-                    G_minus->set(g_minus_pos++, false);
-                    G_plus->set(g_plus_pos++, false);
-
-                    lastHighBits = currentHighBits;
+                if (currentHighBits >= lastHighBits_pass2) {
+                    const size_t gap = static_cast<size_t>(currentHighBits - lastHighBits_pass2);
+                    G_plus->set_range(g_plus_pos, gap, true);
+                    g_plus_pos += gap;
+                } else { // currentHighBits < lastHighBits
+                    const size_t gap = static_cast<size_t>(lastHighBits_pass2 - currentHighBits);
+                    G_minus->set_range(g_minus_pos, gap, true);
+                    g_minus_pos += gap;
                 }
+                // Adding terminators
+                G_plus->set(g_plus_pos++, false);
+                G_minus->set(g_minus_pos++, false);
+
+                lastHighBits_pass2 = currentHighBits;
             }
+
 
             // Enable rank/select support
             G_plus->enable_rank();

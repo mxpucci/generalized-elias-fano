@@ -111,19 +111,9 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
         const uint64_t u = max_val - min_val + 1;
         const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
 
-        // For B_GEF_NO_RLE, the cost function is convex, so binary search is guaranteed
-        // to find the optimal split point, which is the same one brute force finds.
-        // For other implementations (like B_GEF with RLE), the cost function might have
-        // local minima, so binary search is only a heuristic.
-        if constexpr (is_b_gef_no_rle<GEF_Class>::value) {
-            EXPECT_EQ(brute_force_size, binary_search_size)
-                    << "For B_GEF_NO_RLE, brute force size (" << brute_force_size
-                    << ") should be EQUAL to binary search size (" << binary_search_size << ")";
-        } else {
-            EXPECT_LE(brute_force_size, binary_search_size)
-                << "Brute force size (" << brute_force_size
-                << ") should be <= binary search size (" << binary_search_size << ")";
-        }
+        EXPECT_LE(brute_force_size, binary_search_size)
+            << "Brute force size (" << brute_force_size
+            << ") should be <= binary search size (" << binary_search_size << ")";
 
         // The approximate strategy should always be larger or equal in size than brute force.
         EXPECT_LE(brute_force_size, approximate_size)

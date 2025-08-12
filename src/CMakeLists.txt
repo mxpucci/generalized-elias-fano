@@ -33,3 +33,13 @@ target_link_libraries(bgef PRIVATE gef)
 add_executable(bgef_no_rle bgef_no_rle.cpp)
 target_compile_options(bgef_no_rle PRIVATE -D_FILE_OFFSET_BITS=64)
 target_link_libraries(bgef_no_rle PRIVATE gef)
+
+# After
+add_executable(lcp lcp.cpp)
+target_compile_options(lcp PRIVATE -D_FILE_OFFSET_BITS=64)
+
+# This is the correct way to link.
+# We link to 'gef' for your library's code.
+# We ALSO link directly to the 'divsufsort' targets because the main 'sdsl'
+# library does not correctly propagate them as a dependency.
+target_link_libraries(lcp PRIVATE gef divsufsort divsufsort64)
