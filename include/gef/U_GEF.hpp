@@ -595,7 +595,7 @@ non_negatives += 2 - neg_cnt;
                 lastHighBits = high_parts[i];
             }
 
-            const size_t g_bits = g_unary_bits + N;
+            const size_t g_bits = g_unary_bits + N - h_size;
 
             // --- PASS 2: Allocate memory and populate structures ---
             B = bit_vector_factory->create(N);
@@ -617,9 +617,9 @@ non_negatives += 2 - neg_cnt;
                     const T gap = high_parts[i] - lastHighBits;
                     G->set_range(g_pos, gap, true);
                     g_pos += gap;
+                    // Adding terminators
+                    G->set(g_pos++, false);
                 }
-                // Adding terminators
-                G->set(g_pos++, false);
 
                 lastHighBits = high_parts[i];
             }
@@ -632,18 +632,54 @@ non_negatives += 2 - neg_cnt;
         }
 
         T operator[](size_t index) const override {
-            if (h == 0)
+            // Case 1: No high bits are used (h=0).
+            // All information is stored in the L vector. Reconstruction is trivial.
+            if (h == 0) {
                 return base + L[index];
+            }
 
+            // Find the number of exceptions up to and including 'index'.
+            // This determines the 'run' of non-exceptions 'index' belongs to and
+            // gives us the correct index into the H vector for our base high value.
             const size_t run_index = B->rank(index + 1);
             const T base_high_val = H[run_index - 1];
-            const size_t run_start_pos = B->select(run_index);
-            const size_t gap_sum_before_run = run_start_pos > 0 ? G->rank(G->select0(run_start_pos + 1)) : 0;
-            const size_t total_gap = G->rank(G->select0(index + 1));
-            const size_t gap_in_run = total_gap - gap_sum_before_run;
+            T high_val;
 
-            const T high_val = base_high_val + gap_in_run;
+            // Case 2: The element at 'index' is an exception (B[index] == 1).
+            // Its high part is stored explicitly in H. No further calculation is needed.
+            if ((*B)[index]) {
+                high_val = base_high_val;
+            }
+            // Case 3: The element is not an exception (B[index] == 0).
+            // Its high part must be reconstructed by adding the sum of gaps within its
+            // run to the base high value of the run's starting exception.
+            else {
+                // Find the start position of this run (i.e., the index of the last exception).
+                const size_t run_start_pos = B->select(run_index);
 
+                // To find the sum of gaps for this run, we use a cumulative sum approach.
+                // Sum of gaps = (Cumulative gaps up to 'index') - (Cumulative gaps up to 'run_start_pos').
+
+                // Calculate cumulative gaps up to 'index':
+                // 1. Find the 1-based rank of the 0-bit in B at 'index'.
+                const size_t zero_rank_at_index = (index + 1) - run_index;
+                // 2. Find the total number of 1s in G before the corresponding terminator.
+                const size_t total_gap_sum = G->rank(G->select0(zero_rank_at_index));
+
+                // Calculate cumulative gaps up to the start of the run:
+                // 1. Find the number of 0-bits in B that occurred before this run started.
+                const size_t zeros_before_run = (run_start_pos + 1) - run_index;
+                // 2. Find the sum of 1s in G up to that point.
+                const size_t gap_sum_before_run = (zeros_before_run > 0) ? G->rank(G->select0(zeros_before_run)) : 0;
+
+                // The sum of gaps specific to this run is the difference.
+                const size_t gap_in_run = total_gap_sum - gap_sum_before_run;
+
+                high_val = base_high_val + gap_in_run;
+            }
+
+            // Finally, combine the reconstructed high part with the low part from L
+            // and add the base offset to get the original value.
             return base + (L[index] | (high_val << b));
         }
 
