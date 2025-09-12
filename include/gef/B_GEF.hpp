@@ -559,8 +559,8 @@ namespace gef {
                 lastHighBits = high_parts[i];
             }
 
-            const size_t g_plus_bits = g_plus_unary_bits + N;
-            const size_t g_minus_bits = g_minus_unary_bits + N;
+            const size_t g_plus_bits = g_plus_unary_bits + N - h_size;
+            const size_t g_minus_bits = g_minus_unary_bits + N - h_size;
 
             // --- PASS 2: Allocate memory and populate structures ---
             B = bit_vector_factory->create(N);
@@ -586,15 +586,16 @@ namespace gef {
                     if (gap > 0) {
                         G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
                         g_plus_pos += static_cast<size_t>(gap);
-                    } else { // gap <= 0
+                    } else { // gap < 0
                         const size_t ng = static_cast<size_t>(-gap);
                         G_minus->set_range(g_minus_pos, ng, true);
                         g_minus_pos += ng;
                     }
+
+                    // Terminators
+                    G_minus->set(g_minus_pos++, false);
+                    G_plus->set(g_plus_pos++, false);
                 }
-                // Terminators
-                G_minus->set(g_minus_pos++, false);
-                G_plus->set(g_plus_pos++, false);
 
                 lastHighBits = high_parts[i];
             }
@@ -609,27 +610,55 @@ namespace gef {
         }
 
         T operator[](size_t index) const override {
-            if (h == 0)
+            // Case 1: No high bits are used (h=0).
+            // The value is fully stored in the L vector.
+            if (h == 0) {
                 return base + L[index];
+            }
 
+            // Find the number of exceptions up to and including 'index'.
+            // This identifies the 'run' of non-exceptions 'index' belongs to and
+            // provides the index into H for the run's base high value.
             const size_t run_index = B->rank(index + 1);
             const T base_high_val = H[run_index - 1];
-            const size_t run_start_pos = B->select(run_index);
+            T high_val;
 
-            const size_t pos_gap_sum_before_run = run_start_pos > 0
-                                                      ? G_plus->rank(G_plus->select0(run_start_pos + 1))
-                                                      : 0;
-            const size_t total_pos_gap = G_plus->rank(G_plus->select0(index + 1));
-            const size_t pos_gap_in_run = total_pos_gap - pos_gap_sum_before_run;
+            // Case 2: The element at 'index' is an exception (B[index] == 1).
+            // Its high part is stored explicitly in H. The net gap contribution is zero.
+            if ((*B)[index]) {
+                high_val = base_high_val;
+            }
+            // Case 3: The element is not an exception (B[index] == 0).
+            // Its high part is reconstructed by adding the net sum of gaps (positive - negative)
+            // within its run to the base high value.
+            else {
+                // Find the start position of this run (i.e., the index of the last exception).
+                const size_t run_start_pos = B->select(run_index);
 
-            const size_t neg_gap_sum_before_run = run_start_pos > 0
-                                                      ? G_minus->rank(G_minus->select0(run_start_pos + 1))
-                                                      : 0;
-            const size_t total_neg_gap = G_minus->rank(G_minus->select0(index + 1));
-            const size_t neg_gap_in_run = total_neg_gap - neg_gap_sum_before_run;
+                // To find the sum of gaps for this run, we use a cumulative sum approach.
+                // Net Gap = (Cumulative gaps up to 'index') - (Cumulative gaps up to 'run_start_pos').
+                // This must be done for both positive and negative gap vectors.
 
-            const T high_val = base_high_val + static_cast<T>(pos_gap_in_run) - static_cast<T>(neg_gap_in_run);
+                // 1. Find the rank of the 0-bit in B at 'index' and before the run.
+                const size_t zero_rank_at_index = (index + 1) - run_index;
+                const size_t zeros_before_run = (run_start_pos + 1) - run_index;
 
+                // 2. Calculate the sum of positive gaps within the run.
+                const size_t total_pos_gap = G_plus->rank(G_plus->select0(zero_rank_at_index));
+                const size_t pos_gap_before_run = (zeros_before_run > 0) ? G_plus->rank(G_plus->select0(zeros_before_run)) : 0;
+                const size_t pos_gap_in_run = total_pos_gap - pos_gap_before_run;
+
+                // 3. Calculate the sum of negative gaps within the run.
+                const size_t total_neg_gap = G_minus->rank(G_minus->select0(zero_rank_at_index));
+                const size_t neg_gap_before_run = (zeros_before_run > 0) ? G_minus->rank(G_minus->select0(zeros_before_run)) : 0;
+                const size_t neg_gap_in_run = total_neg_gap - neg_gap_before_run;
+
+                // 4. The final high part is the base value plus the net gap.
+                high_val = base_high_val + static_cast<T>(pos_gap_in_run) - static_cast<T>(neg_gap_in_run);
+            }
+
+            // Finally, combine the reconstructed high part with the low part from L
+            // and add the base offset to get the original value.
             return base + (L[index] | (high_val << b));
         }
 
