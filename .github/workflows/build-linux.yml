@@ -39,8 +39,15 @@ jobs:
           make -j$(nproc)
 
       # Upload the compiled benchmark executables as a workflow artifact.
+      #
+      # Use v4 of the upload‑artifact action because v1–v3 are deprecated and
+      # will be disabled beginning January 30, 2025【693600283039977†L30-L38】.  The
+      # v4 action offers up to 10× performance improvements but introduces
+      # some breaking changes【349807780017072†L30-L48】.  We specify the
+      # artifact name and path as before.  The path can include wildcards
+      # to match all benchmark executables.
       - name: Upload benchmarks
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: gef-linux-benchmarks
           path: build/benchmarks/*
