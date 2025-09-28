@@ -22,6 +22,10 @@ jobs:
       - name: Build benchmarks in CentOS 7 container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace centos:7 bash -c "
+            # CentOS 7 reached end of life and the default mirrorlist domains no longer resolve.
+            # Replace mirrorlist entries with vault.centos.org so yum can access packages.
+            sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-*.repo && \
+            sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo && \
             yum install -y centos-release-scl epel-release && \
             yum install -y devtoolset-10 cmake3 git make && \
             source /opt/rh/devtoolset-10/enable && \
