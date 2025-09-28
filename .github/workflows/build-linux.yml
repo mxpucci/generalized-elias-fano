@@ -1,0 +1,46 @@
+name: build-linux
+
+# Trigger manually from the GitHub Actions tab. You can extend this
+# section to run on pushes or pull requests if desired.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Use an Ubuntu runner but run the job steps inside a CentOS 7 container.
+    runs-on: ubuntu-latest
+    container:
+      image: centos:7
+    steps:
+      # Check out the repository at the current commit
+      - uses: actions/checkout@v4
+
+      # Install the required development tools within the CentOS 7 container.
+      # We use Software Collections (devtoolset) to get a modern GCC that supports C++17.
+      - name: Install build tools on CentOS 7
+        run: |
+          yum install -y centos-release-scl epel-release
+          # Install a modern compiler and CMake.
+          yum install -y devtoolset-10 cmake3 git make
+
+      # Configure and build the project. We enable the devtoolset environment
+      # to use GCC 10 and compile with aggressive optimisation flags targeting
+      # the user’s Xeon Gold 6140M (Skylake‑AVX512). The resulting binary will
+      # link against glibc 2.17 and run on CentOS 7.
+      - name: Configure and compile
+        run: |
+          source /opt/rh/devtoolset-10/enable
+          mkdir -p build
+          cd build
+          cmake3 .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-O3 -march=skylake-avx512 -mtune=skylake" \
+            -DGEF_BUILD_BENCHMARKS=ON
+          make -j$(nproc)
+
+      # Upload the compiled benchmark executables as a workflow artifact.
+      - name: Upload benchmarks
+        uses: actions/upload-artifact@v3
+        with:
+          name: gef-linux-benchmarks
+          path: build/benchmarks/*
