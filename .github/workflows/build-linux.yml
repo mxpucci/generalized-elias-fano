@@ -14,23 +14,21 @@ jobs:
       # when using a CentOS 7 job‑level container with Node 20【693600283039977†L30-L38】.
       - uses: actions/checkout@v4
 
-      # Build the project inside a CentOS 7 container using Docker. We mount the
-      # workspace into the container and run all necessary installation and build
-      # commands. This approach ensures the compiled binaries link against
-      # glibc 2.17 and support the Xeon Gold 6140M while still allowing the
-      # checkout and artifact actions to run on the host.
-      - name: Build benchmarks in CentOS 7 container
+      # Build the project inside an Alpine container using Docker. Alpine uses musl libc,
+      # which allows us to produce a fully static binary (-static) that runs on CentOS 7
+      # without depending on its outdated glibc. We mount the workspace into the container
+      # and install build tools via apk. The compilation uses aggressive optimisation
+      # flags and targets the user’s Xeon Gold 6140M CPU. The resulting binary is
+      # statically linked (`-static`) so it should run on the CentOS VM regardless of
+      # the glibc version.
+      - name: Build benchmarks in Alpine container
         run: |
-          docker run --rm -v "$PWD":/workspace -w /workspace centos:7 bash -c "
-            # CentOS 7 reached end of life and the default mirrorlist domains no longer resolve.
-            # Comment out all mirrorlist lines and replace mirror.centos.org with vault.centos.org
-            sed -i -e 's|^mirrorlist=|#mirrorlist=|g' -e 's|mirror.centos.org|vault.centos.org|g' /etc/yum.repos.d/*.repo && \
-            yum install -y centos-release-scl epel-release && \
-            yum install -y devtoolset-10 cmake3 git make && \
-            source /opt/rh/devtoolset-10/enable && \
+          docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
+            apk add --no-cache build-base cmake && \
             mkdir -p build && cd build && \
-            cmake3 .. -DCMAKE_BUILD_TYPE=Release \
-                     -DCMAKE_CXX_FLAGS='-O3 -march=skylake-avx512 -mtune=skylake' \
+            cmake .. -DCMAKE_BUILD_TYPE=Release \
+                     -DCMAKE_CXX_FLAGS='-O3 -march=skylake-avx512 -mtune=skylake -static -static-libstdc++ -static-libgcc' \
+                     -DCMAKE_EXE_LINKER_FLAGS='-static' \
                      -DGEF_BUILD_BENCHMARKS=ON && \
             make -j$(nproc)
           "
