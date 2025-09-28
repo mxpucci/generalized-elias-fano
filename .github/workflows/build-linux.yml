@@ -24,10 +24,12 @@ jobs:
       - name: Build benchmarks in Alpine container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            apk add --no-cache build-base cmake && \
+            # Install build tools and git. Git is required for FetchContent
+            # dependencies such as sdsl-lite.
+            apk add --no-cache build-base cmake git && \
             mkdir -p build && cd build && \
             cmake .. -DCMAKE_BUILD_TYPE=Release \
-                     -DCMAKE_CXX_FLAGS='-O3 -march=skylake-avx512 -mtune=skylake -static -static-libstdc++ -static-libgcc' \
+                     -DCMAKE_CXX_FLAGS_RELEASE='-O3 -march=skylake-avx512 -mtune=skylake -static -static-libstdc++ -static-libgcc' \
                      -DCMAKE_EXE_LINKER_FLAGS='-static' \
                      -DGEF_BUILD_BENCHMARKS=ON && \
             make -j$(nproc)
