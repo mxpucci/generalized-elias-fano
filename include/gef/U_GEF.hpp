@@ -249,60 +249,6 @@ lastHighBits = hb1;
             return total_data_bits;
         }
 
-        static uint8_t binary_search_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits,
-                                                         const T /*min*/,
-                                                         const T /*max*/,
-                                                         const std::shared_ptr<IBitVectorFactory> &factory) {
-            if (total_bits <= 1) {
-                // Handle trivial cases where a search is not possible.
-                size_t space0 = evaluate_space(S, total_bits, 0, factory);
-                if (total_bits == 0) return 0;
-                size_t space1 = evaluate_space(S, total_bits, 1, factory);
-                return (space0 < space1) ? 0 : 1;
-            }
-
-            uint8_t lo = 0, hi = total_bits;
-
-            // Golden ratio constant, used to determine the probe points.
-            // We use the reciprocal (1/phi) for interval reduction.
-            const double inv_phi = (std::sqrt(5.0) - 1.0) / 2.0; // approx 0.618
-
-            // Calculate the initial two interior points.
-            uint8_t c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
-            uint8_t d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
-
-            // Initial evaluations for the two points.
-            size_t space_c = evaluate_space(S, total_bits, c, factory);
-            size_t space_d = evaluate_space(S, total_bits, d, factory);
-
-            while (c < d) {
-                if (space_c < space_d) {
-                    // The minimum is in the lower interval [lo, d].
-                    // The old 'c' becomes the new 'd'.
-                    hi = d - 1;
-                    d = c;
-                    space_d = space_c;
-
-                    // We only need to compute a new 'c'.
-                    c = lo + static_cast<uint8_t>(std::round((hi - lo) * (1.0 - inv_phi)));
-                    space_c = evaluate_space(S, total_bits, c, factory);
-                } else {
-                    // The minimum is in the upper interval [c, hi].
-                    // The old 'd' becomes the new 'c'.
-                    lo = c + 1;
-                    c = d;
-                    space_c = space_d;
-
-                    // We only need to compute a new 'd'.
-                    d = lo + static_cast<uint8_t>(std::round((hi - lo) * inv_phi));
-                    space_d = evaluate_space(S, total_bits, d, factory);
-                }
-            }
-
-            // The minimum is at lo (or hi, which will be the same).
-            return lo;
-        }
-
         static uint8_t approximate_optimal_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
                                                        const T max) {
             if (S.size() <= 1) {
@@ -549,13 +495,10 @@ non_negatives += 2 - neg_cnt;
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
 
             switch (strategy) {
-                case BINARY_SEARCH_SPLIT_POINT:
-                    b = binary_search_optimal_split_point(S, total_bits, base, max_val, bit_vector_factory);
-                    break;
                 case APPROXIMATE_SPLIT_POINT:
                     b = approximate_optimal_split_point(S, total_bits, base, max_val);
                     break;
-                case BRUTE_FORCE_SPLIT_POINT:
+                case OPTIMAL_SPLIT_POINT:
                     b = brute_force_optimal_split_point(S, total_bits, base, max_val, bit_vector_factory);
                     break;
             }

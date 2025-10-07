@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/B_GEF_NO_RLE.hpp"
+#include "gef/B_GEF_STAR.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
@@ -22,7 +22,7 @@ template <typename T>
 struct is_b_gef_no_rle : std::false_type {};
 
 template <typename ValType>
-struct is_b_gef_no_rle<gef::B_GEF_NO_RLE<ValType>> : std::true_type {};
+struct is_b_gef_no_rle<gef::B_GEF_STAR<ValType>> : std::true_type {};
 
 
 // Test fixture for typed tests.
@@ -38,10 +38,10 @@ protected:
 
 // Define the list of implementations and types to test with.
 using Implementations = ::testing::Types<
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_NO_RLE<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_NO_RLE<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_NO_RLE<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_NO_RLE<uint32_t>
+    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
+    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_STAR<uint16_t>,
+    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
+    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_STAR<uint32_t>
 >;
 
 TYPED_TEST_CASE(GEF_SplitPointStrategyComparison_TypedTest, Implementations);
@@ -93,13 +93,9 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
     for (const auto& test : test_cases) {
         SCOPED_TRACE("Test Case: " + test.name);
 
-        // Instantiate with Brute Force strategy
-        GEF_Class gef_brute_force(this->factory, test.sequence, gef::BRUTE_FORCE_SPLIT_POINT);
+        // Instantiate with Optimal strategy
+        GEF_Class gef_brute_force(this->factory, test.sequence, gef::OPTIMAL_SPLIT_POINT);
         size_t brute_force_size = gef_brute_force.size_in_bytes();
-
-        // Instantiate with Binary Search strategy
-        GEF_Class gef_binary_search(this->factory, test.sequence, gef::BINARY_SEARCH_SPLIT_POINT);
-        size_t binary_search_size = gef_binary_search.size_in_bytes();
 
         // Instantiate with Approximate strategy
         GEF_Class gef_approximate(this->factory, test.sequence, gef::APPROXIMATE_SPLIT_POINT);
@@ -111,19 +107,7 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
         const uint64_t u = max_val - min_val + 1;
         const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
 
-        // For B_GEF_NO_RLE, the cost function is convex, so binary search is guaranteed
-        // to find the optimal split point, which is the same one brute force finds.
-        // For other implementations (like B_GEF with RLE), the cost function might have
-        // local minima, so binary search is only a heuristic.
-        if constexpr (is_b_gef_no_rle<GEF_Class>::value) {
-            EXPECT_EQ(brute_force_size, binary_search_size)
-                    << "For B_GEF_NO_RLE, brute force size (" << brute_force_size
-                    << ") should be EQUAL to binary search size (" << binary_search_size << ")";
-        } else {
-            EXPECT_LE(brute_force_size, binary_search_size)
-                << "Brute force size (" << brute_force_size
-                << ") should be <= binary search size (" << binary_search_size << ")";
-        }
+
 
         // The approximate strategy should always be larger or equal in size than brute force.
         EXPECT_LE(brute_force_size, approximate_size)
@@ -133,7 +117,6 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
         // Also verify correctness of the data
         for(size_t i = 0; i < test.sequence.size(); ++i) {
             ASSERT_EQ(gef_brute_force.at(i), test.sequence[i]);
-            ASSERT_EQ(gef_binary_search.at(i), test.sequence[i]);
             ASSERT_EQ(gef_approximate.at(i), test.sequence[i]);
         }
     }

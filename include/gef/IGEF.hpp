@@ -21,10 +21,21 @@
 
 namespace gef {
 
+typedef struct {
+	size_t positive_gaps;
+	size_t negative_gaps;
+	size_t positive_exceptions_count;
+	size_t negative_exceptions_count;
+	size_t sum_of_positive_gaps;
+	size_t sum_of_negative_gaps;
+	size_t sum_of_positive_gaps_without_exception;
+	size_t sum_of_negative_gaps_without_exception;
+} GapComputation;
+
+
 enum SplitPointStrategy {
-    BINARY_SEARCH_SPLIT_POINT,
     APPROXIMATE_SPLIT_POINT,
-    BRUTE_FORCE_SPLIT_POINT
+    OPTIMAL_SPLIT_POINT
 };
 
 #if __cplusplus >= 202002L

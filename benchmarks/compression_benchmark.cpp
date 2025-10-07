@@ -2,7 +2,7 @@
 #include "gef/B_GEF.hpp"
 #include "gef/U_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
-#include "gef/B_GEF_NO_RLE.hpp"
+#include "gef/B_GEF_STAR.hpp"
 #include "gef/UniformedPartitioner.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef/utils.hpp"
@@ -42,10 +42,10 @@ struct B_GEF_Wrapper : public gef::B_GEF<T> {
 };
 
 template<typename T>
-struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_NO_RLE<T> {
+struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
     B_GEF_NO_RLE_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory, gef::SplitPointStrategy strategy)
-        : gef::B_GEF_NO_RLE<T>(factory, data, strategy) {}
-    B_GEF_NO_RLE_Wrapper() : gef::B_GEF_NO_RLE<T>() {}
+        : gef::B_GEF_STAR<T>(factory, data, strategy) {}
+    B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
 };
 
 std::vector<std::string> g_input_files;
@@ -54,8 +54,7 @@ std::shared_ptr<IBitVectorFactory> g_factory = std::make_shared<SDSLBitVectorFac
 std::string strategyToString(gef::SplitPointStrategy strategy) {
     switch (strategy) {
         case gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT: return "APPROXIMATE";
-        case gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT: return "BRUTE_FORCE";
-        case gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT: return "BINARY_SEARCH";
+        case gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT: return "BRUTE_FORCE";
         default: return "UNKNOWN";
     }
 }
@@ -241,18 +240,15 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     // Compression
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_Compression)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Compression)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, U_GEF_Compression)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, RLE_GEF_Compression)
         ->Arg(file_idx)->ArgNames({"file_idx"});
@@ -260,18 +256,15 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     // Lookup
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_Lookup)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Lookup)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, U_GEF_Lookup)
         ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT})
-        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::BINARY_SEARCH_SPLIT_POINT})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT})
         ->ArgNames({"file_idx", "strategy"});
     BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, RLE_GEF_Lookup)
         ->Arg(file_idx)->ArgNames({"file_idx"});

@@ -9,7 +9,7 @@
 #include <type_traits>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/B_GEF_NO_RLE.hpp"
+#include "gef/B_GEF_STAR.hpp"
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
 // e.g., get_value_type<gef::RLE_GEF<int32_t>>::type will be int32_t.
@@ -38,14 +38,14 @@ protected:
 
 // Define the list of all implementations and types we want to test with.
 using Implementations = ::testing::Types<
-    gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_NO_RLE<int8_t>,
-    gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_GEF_NO_RLE<uint8_t>,
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_NO_RLE<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_NO_RLE<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_NO_RLE<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_NO_RLE<uint32_t>,
-    gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_GEF_NO_RLE<int64_t>,
-    gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_GEF_NO_RLE<uint64_t>
+    gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_STAR<int8_t>,
+    gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_GEF_STAR<uint8_t>,
+    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
+    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_STAR<uint16_t>,
+    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
+    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_STAR<uint32_t>,
+    gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_GEF_STAR<int64_t>,
+    gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_GEF_STAR<uint64_t>
 >;
 
 TYPED_TEST_CASE(GEF_SplitPointStrategy_TypedTest, Implementations);
@@ -69,20 +69,7 @@ TYPED_TEST(GEF_SplitPointStrategy_TypedTest, BruteForceSplitPoint) {
 
     const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, 1000);
 
-    GEF_Class gef_impl(this->factory, sequence, gef::BRUTE_FORCE_SPLIT_POINT);
-
-    for(size_t i = 0; i < sequence.size(); ++i) {
-        ASSERT_EQ(gef_impl.at(i), sequence[i]);
-    }
-}
-
-TYPED_TEST(GEF_SplitPointStrategy_TypedTest, BinarySearchSplitPoint) {
-    using GEF_Class = TypeParam;
-    using value_type = typename get_value_type<GEF_Class>::type;
-
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, 1000);
-
-    GEF_Class gef_impl(this->factory, sequence, gef::BINARY_SEARCH_SPLIT_POINT);
+    GEF_Class gef_impl(this->factory, sequence, gef::OPTIMAL_SPLIT_POINT);
 
     for(size_t i = 0; i < sequence.size(); ++i) {
         ASSERT_EQ(gef_impl.at(i), sequence[i]);

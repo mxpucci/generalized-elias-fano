@@ -3,7 +3,7 @@
 #include <string>
 #include <fstream>
 #include <cstdint>
-#include "gef/B_GEF_NO_RLE.hpp"
+#include "gef/B_GEF_STAR.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef/UniformedPartitioner.hpp"
 #include "gef/utils.hpp"
@@ -12,13 +12,13 @@
 
 // Wrapper to adapt B_GEF_NO_RLE constructor for UniformedPartitioner
 template<typename T>
-struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_NO_RLE<T> {
+struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
     // Constructor for compression
     B_GEF_NO_RLE_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF_NO_RLE<T>(factory, data, gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT) {}
+            : gef::B_GEF_STAR<T>(factory, data, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
-    B_GEF_NO_RLE_Wrapper() : gef::B_GEF_NO_RLE<T>() {}
+    B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
 };
 
 /**

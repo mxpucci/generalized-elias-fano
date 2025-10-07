@@ -15,7 +15,7 @@ template<typename T>
 struct B_GEF_Wrapper : public gef::B_GEF<T> {
     // Constructor for compression
     B_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF<T>(factory, data, gef::SplitPointStrategy::BRUTE_FORCE_SPLIT_POINT) {}
+            : gef::B_GEF<T>(factory, data, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
     B_GEF_Wrapper() : gef::B_GEF<T>() {}
