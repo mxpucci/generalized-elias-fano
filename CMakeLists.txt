@@ -11,12 +11,37 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel." FORCE)
 endif()
 
+# Allow override of target architecture for CI builds
+# Usage: cmake -DGEF_TARGET_ARCH=skylake-avx512 to target specific CPU
+set(GEF_TARGET_ARCH "native" CACHE STRING "Target CPU architecture (native, skylake-avx512, etc.)")
+
+# Option for static linking (useful for CI builds targeting older systems)
+option(GEF_STATIC_LINK "Build with static linking" OFF)
+
 # Add high-performance compiler flags for Release builds
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -ffast-math -funroll-loops")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=${GEF_TARGET_ARCH} -ffast-math -funroll-loops")
 
 # Additional optimization flags for better vectorization
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -ftree-vectorize -fvect-cost-model=dynamic")
+endif()
+
+# Enable Link-Time Optimization for Release builds (massive performance gain)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+    if(ipo_supported)
+        message(STATUS "Link-Time Optimization (LTO) enabled")
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    else()
+        message(WARNING "LTO not supported: ${ipo_error}")
+    endif()
+endif()
+
+# Apply static linking flags if requested
+if(GEF_STATIC_LINK)
+    message(STATUS "Static linking enabled")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libstdc++ -static-libgcc")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)

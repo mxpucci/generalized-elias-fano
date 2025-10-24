@@ -18,6 +18,23 @@ target_include_directories(gef
 # This is appropriate for a library that exposes sdsl types in its interface
 target_link_libraries(gef PUBLIC sdsl)
 
+# Apply maximum optimization to the library itself
+# This is crucial since most GEF code is header-only templates
+target_compile_options(gef PUBLIC 
+    $<$<CONFIG:Release>:-O3 -march=native -ffast-math -funroll-loops>
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-ftree-vectorize -fvect-cost-model=dynamic>
+)
+
+# Enable Link-Time Optimization (LTO) in Release builds
+set_target_properties(gef PROPERTIES
+    INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+)
+
+# For Debug builds, ensure reasonable performance while keeping debuggability
+target_compile_options(gef PUBLIC 
+    $<$<CONFIG:Debug>:-O1 -g>
+)
+
 add_executable(ugef ugef.cpp)
 target_compile_options(ugef PRIVATE -D_FILE_OFFSET_BITS=64)
 target_link_libraries(ugef PRIVATE gef)
