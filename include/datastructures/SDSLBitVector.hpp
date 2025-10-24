@@ -112,40 +112,61 @@ public:
     }
 
     // Rule of 5: Move constructor
-    SDSLBitVector(SDSLBitVector&& other) noexcept : IBitVector(), bv_(std::move(other.bv_)) {
-        if (other.rank_support_) {
+    SDSLBitVector(SDSLBitVector&& other) noexcept : IBitVector() {
+        // Check which supports exist before moving
+        bool has_rank = other.rank_support_ != nullptr;
+        bool has_select1 = other.select1_support_ != nullptr;
+        bool has_select0 = other.select0_support_ != nullptr;
+        
+        // Reset the other's supports BEFORE moving the bitvector
+        // This is critical to avoid dangling pointers during destruction
+        other.rank_support_.reset();
+        other.select1_support_.reset();
+        other.select0_support_.reset();
+        
+        // Now safely move the bitvector
+        bv_ = std::move(other.bv_);
+        
+        // Create new support structures for the moved bitvector
+        if (has_rank) {
             rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
-            other.rank_support_.reset();
         }
-        if (other.select1_support_) {
+        if (has_select1) {
             select1_support_ = std::make_unique<sdsl::select_support_mcl<1>>(&bv_);
-            other.select1_support_.reset();
         }
-        if (other.select0_support_) {
+        if (has_select0) {
             select0_support_ = std::make_unique<sdsl::select_support_mcl<0>>(&bv_);
-            other.select0_support_.reset();
         }
     }
 
     // Rule of 5: Move assignment operator
     SDSLBitVector& operator=(SDSLBitVector&& other) noexcept {
         if (this != &other) {
-            bv_ = std::move(other.bv_);
+            // Check which supports exist before moving
+            bool has_rank = other.rank_support_ != nullptr;
+            bool has_select1 = other.select1_support_ != nullptr;
+            bool has_select0 = other.select0_support_ != nullptr;
+            
+            // Reset both this object's and other's supports BEFORE moving
             rank_support_.reset();
             select1_support_.reset();
             select0_support_.reset();
+            other.rank_support_.reset();
+            other.select1_support_.reset();
+            other.select0_support_.reset();
             
-            if (other.rank_support_) {
+            // Now safely move the bitvector
+            bv_ = std::move(other.bv_);
+            
+            // Create new support structures for the moved bitvector
+            if (has_rank) {
                 rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
-                other.rank_support_.reset();
             }
-            if (other.select1_support_) {
+            if (has_select1) {
                 select1_support_ = std::make_unique<sdsl::select_support_mcl<1>>(&bv_);
-                other.select1_support_.reset();
             }
-            if (other.select0_support_) {
+            if (has_select0) {
                 select0_support_ = std::make_unique<sdsl::select_support_mcl<0>>(&bv_);
-                other.select0_support_.reset();
             }
         }
         return *this;
