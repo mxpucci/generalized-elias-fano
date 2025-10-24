@@ -336,20 +336,19 @@ namespace gef {
 
             for (size_t i = 0; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-                const U low_part_val = element_u & low_mask;
+                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                
                 const U current_high_part = element_u >> b;
-                
-                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(low_part_val);
-                
                 const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
                 
                 // Exception check: i==0 or gap<0 or gap>=h
                 const bool is_exception = (i == 0) | (gap < 0) | (static_cast<uint64_t>(gap) >= h_u64);
 
-                B->set(i, is_exception);
                 if (is_exception) [[unlikely]] {
+                    B->set(i, true);
                     H[h_idx++] = current_high_part;
                 } else [[likely]] {
+                    B->set(i, false);
                     const uint64_t g = static_cast<uint64_t>(gap);
                     G->set_range(g_pos, g, true);
                     g_pos += g;

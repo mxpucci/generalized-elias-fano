@@ -354,31 +354,28 @@ namespace gef {
 
           for (size_t i = 0; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-              const U low_part_val = element_u & low_mask;
+              L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              
               const U current_high_part = element_u >> b;
-              
-              L[i] = static_cast<typename sdsl::int_vector<>::value_type>(low_part_val);
-              
-              // Compute gap and magnitude
               const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
               const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
               
-              // Exception check: always use 64-bit
-              const bool is_exception = (i == 0) || ((abs_gap + 2) > hbits_u64);
+              // Exception check
+              const bool is_exception = (i == 0) | ((abs_gap + 2) > hbits_u64);
 
-              B->set(i, is_exception);
               if (is_exception) [[unlikely]] {
+                  B->set(i, true);
                   H[h_idx++] = current_high_part;
               } else [[likely]] {
-                  // Write gaps - optimize for gap==0 case
-                  if (gap > 0) [[likely]] {
+                  B->set(i, false);
+                  // Simplified branching like B_GEF_STAR
+                  if (gap >= 0) {
                       G_plus->set_range(g_plus_pos, abs_gap, true);
                       g_plus_pos += abs_gap;
-                  } else if (gap < 0) [[likely]] {
+                  } else {
                       G_minus->set_range(g_minus_pos, abs_gap, true);
                       g_minus_pos += abs_gap;
                   }
-                  // Always add terminators for non-exceptions
                   G_minus->set(g_minus_pos++, false);
                   G_plus->set(g_plus_pos++, false);
               }

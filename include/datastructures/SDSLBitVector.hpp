@@ -115,12 +115,15 @@ public:
     SDSLBitVector(SDSLBitVector&& other) noexcept : IBitVector(), bv_(std::move(other.bv_)) {
         if (other.rank_support_) {
             rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
+            other.rank_support_.reset();
         }
         if (other.select1_support_) {
             select1_support_ = std::make_unique<sdsl::select_support_mcl<1>>(&bv_);
+            other.select1_support_.reset();
         }
         if (other.select0_support_) {
             select0_support_ = std::make_unique<sdsl::select_support_mcl<0>>(&bv_);
+            other.select0_support_.reset();
         }
     }
 
@@ -134,12 +137,15 @@ public:
             
             if (other.rank_support_) {
                 rank_support_ = std::make_unique<sdsl::rank_support_v5<1>>(&bv_);
+                other.rank_support_.reset();
             }
             if (other.select1_support_) {
                 select1_support_ = std::make_unique<sdsl::select_support_mcl<1>>(&bv_);
+                other.select1_support_.reset();
             }
             if (other.select0_support_) {
                 select0_support_ = std::make_unique<sdsl::select_support_mcl<0>>(&bv_);
+                other.select0_support_.reset();
             }
         }
         return *this;
