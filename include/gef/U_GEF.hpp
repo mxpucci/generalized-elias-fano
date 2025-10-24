@@ -134,16 +134,18 @@ namespace gef {
             const uint8_t min_b = std::min(bFloor, bCeil);
             const uint8_t max_b = std::max(bFloor, bCeil);
 
-            const auto all_gcs = compute_all_gap_computations(S, min, max, ExceptionRule::UGEF, total_bits);
+            // Only compute gap computations for the 2 candidates we actually need
+            const auto gcs = total_variation_of_shifted_vec_with_multiple_shifts(
+                S, min, max, min_b, max_b, ExceptionRule::UGEF);
 
             size_t best_index = 0;
-            size_t best_space = evaluate_space(S.size(), total_bits, min_b, all_gcs[min_b]);
-            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, all_gcs[max_b]);
+            size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0]);
+            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1]);
             if (tmpSpace < best_space) {
-                best_index = 1;
+                best_index = gcs.size() - 1;
             }
 
-            return {static_cast<uint8_t>(min_b + best_index), all_gcs[min_b + best_index]};
+            return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
         }
 
         static std::pair<uint8_t, GapComputation> brute_force_optima_split_point(
@@ -161,6 +163,7 @@ namespace gef {
             uint8_t best_b = total_bits;
             size_t best_space = evaluate_space(N, total_bits, total_bits, GapComputation{});
 
+            // Check all b values for true optimality
             for (uint8_t b = 1; b < total_bits; ++b) {
                 const size_t space = evaluate_space(N, total_bits, b, gcs[b]);
                 if (space < best_space) {
@@ -169,20 +172,10 @@ namespace gef {
                 }
             }
             
-            // Check b = total_bits explicitly
-            {
-                const size_t space = evaluate_space(N, total_bits, total_bits, GapComputation{});
-                if (space < best_space) {
-                    best_b = total_bits;
-                    best_space = space;
-                }
-            }
-            
             // Return the gap computation for the selected split point
             if (best_b < total_bits) {
                 return {best_b, gcs[best_b]};
             } else {
-                // b == total_bits: all bits go into L, no high bits
                 return {total_bits, GapComputation{}};
             }
         }
@@ -337,12 +330,17 @@ namespace gef {
             using U = std::make_unsigned_t<T>;
             U lastHighBits = 0;
             const uint64_t h_u64 = static_cast<uint64_t>(h);
+            
+            // Precompute low mask once (same optimization as B_GEF_STAR)
+            const U low_mask = b < sizeof(T) * 8 ? ((U(1) << b) - 1) : U(~U(0));
 
             for (size_t i = 0; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(lowPart(element_u, b));
-
-                const U current_high_part = highPart(element_u, total_bits, h);
+                const U low_part_val = element_u & low_mask;
+                const U current_high_part = element_u >> b;
+                
+                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(low_part_val);
+                
                 const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
                 
                 // Exception check: i==0 or gap<0 or gap>=h

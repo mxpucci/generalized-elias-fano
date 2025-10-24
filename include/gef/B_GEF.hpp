@@ -137,16 +137,18 @@ namespace gef {
             const uint8_t min_b = std::min(bFloor, bCeil);
             const uint8_t max_b = std::max(bFloor, bCeil);
 
-            const auto all_gcs = compute_all_gap_computations(S, min, max, ExceptionRule::BGEF, total_bits);
+            // Only compute gap computations for the 2 candidates we actually need
+            const auto gcs = total_variation_of_shifted_vec_with_multiple_shifts(
+                S, min, max, min_b, max_b, ExceptionRule::BGEF);
 
             size_t best_index = 0;
-            size_t best_space = evaluate_space(S.size(), total_bits, min_b, all_gcs[min_b]);
-            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, all_gcs[max_b]);
+            size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0]);
+            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1]);
             if (tmpSpace < best_space) {
-                best_index = 1;
+                best_index = gcs.size() - 1;
             }
 
-            return {static_cast<uint8_t>(min_b + best_index), all_gcs[min_b + best_index]};
+            return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
         }
 
         static std::pair<uint8_t, GapComputation> brute_force_optima_split_point(
@@ -158,33 +160,17 @@ namespace gef {
 
             const uint8_t total_bits = bits_for_range(min_val, max_val);
 
-            const auto gcs = total_variation_of_shifted_vec_with_multiple_shifts(
-                S, min_val, max_val, 0, total_bits > 0 ? total_bits - 1 : 0, ExceptionRule::BGEF);
+            // Compute all gap computations in a single pass
+            const auto gcs = compute_all_gap_computations(S, min_val, max_val, ExceptionRule::BGEF, total_bits);
 
             uint8_t best_b = total_bits;
-            size_t best_space = N * total_bits;
+            size_t best_space = evaluate_space(N, total_bits, total_bits, GapComputation{});
 
-            // Check all b < total_bits with exact accounting
-            for (uint8_t b = 0; b < total_bits; ++b) {
-                // Skip b=0: BGEF gap encoding works better with b > 0
-                // b=0 means all bits go to H, which creates many exceptions
-                if (b == 0) {
-                    continue;
-                }
-                
-                const auto exceptions = gcs[b].positive_exceptions_count + gcs[b].negative_exceptions_count;
-                const size_t space = evaluate_space(S.size(), total_bits, b, gcs[b]);
+            // Check all b values for true optimality
+            for (uint8_t b = 1; b < total_bits; ++b) {
+                const size_t space = evaluate_space(N, total_bits, b, gcs[b]);
                 if (space < best_space) {
                     best_b = b;
-                    best_space = space;
-                }
-            }
-            
-            // Also check b = total_bits (all bits in L, no high bits)
-            {
-                const size_t space = evaluate_space(S.size(), total_bits, total_bits, GapComputation{});
-                if (space < best_space) {
-                    best_b = total_bits;
                     best_space = space;
                 }
             }
@@ -193,7 +179,6 @@ namespace gef {
             if (best_b < total_bits) {
                 return {best_b, gcs[best_b]};
             } else {
-                // b == total_bits: all bits go into L, no high bits
                 return {total_bits, GapComputation{}};
             }
         }
@@ -361,36 +346,37 @@ namespace gef {
           using U = std::make_unsigned_t<T>;
           U lastHighBits = 0;
           
-          // Precompute constant for exception check
+          // Precompute constant for exception check  
           const uint64_t hbits_u64 = static_cast<uint64_t>(h);
+
+          // Optimize: compute low mask once (same as B_GEF_STAR)
+          const U low_mask = b < sizeof(T) * 8 ? ((U(1) << b) - 1) : U(~U(0));
 
           for (size_t i = 0; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-              L[i] = static_cast<typename sdsl::int_vector<>::value_type>(lowPart(element_u, b));
-
-              const U current_high_part = highPart(element_u, total_bits, h);
+              const U low_part_val = element_u & low_mask;
+              const U current_high_part = element_u >> b;
               
-              // Branchless magnitude calculation
-              const bool ge = current_high_part >= lastHighBits;
-              const uint64_t mag = ge ? static_cast<uint64_t>(current_high_part - lastHighBits)
-                                      : static_cast<uint64_t>(lastHighBits - current_high_part);
+              L[i] = static_cast<typename sdsl::int_vector<>::value_type>(low_part_val);
               
-              // Exception check: use 64-bit arithmetic when h <= 62 (common case)
-              const bool is_exception = (i == 0) || (h <= 62 ? (mag + 2) > hbits_u64 
-                                                              : (static_cast<unsigned __int128>(mag) + 2) > hbits_u64);
+              // Compute gap and magnitude
+              const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
+              const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
+              
+              // Exception check: always use 64-bit
+              const bool is_exception = (i == 0) || ((abs_gap + 2) > hbits_u64);
 
               B->set(i, is_exception);
               if (is_exception) [[unlikely]] {
                   H[h_idx++] = current_high_part;
               } else [[likely]] {
-                  if (current_high_part > lastHighBits) {
-                      const uint64_t pg = static_cast<uint64_t>(current_high_part - lastHighBits);
-                      G_plus->set_range(g_plus_pos, pg, true);
-                      g_plus_pos += pg;
-                  } else if (current_high_part < lastHighBits) {
-                      const uint64_t ng = static_cast<uint64_t>(lastHighBits - current_high_part);
-                      G_minus->set_range(g_minus_pos, ng, true);
-                      g_minus_pos += ng;
+                  // Write gaps - optimize for gap==0 case
+                  if (gap > 0) [[likely]] {
+                      G_plus->set_range(g_plus_pos, abs_gap, true);
+                      g_plus_pos += abs_gap;
+                  } else if (gap < 0) [[likely]] {
+                      G_minus->set_range(g_minus_pos, abs_gap, true);
+                      g_minus_pos += abs_gap;
                   }
                   // Always add terminators for non-exceptions
                   G_minus->set(g_minus_pos++, false);
