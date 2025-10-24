@@ -24,9 +24,10 @@ jobs:
       - name: Build benchmarks in Alpine container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            # Install build tools and git. Git is required for FetchContent
-            # dependencies such as sdsl-lite.
-            apk add --no-cache build-base cmake git && \
+            # Install build tools, git, and OpenMP runtime for parallel processing
+            # Git is required for FetchContent dependencies such as sdsl-lite
+            # libgomp provides OpenMP runtime library for GCC
+            apk add --no-cache build-base cmake git libgomp && \
             mkdir -p build && cd build && \
             cmake .. -DCMAKE_BUILD_TYPE=Release \
                      -DGEF_TARGET_ARCH=skylake-avx512 \

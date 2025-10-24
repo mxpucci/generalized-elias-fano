@@ -47,6 +47,15 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Find and enable OpenMP for parallel processing
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found - parallel processing enabled")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+else()
+    message(WARNING "OpenMP not found - UniformedPartitioner will run sequentially")
+endif()
+
 include(FetchContent)
 
 # Determine if this is the main project or a subproject

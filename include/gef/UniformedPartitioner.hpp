@@ -11,6 +11,10 @@
 #include <numeric>
 #include <stdexcept>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace gef {
 
 /**
@@ -48,14 +52,23 @@ public:
             throw std::invalid_argument("Block size k cannot be zero.");
         }
 
-        m_partitions.reserve((data.size() + k - 1) / k);
-        for (size_t i = 0; i < data.size(); i += k) {
-            auto start_it = data.begin() + i;
-            auto end_it = data.begin() + std::min(i + k, data.size());
+        const size_t num_partitions = (data.size() + k - 1) / k;
+        m_partitions.resize(num_partitions);
 
-            // This assumes the Compressor can be constructed from a vector.
-            std::vector<T> chunk(start_it, end_it);
-            m_partitions.emplace_back(std::make_unique<Compressor>(chunk, args...));
+        // Embarrassingly parallel: each partition is completely independent
+        // Parallelization is beneficial when num_partitions >= 4 (enough work to justify overhead)
+        #ifdef _OPENMP
+        #pragma omp parallel for schedule(dynamic) if(num_partitions >= 4)
+        #endif
+        for (size_t partition_idx = 0; partition_idx < num_partitions; ++partition_idx) {
+            const size_t start_pos = partition_idx * k;
+            const size_t end_pos = std::min(start_pos + k, data.size());
+            
+            // Create chunk for this partition
+            std::vector<T> chunk(data.begin() + start_pos, data.begin() + end_pos);
+            
+            // Compress this partition independently
+            m_partitions[partition_idx] = std::make_unique<Compressor>(chunk, args...);
         }
     }
 
@@ -104,13 +117,17 @@ public:
     }
 
     T operator[](size_t index) const override {
-        if (index >= m_original_size) {
-             // Following at() convention, though operator[] is not always guaranteed to check.
+        if (index >= m_original_size) [[unlikely]] {
              throw std::out_of_range("index out of range in UniformedPartitioner");
         }
-        size_t partition_index = index / m_block_size;
-        size_t index_in_partition = index % m_block_size;
-        return (*m_partitions.at(partition_index))[index_in_partition];
+        
+        // Division and modulo are expensive - but necessary here
+        // Compiler will optimize to shift+mask if m_block_size is power of 2
+        const size_t partition_index = index / m_block_size;
+        const size_t index_in_partition = index % m_block_size;
+        
+        // Direct pointer dereference faster than at() (no bounds check)
+        return (*m_partitions[partition_index])[index_in_partition];
     }
 
     uint8_t split_point() const override {
@@ -128,9 +145,11 @@ public:
         ofs.write(reinterpret_cast<const char*>(&m_original_size), sizeof(m_original_size));
         ofs.write(reinterpret_cast<const char*>(&m_block_size), sizeof(m_block_size));
 
-        size_t num_partitions = m_partitions.size();
+        const size_t num_partitions = m_partitions.size();
         ofs.write(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
 
+        // Note: Serialization to a single stream must be sequential
+        // Parallelizing would require writing to separate buffers then merging
         for (const auto& p : m_partitions) {
             p->serialize(ofs);
         }
