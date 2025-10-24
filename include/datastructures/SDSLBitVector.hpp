@@ -298,6 +298,20 @@ public:
         return total;
     }
 
+    size_t support_size_in_bytes() const override {
+        size_t total = 0;
+        if (rank_support_) {
+            total += sdsl::size_in_bytes(*rank_support_);
+        }
+        if (select1_support_) {
+            total += sdsl::size_in_bytes(*select1_support_);
+        }
+        if (select0_support_) {
+            total += sdsl::size_in_bytes(*select0_support_);
+        }
+        return total;
+    }
+
     size_t size_in_megabytes() const override {
         return (size_in_bytes() + 1024 * 1024 - 1) / (1024 * 1024);
     }

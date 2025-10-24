@@ -221,26 +221,34 @@ namespace gef {
                 return;
             }
 
+            // Pass 1: Count unique high parts and populate L & B
             B = bit_vector_factory->create(S.size());
             T lastHighBits = 0;
-            std::vector<T> tempH;
-            tempH.reserve(S.size());
-            for (size_t i = 0; i < S.size(); i++) {
+            size_t h_count = 0;
+            
+            for (size_t i = 0; i < S.size(); ++i) {
                 const T element = S[i] - base;
-                const T highBits = highPart(element, total_bits, total_bits - b);
-                const T lowBits = lowPart(element, b);
-                L[i] = lowBits;
-                B->set(i, i == 0 || highBits != lastHighBits);
-                if ((*B)[i] == 1)
-                    tempH.push_back(highBits);
+                const T highBits = highPart(element, total_bits, h);
+                L[i] = lowPart(element, b);
+                const bool is_new_run = (i == 0 || highBits != lastHighBits);
+                B->set(i, is_new_run);
+                h_count += is_new_run;
                 lastHighBits = highBits;
             }
             B->enable_rank();
 
-
-            H = sdsl::int_vector<>(tempH.size(), 0, total_bits - b);
-            for (size_t i = 0; i < tempH.size(); i++)
-                H[i] = tempH[i];
+            // Pass 2: Allocate exact size and populate H
+            H = sdsl::int_vector<>(h_count, 0, h);
+            lastHighBits = 0;
+            size_t h_idx = 0;
+            for (size_t i = 0; i < S.size(); ++i) {
+                const T element = S[i] - base;
+                const T highBits = highPart(element, total_bits, h);
+                if (i == 0 || highBits != lastHighBits) {
+                    H[h_idx++] = highBits;
+                }
+                lastHighBits = highBits;
+            }
         }
 
         T operator[](size_t index) const override {
@@ -280,6 +288,42 @@ namespace gef {
 
         [[nodiscard]] size_t size() const override {
             return L.size();
+        }
+
+        [[nodiscard]] size_t size_in_bytes_without_supports() const override {
+            size_t total_bytes = 0;
+            if (B) {
+                total_bytes += B->size_in_bytes() - B->support_size_in_bytes();
+            }
+            total_bytes += sdsl::size_in_bytes(L);
+            total_bytes += sdsl::size_in_bytes(H);
+            total_bytes += sizeof(base);
+            total_bytes += sizeof(h);
+            total_bytes += sizeof(b);
+            return total_bytes;
+        }
+
+        [[nodiscard]] size_t theoretical_size_in_bytes() const override {
+            auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
+            size_t total_bytes = 0;
+            
+            // L vector: use width * size formula (theoretical)
+            total_bytes += bits_to_bytes(L.size() * L.width());
+            
+            // H vector: use width * size formula (theoretical)
+            total_bytes += bits_to_bytes(H.size() * H.width());
+            
+            // B bit vector (if it exists)
+            if (B) {
+                total_bytes += bits_to_bytes(B->size());
+            }
+            
+            // Fixed metadata
+            total_bytes += sizeof(base);
+            total_bytes += sizeof(h);
+            total_bytes += sizeof(b);
+            
+            return total_bytes;
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {

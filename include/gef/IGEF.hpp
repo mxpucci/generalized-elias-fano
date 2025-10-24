@@ -59,7 +59,15 @@ public:
 	virtual size_t size() const = 0;
 	
 	virtual bool empty() const { return size() == 0; }
-	
+
+	// Optional: raw payload size without auxiliary rank/select supports.
+	// Default to full size if a specialized implementation is not provided.
+	virtual size_t size_in_bytes_without_supports() const { return size_in_bytes(); }
+
+	// Theoretical size: width * length for vectors (no SDSL overhead)
+	// Used for testing and estimation purposes
+	virtual size_t theoretical_size_in_bytes() const = 0;
+
 	virtual size_t size_in_bytes() const = 0;
 	
 	double size_in_megabytes() const {

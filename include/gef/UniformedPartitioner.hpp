@@ -92,6 +92,14 @@ public:
         return total_bytes;
     }
 
+    size_t theoretical_size_in_bytes() const override {
+        size_t total = 0;
+        for (const auto& p : m_partitions) {
+            total += p->theoretical_size_in_bytes();
+        }
+        return total;
+    }
+
     T operator[](size_t index) const override {
         if (index >= m_original_size) {
              // Following at() convention, though operator[] is not always guaranteed to check.

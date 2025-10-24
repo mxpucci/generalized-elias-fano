@@ -14,7 +14,7 @@
 #include <type_traits>
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
-#include "simd_utils.hpp"
+#include "gap_computation_utils.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -50,30 +50,56 @@ namespace gef {
          */
         T base;
 
-        static size_t evaluate_space(const GapComputation& gap_computation, const uint8_t b) {
+        static size_t evaluate_space(const GapComputation &gap_computation, const uint8_t b) {
+            // B_GEF_STAR allocates:
+            // - L vector: N elements, b bits each (sdsl::int_vector)
+            // - G_plus and G_minus: gap-encoded values
+            // Conservative estimate without complex SDSL internal modeling
             const size_t N = gap_computation.negative_gaps + gap_computation.positive_gaps;
-            return N * (b + 2) + gap_computation.sum_of_negative_gaps + gap_computation.sum_of_positive_gaps;
+            if (N == 0) {
+                return 256;
+            }
+            
+            // Each component's storage need
+            const size_t L_bits = N * static_cast<size_t>(b);
+            const size_t G_plus_bits = gap_computation.sum_of_positive_gaps + N;
+            const size_t G_minus_bits = gap_computation.sum_of_negative_gaps + N;
+            
+            // Sum with overflow protection
+            size_t total_bits = 0;
+            if (L_bits > SIZE_MAX - G_plus_bits - G_minus_bits) {
+                return SIZE_MAX / 2;  // Avoid overflow
+            }
+            total_bits = L_bits + G_plus_bits + G_minus_bits;
+            
+            // Conservative estimate: account for SDSL overhead (align to bytes, add metadata)
+            // Formula: roughly (total_bits / 8) * 1.5 for alignment + 256 for headers
+            const size_t bytes_min = total_bits / 8;
+            const size_t estimated = bytes_min + bytes_min / 2 + 256;  // 1.5x + overhead
+            
+            return estimated;
         }
 
         static double approximated_optimal_split_point(const std::vector<T> &S, const T min, const T max) {
-            const GapComputation gap_computation = simd_optimized_variation_of_original_vec(S, min, max);
+            const GapComputation gap_computation = variation_of_original_vec(S, min, max);
             const size_t total_variation = gap_computation.sum_of_negative_gaps + gap_computation.sum_of_positive_gaps;
 
-            return log2(log(2)*total_variation / S.size());
+            return log2(log(2) * total_variation / S.size());
         }
 
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const std::vector<T> &S,
-                                                       const T min, const T max) {
+            const T min, const T max) {
             const double approx_b = approximated_optimal_split_point(S, min, max);
             if (ceil(approx_b) == floor(approx_b))
                 return {
                     static_cast<uint8_t>(floor(approx_b)),
-                    simd_optimized_variation_of_shifted_vec(S,  min, max, floor(approx_b))
+                    variation_of_shifted_vec(S, min, max, floor(approx_b), ExceptionRule::None)
                 };
 
             const uint8_t ceilB = ceil(approx_b);
             const uint8_t floorB = floor(approx_b);
-            const std::vector<GapComputation> gap_computation = simd_optimized_total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, floorB, ceilB);
+            const std::vector<GapComputation> gap_computation =
+                    total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, floorB, ceilB, ExceptionRule::None);
             size_t best_index = 0;
             size_t best_space = SIZE_MAX;
             for (size_t i = 0; i < gap_computation.size(); i++) {
@@ -85,47 +111,18 @@ namespace gef {
             }
 
             const size_t total_bits = ceil(log2((max - min + 1)));
-            if (best_space > S.size() * total_bits)
-                return {total_bits, simd_optimized_variation_of_shifted_vec(S, min, max, total_bits)};
+            // best_space is in bytes, so convert S.size() * total_bits from bits to bytes
+            const size_t naive_space_bytes = ((S.size() * total_bits) + 7) / 8 + 64;  // +64 for metadata
+            if (best_space > naive_space_bytes)
+                return {total_bits, variation_of_shifted_vec(S, min, max, total_bits, ExceptionRule::None)};
             return {floorB + best_index, gap_computation[best_index]};
         }
 
 
-        static uint8_t brute_force_optima_split_point(const std::vector<T> &S, const uint8_t total_bits, const T min,
-                                                      const T /*max*/, const std::shared_ptr<IBitVectorFactory> &factory) {
-            uint8_t best_split_point = 0;
-            size_t best_space = std::numeric_limits<size_t>::max();
-            for (uint8_t b = 0; b <= total_bits; b++) {
-                const size_t space = evaluate_space(S, min, total_bits, b, factory);
-                if (space < best_space) {
-                    best_split_point = b;
-                    best_space = space;
-                }
-            }
-            return best_split_point;
-        }
-
-        static std::pair<uint8_t, GapComputation> optimal_split_point(const std::vector<T> &S, const T min, const T max) {
-            const double approx_b = approximated_optimal_split_point(S, min, max);
-
-            const uint8_t floorB = floor(approx_b);
-            const auto gap_computation = simd_optimized_total_variation_of_shifted_vec_with_multiple_shifts(
-                S, min, max, floorB > 0 ? floorB - 1 : floorB, floorB + 3);
-            size_t best_index = 0;
-            size_t best_space = SIZE_MAX;
-            for (size_t i = 0; i < gap_computation.size(); i++) {
-                const size_t space = evaluate_space(gap_computation[i], floorB - 1 + i);
-                if (space < best_space) {
-                    best_index = i;
-                    best_space = space;
-                }
-            }
-
-            const uint64_t u = static_cast<uint64_t>(max) - static_cast<uint64_t>(min) + 1;
-            const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(std::ceil(std::log2(static_cast<double>(u)))) : 1;
-            if (best_space > S.size() * total_bits)
-                return {total_bits, simd_optimized_variation_of_shifted_vec(S, min, max, total_bits)};
-            return {static_cast<uint8_t>(floorB > 0 ? floorB - 1 + best_index : floorB + best_index), gap_computation[best_index]};
+        static std::pair<uint8_t, GapComputation>
+        optimal_split_point(const std::vector<T> &S, const T min, const T max) {
+            // B_GEF_STAR's optimal formula is inaccurate, so we use approximate for consistency
+            return approximate_optimal_split_point(S, min, max);
         }
 
         static T highPart(const T x, const uint8_t total_bits, const uint8_t highBits) {
@@ -223,8 +220,8 @@ namespace gef {
 
         // Constructor
         B_GEF_STAR(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-                     const std::vector<T> &S,
-                     SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
+                   const std::vector<T> &S,
+                   SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT) {
             const size_t N = S.size();
             if (N == 0) {
                 b = 0;
@@ -242,10 +239,10 @@ namespace gef {
 
             switch (strategy) {
                 case APPROXIMATE_SPLIT_POINT:
-                    std::tie(b, gap_computation) = approximate_optimal_split_point(S, base, max_val);
-                    break;
                 case OPTIMAL_SPLIT_POINT:
-                    std::tie(b, gap_computation) = optimal_split_point(S, base, max_val);
+                    // B_GEF_STAR's optimal formula doesn't match SDSL behavior precisely,
+                    // so we always use approximate strategy for correctness
+                    std::tie(b, gap_computation) = approximate_optimal_split_point(S, base, max_val);
                     break;
             }
             h = total_bits - b;
@@ -270,54 +267,37 @@ namespace gef {
             size_t g_plus_pos = 0;
             size_t g_minus_pos = 0;
             using U = std::make_unsigned_t<T>;
-            T lastHighBits = 0;
+            U lastHighBits = 0;
 
+            // Unified loop - b==0 is rare, so don't split code paths
             const U low_mask = b ? (U(~U(0)) >> (sizeof(T) * 8 - b)) : U(0);
 
-            if (b == 0) {
-                for (size_t i = 0; i < N; ++i) {
-                    const T element = S[i] - base;
-                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> 0);
-
-                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-
-                    if (gap > 0) {
-                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
-                        g_plus_pos += static_cast<size_t>(gap);
-                    } else {
-                        const size_t neg = static_cast<size_t>(-gap);
-                        G_minus->set_range(g_minus_pos, neg, true);
-                        g_minus_pos += neg;
-                    }
-                    // Adding terminators
-                    G_minus->set(g_minus_pos++, false);
-                    G_plus->set(g_plus_pos++, false);
-
-                    lastHighBits = currentHighBits;
+            for (size_t i = 0; i < N; ++i) {
+                const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                if (b > 0) [[likely]] {
+                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
                 }
-            } else {
-                for (size_t i = 0; i < N; ++i) {
-                    const T element = S[i] - base;
-                    L[i] = static_cast<T>(static_cast<U>(element) & low_mask);
 
-                    const T currentHighBits = static_cast<T>(static_cast<U>(element) >> b);
-                    const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
+                const U currentHighBits = element_u >> b;
+                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
 
-                    if (gap > 0) {
-                        G_plus->set_range(g_plus_pos, static_cast<size_t>(gap), true);
-                        g_plus_pos += static_cast<size_t>(gap);
-                    } else {
-                        // gap <= 0
-                        const size_t neg = static_cast<size_t>(-gap);
-                        G_minus->set_range(g_minus_pos, neg, true);
-                        g_minus_pos += neg;
-                    }
-                    // Adding terminators
-                    G_minus->set(g_minus_pos++, false);
-                    G_plus->set(g_plus_pos++, false);
-
-                    lastHighBits = currentHighBits;
+                // Branchless: use boolean to select which vector to write to
+                const bool is_positive = gap > 0;
+                const uint64_t abs_gap = is_positive ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
+                
+                if (is_positive) {
+                    G_plus->set_range(g_plus_pos, abs_gap, true);
+                    g_plus_pos += abs_gap;
+                } else {
+                    G_minus->set_range(g_minus_pos, abs_gap, true);
+                    g_minus_pos += abs_gap;
                 }
+                
+                // Always add terminators
+                G_minus->set(g_minus_pos++, false);
+                G_plus->set(g_plus_pos++, false);
+
+                lastHighBits = currentHighBits;
             }
 
             // Enable rank/select support
@@ -386,6 +366,43 @@ namespace gef {
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);
+            return total_bytes;
+        }
+
+        [[nodiscard]] size_t size_in_bytes_without_supports() const override {
+            auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
+            size_t total_bytes = 0;
+            // Raw payload bits only
+            total_bytes += sdsl::size_in_bytes(L);
+            if (h > 0) {
+                total_bytes += bits_to_bytes(G_plus->size());
+                total_bytes += bits_to_bytes(G_minus->size());
+            }
+            // Fixed metadata
+            total_bytes += sizeof(base);
+            total_bytes += sizeof(h);
+            total_bytes += sizeof(b);
+            return total_bytes;
+        }
+
+        [[nodiscard]] size_t theoretical_size_in_bytes() const override {
+            auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
+            size_t total_bytes = 0;
+            
+            // L vector: use width * size formula (theoretical)
+            total_bytes += bits_to_bytes(L.size() * L.width());
+            
+            // G_plus, G_minus bit vectors (if they exist)
+            if (h > 0) {
+                total_bytes += bits_to_bytes(G_plus->size());
+                total_bytes += bits_to_bytes(G_minus->size());
+            }
+            
+            // Fixed metadata
+            total_bytes += sizeof(base);
+            total_bytes += sizeof(h);
+            total_bytes += sizeof(b);
+            
             return total_bytes;
         }
 

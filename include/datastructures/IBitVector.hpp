@@ -107,6 +107,8 @@ public:
      */
     virtual size_t select0(size_t k) const = 0;
 
+    virtual size_t support_size_in_bytes() const = 0;
+
     virtual size_t size_in_bytes() const = 0;
 
     virtual size_t size_in_megabytes() const = 0;
