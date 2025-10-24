@@ -93,11 +93,14 @@ public:
     }
 
     size_t theoretical_size_in_bytes() const override {
-        size_t total = 0;
+        size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
+        size_t num_partitions = m_partitions.size();
+        total_bytes += sizeof(num_partitions);
+
         for (const auto& p : m_partitions) {
-            total += p->theoretical_size_in_bytes();
+            total_bytes += p->theoretical_size_in_bytes();
         }
-        return total;
+        return total_bytes;
     }
 
     T operator[](size_t index) const override {
