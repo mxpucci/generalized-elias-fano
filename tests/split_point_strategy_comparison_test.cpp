@@ -95,24 +95,18 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
 
         // Instantiate with Optimal strategy
         GEF_Class gef_brute_force(this->factory, test.sequence, gef::OPTIMAL_SPLIT_POINT);
-        size_t brute_force_size = gef_brute_force.size_in_bytes();
+        size_t brute_force_size = gef_brute_force.theoretical_size_in_bytes();
 
         // Instantiate with Approximate strategy
         GEF_Class gef_approximate(this->factory, test.sequence, gef::APPROXIMATE_SPLIT_POINT);
-        size_t approximate_size = gef_approximate.size_in_bytes();
-
-        const auto [min_it, max_it] = std::minmax_element(test.sequence.begin(), test.sequence.end());
-        const value_type min_val = *min_it;
-        const value_type max_val = *max_it;
-        const uint64_t u = max_val - min_val + 1;
-        const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
-
+        size_t approximate_size = gef_approximate.theoretical_size_in_bytes();
 
 
         // The approximate strategy should always be larger or equal in size than brute force.
         EXPECT_LE(brute_force_size, approximate_size)
-            << "Brute force size (" << brute_force_size
+            << "[" << test.name << "] " << "Brute force size (" << brute_force_size
             << ") should be <= approximate size (" << approximate_size << ")";
+
 
         // Also verify correctness of the data
         for(size_t i = 0; i < test.sequence.size(); ++i) {
