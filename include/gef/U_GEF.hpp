@@ -42,7 +42,8 @@ namespace gef {
             size_t bits = 0;
             WU x = range - 1;
             while (x > 0) { ++bits; x >>= 1; }
-            return static_cast<uint8_t>(bits);
+            // Clamp to the size of T to prevent undefined behavior in shifts
+            return static_cast<uint8_t>(std::min<size_t>(bits, sizeof(T) * 8));
         }
         // Bit-vector such that B[i] = 0 <==> 0 <= highPart(i) - highPart(i - 1) <= h
         std::unique_ptr<IBitVector> B;
@@ -338,7 +339,7 @@ namespace gef {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
                 L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
                 
-                const U current_high_part = element_u >> b;
+                const U current_high_part = (b < sizeof(T) * 8) ? (element_u >> b) : U(0);
                 const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
                 
                 // Exception check: i==0 or gap<0 or gap>=h

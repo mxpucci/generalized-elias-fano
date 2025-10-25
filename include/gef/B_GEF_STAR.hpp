@@ -90,16 +90,21 @@ namespace gef {
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const std::vector<T> &S,
             const T min, const T max) {
             const double approx_b = approximated_optimal_split_point(S, min, max);
-            if (ceil(approx_b) == floor(approx_b))
+            
+            if (ceil(approx_b) == floor(approx_b)) {
+                const uint8_t b_clamped = std::max(0.0, std::min(64.0, floor(approx_b)));
                 return {
-                    static_cast<uint8_t>(floor(approx_b)),
-                    variation_of_shifted_vec(S, min, max, floor(approx_b), ExceptionRule::None)
+                    b_clamped,
+                    variation_of_shifted_vec(S, min, max, b_clamped, ExceptionRule::None)
                 };
+            }
 
-            const uint8_t ceilB = ceil(approx_b);
-            const uint8_t floorB = floor(approx_b);
+            // Clamp to [0, 64] before casting to uint8_t to avoid underflow
+            const uint8_t ceilB = std::max(0.0, std::min(64.0, ceil(approx_b)));
+            const uint8_t floorB = std::max(0.0, std::min(64.0, floor(approx_b)));
             const std::vector<GapComputation> gap_computation =
                     total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, floorB, ceilB, ExceptionRule::None);
+            
             size_t best_index = 0;
             size_t best_space = SIZE_MAX;
             for (size_t i = 0; i < gap_computation.size(); i++) {
@@ -233,8 +238,25 @@ namespace gef {
             auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
             base = *min_it;
             const T max_val = *max_it;
-            const uint64_t u = max_val - base + 1;
-            const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
+            
+            // Use 128-bit arithmetic to avoid overflow
+            using WI = __int128;
+            using WU = unsigned __int128;
+            const WI min_w = static_cast<WI>(base);
+            const WI max_w = static_cast<WI>(max_val);
+            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+            
+            // Calculate total_bits safely, clamped to sizeof(T)*8
+            uint8_t total_bits;
+            if (range <= 1) {
+                total_bits = 1;
+            } else {
+                size_t bits = 0;
+                WU x = range - 1;
+                while (x > 0) { ++bits; x >>= 1; }
+                total_bits = std::min<size_t>(bits, sizeof(T) * 8);
+            }
+            
             GapComputation gap_computation;
 
             switch (strategy) {
