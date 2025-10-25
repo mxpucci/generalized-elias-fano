@@ -33,15 +33,27 @@ jobs:
                      -DGEF_TARGET_ARCH=skylake-avx512 \
                      -DGEF_STATIC_LINK=ON \
                      -DGEF_BUILD_BENCHMARKS=ON && \
-            make -j$(nproc)
+            make compression_benchmark compression_benchmark_no_omp -j\$(nproc)
           "
+
+      # Verify both benchmark variants were built successfully
+      - name: Verify benchmark executables
+        run: |
+          ls -lh build/benchmarks/compression_benchmark
+          ls -lh build/benchmarks/compression_benchmark_no_omp
+          echo "✓ Both benchmark variants built successfully"
 
       # Upload the compiled benchmark executables as a workflow artifact.
       # Use v4 of the upload‑artifact action because earlier versions are
-      # deprecated【693600283039977†L30-L38】.  The v4 action improves performance and
-      # ensures compatibility going forward【349807780017072†L30-L48】.
+      # deprecated. The v4 action improves performance and ensures compatibility.
+      # We upload both the OpenMP-enabled and OpenMP-disabled variants.
       - name: Upload benchmarks
         uses: actions/upload-artifact@v4
         with:
           name: gef-linux-benchmarks
-          path: build/benchmarks/*
+          path: |
+            build/benchmarks/compression_benchmark
+            build/benchmarks/compression_benchmark_no_omp
+            build/benchmarks/simple_benchmark
+            run_benchmarks.sh
+            validate_benchmark_json.sh
