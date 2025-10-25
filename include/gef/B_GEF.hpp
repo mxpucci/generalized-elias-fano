@@ -395,6 +395,85 @@ namespace gef {
           G_minus->enable_select0();
       }
 
+        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
+            std::vector<T> result;
+            result.reserve(count);
+            
+            if (count == 0 || startIndex >= size()) {
+                return result;
+            }
+            
+            const size_t endIndex = std::min(startIndex + count, size());
+            const size_t actualCount = endIndex - startIndex;
+            
+            // Fast path: h == 0, all data in L
+            if (h == 0) {
+                using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+                using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+                for (size_t i = startIndex; i < endIndex; ++i) {
+                    const Wide low = static_cast<Wide>(L[i]);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    result.push_back(static_cast<T>(sum));
+                }
+                return result;
+            }
+            
+            // Optimized range access with incremental rank computation
+            using U = std::make_unsigned_t<T>;
+            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+            
+            size_t current_rank = B->rank(startIndex + 1);
+            U base_high_val_u = static_cast<U>(H[current_rank - 1]);
+            size_t run_start_pos = B->select(current_rank);
+            size_t zeros_before_run = (run_start_pos + 1) - current_rank;
+            
+            for (size_t i = startIndex; i < endIndex; ++i) {
+                const bool is_exception = (*B)[i];
+                
+                if (is_exception) [[unlikely]] {
+                    // Update tracking for new run
+                    if (i != startIndex) {
+                        current_rank = B->rank(i + 1);
+                        base_high_val_u = static_cast<U>(H[current_rank - 1]);
+                        run_start_pos = B->select(current_rank);
+                        zeros_before_run = (run_start_pos + 1) - current_rank;
+                    }
+                    
+                    const Wide low = static_cast<Wide>(L[i]);
+                    const Wide high_shifted = static_cast<Wide>(base_high_val_u) << b;
+                    const Wide offset = low | high_shifted;
+                    result.push_back(static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset)));
+                } else [[likely]] {
+                    const size_t zero_rank_at_i = (i + 1) - current_rank;
+                    
+                    size_t pos_gap_in_run, neg_gap_in_run;
+                    if (zeros_before_run == 0) [[unlikely]] {
+                        pos_gap_in_run = G_plus->rank(G_plus->select0(zero_rank_at_i));
+                        neg_gap_in_run = G_minus->rank(G_minus->select0(zero_rank_at_i));
+                    } else [[likely]] {
+                        const size_t total_pos_gap = G_plus->rank(G_plus->select0(zero_rank_at_i));
+                        const size_t total_neg_gap = G_minus->rank(G_minus->select0(zero_rank_at_i));
+                        const size_t pos_gap_before = G_plus->rank(G_plus->select0(zeros_before_run));
+                        const size_t neg_gap_before = G_minus->rank(G_minus->select0(zeros_before_run));
+                        pos_gap_in_run = total_pos_gap - pos_gap_before;
+                        neg_gap_in_run = total_neg_gap - neg_gap_before;
+                    }
+                    
+                    const long long high_val_signed = static_cast<long long>(base_high_val_u)
+                                                     + static_cast<long long>(pos_gap_in_run)
+                                                     - static_cast<long long>(neg_gap_in_run);
+                    const Wide low = static_cast<Wide>(L[i]);
+                    const Wide high_val_u = static_cast<Wide>(static_cast<unsigned long long>(high_val_signed));
+                    const Wide high_shifted = static_cast<Wide>(high_val_u << b);
+                    const Wide off = static_cast<Wide>(low | high_shifted);
+                    result.push_back(static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(off)));
+                }
+            }
+            
+            return result;
+        }
+
         T operator[](size_t index) const override {
             // Case 1: No high bits are used (h=0).
             // The value is fully stored in the L vector.

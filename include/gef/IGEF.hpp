@@ -101,9 +101,9 @@ public:
 	 * @return Vector containing the requested elements
 	 * @throws std::out_of_range if range is invalid
 	 */
-	std::vector<T> get_elements(size_t startIndex, size_t count) const {
+	virtual std::vector<T> get_elements(size_t startIndex, size_t count) const {
 		std::vector<T> result;
-		result.reserve(size());
+		result.reserve(count);
 		for (size_t i = 0; i < count; i++) {
 			result.emplace_back(at(startIndex + i));
 		}

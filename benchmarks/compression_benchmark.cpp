@@ -276,6 +276,31 @@ void SerializationSpaceBenchmark(benchmark::State& state, const std::vector<int6
     }
 }
 
+// ============================================================================
+// Benchmark Definitions - Type 5: Decompression Throughput (Full)
+// ============================================================================
+template<template<typename> class CompressorWrapper, typename... Args>
+void DecompressionThroughputBenchmark(benchmark::State& state, const std::vector<int64_t>& data, size_t partition_size, Args... args) {
+    if (data.empty()) {
+        state.SkipWithError("Input data is empty for decompression throughput benchmark.");
+        return;
+    }
+    
+    // Build the compressor once outside the timing loop
+    gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
+    
+    for (auto _ : state) {
+        // Decompress ALL elements using optimized get_elements
+        auto decompressed = compressor.get_elements(0, data.size());
+        benchmark::DoNotOptimize(decompressed);
+    }
+    
+    // Report throughput
+    state.SetItemsProcessed(data.size() * state.iterations());
+    double bytes_processed = static_cast<double>(state.items_processed() * sizeof(int64_t));
+    state.counters["decompression_throughput_MBs"] = benchmark::Counter(bytes_processed, benchmark::Counter::kIsRate, benchmark::Counter::kIs1024);
+}
+
 
 #pragma region Lookup Definitions and Registration
 BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, B_GEF_Lookup)(benchmark::State& state) {
@@ -330,6 +355,34 @@ BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, RLE_GEF_Serialization_Space)(b
     size_t partition_size = state.range(1);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
     SerializationSpaceBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
+}
+
+// Decompression Throughput Benchmark Definitions
+BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, B_GEF_Decompression)(benchmark::State& state) {
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    size_t partition_size = state.range(2);
+    state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
+    DecompressionThroughputBenchmark<B_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
+}
+
+BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Decompression)(benchmark::State& state) {
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    size_t partition_size = state.range(2);
+    state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
+    DecompressionThroughputBenchmark<B_GEF_NO_RLE_Wrapper>(state, input_data, partition_size, g_factory, strategy);
+}
+
+BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, U_GEF_Decompression)(benchmark::State& state) {
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    size_t partition_size = state.range(2);
+    state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
+    DecompressionThroughputBenchmark<U_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
+}
+
+BENCHMARK_DEFINE_F(FileBasedCompressionBenchmark, RLE_GEF_Decompression)(benchmark::State& state) {
+    size_t partition_size = state.range(1);
+    state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
+    DecompressionThroughputBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
 }
 
 void RegisterBenchmarksForFile(size_t file_idx) {
@@ -523,6 +576,68 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->Args({(long)file_idx, 32768})
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
+
+    // Decompression Throughput
+    BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_Decompression)
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 32768})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 32768})
+        ->ArgNames({"file_idx", "strategy", "partition_size"});
+    
+    BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, B_GEF_NO_RLE_Decompression)
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 32768})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 32768})
+        ->ArgNames({"file_idx", "strategy", "partition_size"});
+    
+    BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, U_GEF_Decompression)
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 512})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 1024})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 2048})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 4096})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 8192})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 16384})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT, 32768})
+        ->Args({(long)file_idx, (long)gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT, 32768})
+        ->ArgNames({"file_idx", "strategy", "partition_size"});
+    
+    BENCHMARK_REGISTER_F(FileBasedCompressionBenchmark, RLE_GEF_Decompression)
+        ->Args({(long)file_idx, 512})
+        ->Args({(long)file_idx, 1024})
+        ->Args({(long)file_idx, 2048})
+        ->Args({(long)file_idx, 4096})
+        ->Args({(long)file_idx, 8192})
+        ->Args({(long)file_idx, 16384})
+        ->Args({(long)file_idx, 32768})
+        ->ArgNames({"file_idx", "partition_size"});
 }
 #pragma endregion
 

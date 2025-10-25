@@ -251,6 +251,41 @@ namespace gef {
             }
         }
 
+        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
+            std::vector<T> result;
+            result.reserve(count);
+            
+            if (count == 0 || startIndex >= size()) {
+                return result;
+            }
+            
+            const size_t endIndex = std::min(startIndex + count, size());
+            
+            // Fast path: h == 0, all data in L
+            if (h == 0) {
+                for (size_t i = startIndex; i < endIndex; ++i) {
+                    result.push_back(base + L[i]);
+                }
+                return result;
+            }
+            
+            // Optimized range access: reuse rank computations within runs
+            size_t current_rank = B->rank(startIndex + 1);
+            T current_high = H[current_rank - 1];
+            
+            for (size_t i = startIndex; i < endIndex; ++i) {
+                // Check if we've crossed into a new run
+                if ((*B)[i]) {
+                    // New run started at position i
+                    current_rank = B->rank(i + 1);
+                    current_high = H[current_rank - 1];
+                }
+                result.push_back(base + (L[i] | (current_high << b)));
+            }
+            
+            return result;
+        }
+
         T operator[](size_t index) const override {
             if (h == 0)
                 return base + L[index];

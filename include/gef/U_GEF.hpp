@@ -367,6 +367,64 @@ namespace gef {
             G->enable_select0();
         }
 
+        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
+            std::vector<T> result;
+            result.reserve(count);
+            
+            if (count == 0 || startIndex >= size()) {
+                return result;
+            }
+            
+            const size_t endIndex = std::min(startIndex + count, size());
+            
+            // Fast path: h == 0, all data in L
+            if (h == 0) {
+                for (size_t i = startIndex; i < endIndex; ++i) {
+                    result.push_back(base + L[i]);
+                }
+                return result;
+            }
+            
+            // Optimized range access with incremental rank computation
+            using U = std::make_unsigned_t<T>;
+            
+            size_t current_rank = B->rank(startIndex + 1);
+            T base_high_val = H[current_rank - 1];
+            size_t run_start_pos = B->select(current_rank);
+            size_t zeros_before_run = (run_start_pos + 1) - current_rank;
+            
+            for (size_t i = startIndex; i < endIndex; ++i) {
+                const bool is_exception = (*B)[i];
+                
+                if (is_exception) [[unlikely]] {
+                    // Update tracking for new run
+                    if (i != startIndex) {
+                        current_rank = B->rank(i + 1);
+                        base_high_val = H[current_rank - 1];
+                        run_start_pos = B->select(current_rank);
+                        zeros_before_run = (run_start_pos + 1) - current_rank;
+                    }
+                    result.push_back(base + (L[i] | (base_high_val << b)));
+                } else [[likely]] {
+                    const size_t zero_rank_at_i = (i + 1) - current_rank;
+                    
+                    size_t gap_in_run;
+                    if (zeros_before_run == 0) [[unlikely]] {
+                        gap_in_run = G->rank(G->select0(zero_rank_at_i));
+                    } else [[likely]] {
+                        const size_t total_gap_sum = G->rank(G->select0(zero_rank_at_i));
+                        const size_t gap_before_run = G->rank(G->select0(zeros_before_run));
+                        gap_in_run = total_gap_sum - gap_before_run;
+                    }
+                    
+                    const T high_val = base_high_val + static_cast<T>(gap_in_run);
+                    result.push_back(base + (L[i] | (high_val << b)));
+                }
+            }
+            
+            return result;
+        }
+
         T operator[](size_t index) const override {
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.

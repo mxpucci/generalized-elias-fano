@@ -329,6 +329,38 @@ namespace gef {
             G_minus->enable_select0();
         }
 
+        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
+            std::vector<T> result;
+            result.reserve(count);
+            
+            if (count == 0 || startIndex >= size()) {
+                return result;
+            }
+            
+            const size_t endIndex = std::min(startIndex + count, size());
+            
+            // Fast path: h == 0, all data in L
+            if (h == 0) {
+                for (size_t i = startIndex; i < endIndex; ++i) {
+                    result.push_back(base + L[i]);
+                }
+                return result;
+            }
+            
+            // Optimized range access: compute gaps incrementally
+            // We can reuse select0 positions by doing incremental selects
+            using U = std::make_unsigned_t<T>;
+            
+            for (size_t i = startIndex; i < endIndex; ++i) {
+                const size_t pos_gap = G_plus->rank(G_plus->select0(i + 1));
+                const size_t neg_gap = G_minus->rank(G_minus->select0(i + 1));
+                const T high_val = static_cast<T>(pos_gap - neg_gap);
+                result.push_back(base + (L[i] | (high_val << b)));
+            }
+            
+            return result;
+        }
+
         T operator[](size_t index) const override {
             if (h == 0)
                 return base + L[index];

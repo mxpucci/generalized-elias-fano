@@ -116,6 +116,78 @@ public:
         return total_bytes;
     }
 
+    std::vector<T> get_elements(size_t startIndex, size_t count) const override {
+        std::vector<T> result;
+        result.reserve(count);
+        
+        if (count == 0 || startIndex >= m_original_size) {
+            return result;
+        }
+        
+        const size_t endIndex = std::min(startIndex + count, m_original_size);
+        
+        // Identify which partitions we need to access
+        const size_t start_partition = startIndex / m_block_size;
+        const size_t end_partition = (endIndex - 1) / m_block_size;
+        
+        if (start_partition == end_partition) {
+            // Fast path: all elements in same partition
+            const size_t start_offset = startIndex % m_block_size;
+            const size_t elements_to_get = endIndex - startIndex;
+            auto partition_elements = m_partitions[start_partition]->get_elements(start_offset, elements_to_get);
+            result.insert(result.end(), partition_elements.begin(), partition_elements.end());
+        } else {
+            const size_t num_partitions_spanned = end_partition - start_partition + 1;
+            
+            // Parallelize when spanning 3+ partitions (worth the overhead)
+            #ifdef _OPENMP
+            if (num_partitions_spanned >= 3) {
+                // Parallel approach: each thread fetches from its partition(s)
+                // Then we combine results sequentially to maintain order
+                std::vector<std::vector<T>> partition_results(num_partitions_spanned);
+                
+                #pragma omp parallel for schedule(dynamic)
+                for (size_t i = 0; i < num_partitions_spanned; ++i) {
+                    const size_t p = start_partition + i;
+                    const size_t partition_start = p * m_block_size;
+                    const size_t partition_end = std::min(partition_start + m_block_size, m_original_size);
+                    
+                    const size_t range_start = std::max(startIndex, partition_start);
+                    const size_t range_end = std::min(endIndex, partition_end);
+                    
+                    const size_t offset_in_partition = range_start - partition_start;
+                    const size_t count_in_partition = range_end - range_start;
+                    
+                    partition_results[i] = m_partitions[p]->get_elements(offset_in_partition, count_in_partition);
+                }
+                
+                // Combine results sequentially to maintain order
+                for (const auto& partition_result : partition_results) {
+                    result.insert(result.end(), partition_result.begin(), partition_result.end());
+                }
+            } else
+            #endif
+            {
+                // Sequential fallback for small spans or no OpenMP
+                for (size_t p = start_partition; p <= end_partition; ++p) {
+                    const size_t partition_start = p * m_block_size;
+                    const size_t partition_end = std::min(partition_start + m_block_size, m_original_size);
+                    
+                    const size_t range_start = std::max(startIndex, partition_start);
+                    const size_t range_end = std::min(endIndex, partition_end);
+                    
+                    const size_t offset_in_partition = range_start - partition_start;
+                    const size_t count_in_partition = range_end - range_start;
+                    
+                    auto partition_elements = m_partitions[p]->get_elements(offset_in_partition, count_in_partition);
+                    result.insert(result.end(), partition_elements.begin(), partition_elements.end());
+                }
+            }
+        }
+        
+        return result;
+    }
+
     T operator[](size_t index) const override {
         if (index >= m_original_size) [[unlikely]] {
              throw std::out_of_range("index out of range in UniformedPartitioner");
