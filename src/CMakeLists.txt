@@ -18,6 +18,9 @@ target_include_directories(gef
 # This is appropriate for a library that exposes sdsl types in its interface
 target_link_libraries(gef PUBLIC sdsl)
 
+# SUX is header-only, so we just need to add its include directory
+target_include_directories(gef PUBLIC ${SUX_INCLUDE_DIR})
+
 # Apply maximum optimization to the library itself
 # This is crucial since most GEF code is header-only templates
 target_compile_options(gef PUBLIC 

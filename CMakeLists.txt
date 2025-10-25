@@ -75,6 +75,27 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sdsl-lite)
 
+# --- Secondary Dependency: SUX (Header-only library) ---
+FetchContent_Declare(
+    sux
+    GIT_REPOSITORY https://github.com/vigna/sux.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(sux)
+
+# SUX is header-only, so we just need to expose its include directory
+if(TARGET sux)
+    # If sux creates a target, use it
+    set(SUX_INCLUDE_DIR ${sux_SOURCE_DIR})
+else()
+    # Otherwise, just get the source directory
+    FetchContent_GetProperties(sux)
+    if(NOT sux_POPULATED)
+        FetchContent_Populate(sux)
+    endif()
+    set(SUX_INCLUDE_DIR ${sux_SOURCE_DIR})
+endif()
+
 # --- Project Sources ---
 add_subdirectory(src)
 

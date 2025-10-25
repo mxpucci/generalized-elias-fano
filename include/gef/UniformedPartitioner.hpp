@@ -138,6 +138,7 @@ public:
     // Serialization
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    using IGEF<T>::serialize;
     void serialize(std::ofstream& ofs) const override {
         if (!ofs.is_open()) {
             throw std::runtime_error("Output file stream is not open for serialization.");
