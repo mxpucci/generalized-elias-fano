@@ -609,3 +609,4 @@ TEST_F(SUXBitVectorTest, CloneTest) {
     EXPECT_EQ(cloned->rank(50), 2);
 }
 
+
