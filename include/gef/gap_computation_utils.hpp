@@ -178,7 +178,8 @@ GapComputation variation_of_shifted_vec(
     return result;
 }
 
-// Refactored total_variation_of_shifted_vec_with_multiple_shifts using SIMD
+// Replace the entire function starting from template<typename T> total_variation_of_shifted_vec_with_multiple_shifts to its closing brace with this corrected version
+
 template<typename T>
 std::vector<GapComputation>
 total_variation_of_shifted_vec_with_multiple_shifts(
@@ -202,11 +203,24 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         shifted[i] = static_cast<U>(vec[i] - min_val);
     }
 
+    // Compute total_bits (used in both scalar and vector paths)
+    using WU = unsigned __int128;
+    using WI = __int128;
+    const WI min_w = static_cast<WI>(min_val);
+    const WI max_w = static_cast<WI>(max_val);
+    const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+    size_t total_bits = (range <= 1) ? 1 : [] (WU r) {
+        size_t bits = 0; WU x = r - 1;
+        while (x > 0) { ++bits; x >>= 1; }
+        return bits;
+    }(range);
+
     // Process in SIMD-friendly way: for each pair, compute for all b
 #ifdef __AVX2__
     const size_t SIMD_LANES = 4; // AVX2: 256 bits / 64 bits = 4
     __m256i zero_vec = _mm256_setzero_si256();
     __m256i one_vec = _mm256_set1_epi64x(1);
+    __m256i total_bits_vec = _mm256_set1_epi64x(total_bits);
 
     for (size_t b_group = min_b; b_group <= max_b; b_group += SIMD_LANES) {
         size_t group_size = std::min(SIMD_LANES, static_cast<size_t>(max_b - b_group + 1));
@@ -325,6 +339,7 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         for (size_t j = 0; j < group_size; ++j) {
             results[b_group + j - min_b].negative_exceptions_count = temp_results[j];
         }
+    }
 #else
     // Fallback scalar implementation
     for (uint8_t b = min_b; b <= max_b; ++b) {
