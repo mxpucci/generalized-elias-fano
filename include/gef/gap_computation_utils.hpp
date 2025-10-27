@@ -178,9 +178,6 @@ GapComputation variation_of_shifted_vec(
     return result;
 }
 
-// Helper macro for safe unsigned subtraction
-#define SAFE_USUB(a, b) ((a) > (b) ? (a) - (b) : 0)
-
 // Refactored total_variation_of_shifted_vec_with_multiple_shifts using SIMD
 template<typename T>
 std::vector<GapComputation>
@@ -233,55 +230,52 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         // First gap (special case)
         __m256i curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[0]), b_vec);
         __m256i gap = curr_high; // First "prev" is 0
-        __m256i is_pos = _mm256_cmpgt_epi64(gap, zero_vec);
-        __m256i mag = _mm256_abs_epi64(gap); // Requires custom abs for epi64
-
-        // Custom abs: (gap ^ mask) - mask where mask = (gap >> 63)
+        __m256i is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
+        __m256i is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
+        // Custom abs
         __m256i mask = _mm256_srai_epi64(gap, 63);
-        mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
-
-        __m256i is_exc = one_vec; // First is always exception for UGEF/BGEF
-
-        // Update accumulators (masked)
-        __m256i pos_mask = _mm256_and_si256(is_pos, _mm256_cmpgt_epi64(mag, zero_vec));
+        __m256i mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
+        __m256i is_exc = (rule == ExceptionRule::None) ? zero_vec : one_vec;
+        __m256i pos_mask = is_pos;
+        __m256i neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
         sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
+        sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
         pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
+        neg_gaps = _mm256_add_epi64(neg_gaps, neg_mask);
         __m256i no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
         sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
+        sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
         pos_exc = _mm256_add_epi64(pos_exc, _mm256_and_si256(is_exc, pos_mask));
+        neg_exc = _mm256_add_epi64(neg_exc, _mm256_and_si256(is_exc, neg_mask));
 
         // Main loop over pairs
         for (size_t i = 1; i < n; ++i) {
             __m256i prev_high = curr_high;
             curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[i]), b_vec);
             gap = _mm256_sub_epi64(curr_high, prev_high);
-
-            is_pos = _mm256_cmpgt_epi64(gap, zero_vec);
-            mag = _mm256_abs_epi64(gap);
-
-            // Compute is_exc based on rule (vectorized)
+            is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
+            is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
+            // Custom abs
+            mask = _mm256_srai_epi64(gap, 63);
+            mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
             is_exc = zero_vec;
             if (rule != ExceptionRule::None) {
-                __m256i hbits = _mm256_sub_epi64(_mm256_set1_epi64x(64), b_vec); // Assuming total_bits=64 for int64_t
+                __m256i hbits = _mm256_sub_epi64(total_bits_vec, b_vec);
                 if (rule == ExceptionRule::BGEF) {
                     __m256i threshold = _mm256_add_epi64(mag, _mm256_set1_epi64x(2));
                     is_exc = _mm256_cmpgt_epi64(threshold, hbits);
                 } else if (rule == ExceptionRule::UGEF) {
-                    __m256i is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
                     __m256i threshold = _mm256_add_epi64(gap, one_vec);
                     __m256i is_large = _mm256_cmpgt_epi64(threshold, hbits);
                     is_exc = _mm256_or_si256(is_neg, is_large);
                 }
             }
-
-            // Accumulate
             pos_mask = is_pos;
-            __m256i neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL)); // not pos
+            neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
             sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
             sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
             pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
             neg_gaps = _mm256_add_epi64(neg_gaps, neg_mask);
-
             no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
             sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
             sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
@@ -290,19 +284,47 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         }
 
         // Store results for this group
-        alignas(32) uint64_t sums[8];
-        _mm256_storeu_si256((__m256i*)sums, sum_pos);
+        alignas(32) uint64_t temp_results[4];
+        // sum_of_positive_gaps
+        _mm256_storeu_si256((__m256i*)temp_results, sum_pos);
         for (size_t j = 0; j < group_size; ++j) {
-            size_t idx = b_group + j - min_b;
-            results[idx].sum_of_positive_gaps = sums[j];
-            // Repeat for all accumulators
+            results[b_group + j - min_b].sum_of_positive_gaps = temp_results[j];
         }
-        _mm256_storeu_si256((__m256i*)sums, sum_neg);
+        // sum_of_negative_gaps
+        _mm256_storeu_si256((__m256i*)temp_results, sum_neg);
         for (size_t j = 0; j < group_size; ++j) {
-            size_t idx = b_group + j - min_b;
-            results[idx].sum_of_negative_gaps = sums[j];
+            results[b_group + j - min_b].sum_of_negative_gaps = temp_results[j];
         }
-        // ... Repeat for all other fields: sum_pos_no_exc, sum_neg_no_exc, pos_gaps, neg_gaps, pos_exc, neg_exc
+        // sum_of_positive_gaps_without_exception
+        _mm256_storeu_si256((__m256i*)temp_results, sum_pos_no_exc);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].sum_of_positive_gaps_without_exception = temp_results[j];
+        }
+        // sum_of_negative_gaps_without_exception
+        _mm256_storeu_si256((__m256i*)temp_results, sum_neg_no_exc);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].sum_of_negative_gaps_without_exception = temp_results[j];
+        }
+        // positive_gaps
+        _mm256_storeu_si256((__m256i*)temp_results, pos_gaps);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].positive_gaps = temp_results[j];
+        }
+        // negative_gaps
+        _mm256_storeu_si256((__m256i*)temp_results, neg_gaps);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].negative_gaps = temp_results[j];
+        }
+        // positive_exceptions_count
+        _mm256_storeu_si256((__m256i*)temp_results, pos_exc);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].positive_exceptions_count = temp_results[j];
+        }
+        // negative_exceptions_count
+        _mm256_storeu_si256((__m256i*)temp_results, neg_exc);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].negative_exceptions_count = temp_results[j];
+        }
 #else
     // Fallback scalar implementation
     for (uint8_t b = min_b; b <= max_b; ++b) {
