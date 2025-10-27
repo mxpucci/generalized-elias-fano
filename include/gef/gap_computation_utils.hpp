@@ -247,7 +247,11 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         __m256i is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
         __m256i is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
         // Custom abs
+#ifdef __AVX512VL__
         __m256i mask = _mm256_srai_epi64(gap, 63);
+#else
+        __m256i mask = _mm256_cmpgt_epi64(zero_vec, gap);
+#endif
         __m256i mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
         __m256i is_exc = (rule == ExceptionRule::None) ? zero_vec : one_vec;
         __m256i pos_mask = is_pos;
@@ -270,7 +274,11 @@ total_variation_of_shifted_vec_with_multiple_shifts(
             is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
             is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
             // Custom abs
-            mask = _mm256_srai_epi64(gap, 63);
+#ifdef __AVX512VL__
+            __m256i mask = _mm256_srai_epi64(gap, 63);
+#else
+            __m256i mask = _mm256_cmpgt_epi64(zero_vec, gap);
+#endif
             mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
             is_exc = zero_vec;
             if (rule != ExceptionRule::None) {
