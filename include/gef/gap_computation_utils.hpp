@@ -190,6 +190,8 @@ total_variation_of_shifted_vec_with_multiple_shifts(
     const uint8_t max_b,
     ExceptionRule rule = ExceptionRule::None
 ) {
+    if (min_b > max_b) return {};
+
     const size_t n = vec.size();
     const size_t num_shifts = max_b - min_b + 1;
     std::vector<GapComputation> results(num_shifts);
@@ -366,7 +368,9 @@ std::vector<GapComputation> compute_all_gap_computations(
     ExceptionRule rule,
     size_t total_bits
 ) {
-    return total_variation_of_shifted_vec_with_multiple_shifts(v, min_val, max_val, 0, total_bits, rule);
+    using U = std::make_unsigned_t<T>;
+    uint8_t max_b = std::min(total_bits, static_cast<size_t>(sizeof(U) * 8 - 1));
+    return total_variation_of_shifted_vec_with_multiple_shifts(v, min_val, max_val, 0, max_b, rule);
 }
 
 #endif
