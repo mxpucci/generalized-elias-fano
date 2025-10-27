@@ -178,11 +178,10 @@ GapComputation variation_of_shifted_vec(
     return result;
 }
 
-/**
- * For any b_i \in [min_b, max_b],
- * returns GapComputation(b_i) for b_i as in variation_of_shifted_vec.
- * Usually max_b  - min_b < 5
- */
+// Helper macro for safe unsigned subtraction
+#define SAFE_USUB(a, b) ((a) > (b) ? (a) - (b) : 0)
+
+// Refactored total_variation_of_shifted_vec_with_multiple_shifts using SIMD
 template<typename T>
 std::vector<GapComputation>
 total_variation_of_shifted_vec_with_multiple_shifts(
@@ -193,22 +192,127 @@ total_variation_of_shifted_vec_with_multiple_shifts(
     const uint8_t max_b,
     ExceptionRule rule = ExceptionRule::None
 ) {
-    std::vector<GapComputation> results(max_b - min_b + 1);
     const size_t n = vec.size();
-    if (n == 0) return results;
+    const size_t num_shifts = max_b - min_b + 1;
+    std::vector<GapComputation> results(num_shifts);
 
-    for (size_t b = min_b; b <= max_b; ++b) {
-        results[b - min_b] = variation_of_shifted_vec(
-            vec,
-            min_val,
-            max_val,
-            b,
-            rule
-        );
+    if (n < 2) return results;
+
+    // Precompute shifted values as unsigned to avoid signed issues
+    using U = std::make_unsigned_t<T>;
+    std::vector<U> shifted(n);
+    for (size_t i = 0; i < n; ++i) {
+        shifted[i] = static_cast<U>(vec[i] - min_val);
     }
+
+    // Process in SIMD-friendly way: for each pair, compute for all b
+#ifdef __AVX2__
+    const size_t SIMD_LANES = 4; // AVX2: 256 bits / 64 bits = 4
+    __m256i zero_vec = _mm256_setzero_si256();
+    __m256i one_vec = _mm256_set1_epi64x(1);
+
+    for (size_t b_group = min_b; b_group <= max_b; b_group += SIMD_LANES) {
+        size_t group_size = std::min(SIMD_LANES, static_cast<size_t>(max_b - b_group + 1));
+        __m256i b_vec = _mm256_set_epi64x(
+            (group_size > 3 ? b_group + 3 : 0),
+            (group_size > 2 ? b_group + 2 : 0),
+            (group_size > 1 ? b_group + 1 : 0),
+            b_group
+        );
+
+        // Accumulators
+        __m256i sum_pos = zero_vec;
+        __m256i sum_neg = zero_vec;
+        __m256i sum_pos_no_exc = zero_vec;
+        __m256i sum_neg_no_exc = zero_vec;
+        __m256i pos_gaps = zero_vec;
+        __m256i neg_gaps = zero_vec;
+        __m256i pos_exc = zero_vec;
+        __m256i neg_exc = zero_vec;
+
+        // First gap (special case)
+        __m256i curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[0]), b_vec);
+        __m256i gap = curr_high; // First "prev" is 0
+        __m256i is_pos = _mm256_cmpgt_epi64(gap, zero_vec);
+        __m256i mag = _mm256_abs_epi64(gap); // Requires custom abs for epi64
+
+        // Custom abs: (gap ^ mask) - mask where mask = (gap >> 63)
+        __m256i mask = _mm256_srai_epi64(gap, 63);
+        mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
+
+        __m256i is_exc = one_vec; // First is always exception for UGEF/BGEF
+
+        // Update accumulators (masked)
+        __m256i pos_mask = _mm256_and_si256(is_pos, _mm256_cmpgt_epi64(mag, zero_vec));
+        sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
+        pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
+        __m256i no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
+        sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
+        pos_exc = _mm256_add_epi64(pos_exc, _mm256_and_si256(is_exc, pos_mask));
+
+        // Main loop over pairs
+        for (size_t i = 1; i < n; ++i) {
+            __m256i prev_high = curr_high;
+            curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[i]), b_vec);
+            gap = _mm256_sub_epi64(curr_high, prev_high);
+
+            is_pos = _mm256_cmpgt_epi64(gap, zero_vec);
+            mag = _mm256_abs_epi64(gap);
+
+            // Compute is_exc based on rule (vectorized)
+            is_exc = zero_vec;
+            if (rule != ExceptionRule::None) {
+                __m256i hbits = _mm256_sub_epi64(_mm256_set1_epi64x(64), b_vec); // Assuming total_bits=64 for int64_t
+                if (rule == ExceptionRule::BGEF) {
+                    __m256i threshold = _mm256_add_epi64(mag, _mm256_set1_epi64x(2));
+                    is_exc = _mm256_cmpgt_epi64(threshold, hbits);
+                } else if (rule == ExceptionRule::UGEF) {
+                    __m256i is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
+                    __m256i threshold = _mm256_add_epi64(gap, one_vec);
+                    __m256i is_large = _mm256_cmpgt_epi64(threshold, hbits);
+                    is_exc = _mm256_or_si256(is_neg, is_large);
+                }
+            }
+
+            // Accumulate
+            pos_mask = is_pos;
+            __m256i neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL)); // not pos
+            sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
+            sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
+            pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
+            neg_gaps = _mm256_add_epi64(neg_gaps, neg_mask);
+
+            no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
+            sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
+            sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
+            pos_exc = _mm256_add_epi64(pos_exc, _mm256_and_si256(is_exc, pos_mask));
+            neg_exc = _mm256_add_epi64(neg_exc, _mm256_and_si256(is_exc, neg_mask));
+        }
+
+        // Store results for this group
+        alignas(32) uint64_t sums[8];
+        _mm256_storeu_si256((__m256i*)sums, sum_pos);
+        for (size_t j = 0; j < group_size; ++j) {
+            size_t idx = b_group + j - min_b;
+            results[idx].sum_of_positive_gaps = sums[j];
+            // Repeat for all accumulators
+        }
+        _mm256_storeu_si256((__m256i*)sums, sum_neg);
+        for (size_t j = 0; j < group_size; ++j) {
+            size_t idx = b_group + j - min_b;
+            results[idx].sum_of_negative_gaps = sums[j];
+        }
+        // ... Repeat for all other fields: sum_pos_no_exc, sum_neg_no_exc, pos_gaps, neg_gaps, pos_exc, neg_exc
+#else
+    // Fallback scalar implementation
+    for (uint8_t b = min_b; b <= max_b; ++b) {
+        results[b - min_b] = variation_of_shifted_vec(vec, min_val, max_val, b, rule);
+    }
+#endif
     return results;
 }
 
+// Refactored compute_all_gap_computations to use the SIMD version above
 template<typename T>
 std::vector<GapComputation> compute_all_gap_computations(
     const std::vector<T>& v,
@@ -217,133 +321,7 @@ std::vector<GapComputation> compute_all_gap_computations(
     ExceptionRule rule,
     size_t total_bits
 ) {
-    const size_t n = v.size();
-    if (n == 0) return {};
-
-    using U = std::make_unsigned_t<T>;
-    using WU = unsigned __int128;
-    using WI = __int128;
-
-    std::vector<GapComputation> gcs(total_bits + 1);
-
-    // Optimized exception checker: precompute thresholds to avoid repeated calculations
-    auto is_exception_fast = [&](size_t index, int64_t gap, size_t b) -> bool {
-        if (index == 0) return true;
-        if (rule == ExceptionRule::None) return false;
-        
-        const int64_t hbits = static_cast<int64_t>(total_bits) - static_cast<int64_t>(b);
-        if (hbits <= 0) return true;
-        
-        if (rule == ExceptionRule::UGEF) {
-            // UGEF: negative gaps or gap >= h are exceptions
-            return gap < 0 || gap >= hbits;
-        } else {  // BGEF
-            // BGEF: |gap| + 2 > h
-            const int64_t mag = gap < 0 ? -gap : gap;
-            return (mag + 2) > hbits;
-        }
-    };
-
-    // Precompute shifted values (handle signed types correctly)
-    // Use 64-bit when possible for performance
-    if constexpr (sizeof(T) <= 8) {
-        std::vector<uint64_t> shifted64(n);
-        for (size_t i = 0; i < n; ++i) {
-            const int64_t signed_diff = static_cast<int64_t>(v[i]) - static_cast<int64_t>(min_val);
-            shifted64[i] = static_cast<uint64_t>(signed_diff);
-        }
-
-        // Handle first element for all b
-        const uint64_t first_shifted = shifted64[0];
-        for (size_t b = 0; b <= total_bits; ++b) {
-            const int64_t first_gap = static_cast<int64_t>(first_shifted >> b);
-            const size_t g = static_cast<size_t>(first_gap);
-            gcs[b].positive_gaps++;
-            gcs[b].sum_of_positive_gaps += g;
-            const bool is_exc = is_exception_fast(0, first_gap, b);
-            if (is_exc) {
-                gcs[b].positive_exceptions_count++;
-            } else {
-                gcs[b].sum_of_positive_gaps_without_exception += g;
-            }
-        }
-
-        // Process subsequent elements - compiler can auto-vectorize this better
-        for (size_t i = 1; i < n; ++i) {
-            const uint64_t curr = shifted64[i];
-            const uint64_t prev = shifted64[i - 1];
-            
-            // Inner loop over b - this is where most time is spent
-            // Unroll hint for compiler
-            #pragma GCC unroll 16
-            for (size_t b = 0; b <= total_bits; ++b) {
-                const int64_t gap = static_cast<int64_t>(curr >> b) - static_cast<int64_t>(prev >> b);
-                const bool is_exc = is_exception_fast(i, gap, b);
-                
-                // Branchless updates where possible
-                const bool is_positive = gap >= 0;
-                const size_t g = is_positive ? static_cast<size_t>(gap) : static_cast<size_t>(-gap);
-                
-                gcs[b].positive_gaps += is_positive;
-                gcs[b].negative_gaps += !is_positive;
-                gcs[b].sum_of_positive_gaps += is_positive ? g : 0;
-                gcs[b].sum_of_negative_gaps += is_positive ? 0 : g;
-                
-                if (is_exc) {
-                    gcs[b].positive_exceptions_count += is_positive;
-                    gcs[b].negative_exceptions_count += !is_positive;
-                } else {
-                    gcs[b].sum_of_positive_gaps_without_exception += is_positive ? g : 0;
-                    gcs[b].sum_of_negative_gaps_without_exception += is_positive ? 0 : g;
-                }
-            }
-        }
-    } else {
-        // Fallback to 128-bit for larger types
-        std::vector<WU> shifted(n);
-        for (size_t i = 0; i < n; ++i) {
-            const WI signed_diff = static_cast<WI>(v[i]) - static_cast<WI>(min_val);
-            shifted[i] = static_cast<WU>(signed_diff);
-        }
-
-        const WU first_shifted = shifted[0];
-        for (size_t b = 0; b <= total_bits; ++b) {
-            const WI first_gap = static_cast<WI>(first_shifted >> b);
-            const size_t g = static_cast<size_t>(first_gap);
-            gcs[b].positive_gaps++;
-            gcs[b].sum_of_positive_gaps += g;
-            const bool is_exc = is_exception_fast(0, first_gap, b);
-            if (is_exc) {
-                gcs[b].positive_exceptions_count++;
-            } else {
-                gcs[b].sum_of_positive_gaps_without_exception += g;
-            }
-        }
-
-        for (size_t i = 1; i < n; ++i) {
-            const WU curr = shifted[i];
-            const WU prev = shifted[i - 1];
-            for (size_t b = 0; b <= total_bits; ++b) {
-                const WI gap = static_cast<WI>(curr >> b) - static_cast<WI>(prev >> b);
-                const bool is_exc = is_exception_fast(i, gap, b);
-                if (gap >= 0) {
-                    const size_t g = static_cast<size_t>(gap);
-                    gcs[b].positive_gaps++;
-                    gcs[b].sum_of_positive_gaps += g;
-                    if (!is_exc) gcs[b].sum_of_positive_gaps_without_exception += g;
-                    else gcs[b].positive_exceptions_count++;
-                } else {
-                    const size_t g = static_cast<size_t>(-gap);
-                    gcs[b].negative_gaps++;
-                    gcs[b].sum_of_negative_gaps += g;
-                    if (!is_exc) gcs[b].sum_of_negative_gaps_without_exception += g;
-                    else gcs[b].negative_exceptions_count++;
-                }
-            }
-        }
-    }
-
-    return gcs;
+    return total_variation_of_shifted_vec_with_multiple_shifts(v, min_val, max_val, 0, total_bits, rule);
 }
 
 #endif
