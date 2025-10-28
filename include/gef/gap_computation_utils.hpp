@@ -226,10 +226,12 @@ total_variation_of_shifted_vec_with_multiple_shifts(
 
     for (size_t b_group = min_b; b_group <= max_b; b_group += SIMD_LANES) {
         size_t group_size = std::min(SIMD_LANES, static_cast<size_t>(max_b - b_group + 1));
+        
+        // Build b_vec with actual b values (not 0 for unused lanes) to ensure correct indexing
         __m256i b_vec = _mm256_set_epi64x(
-            (group_size > 3 ? b_group + 3 : 0),
-            (group_size > 2 ? b_group + 2 : 0),
-            (group_size > 1 ? b_group + 1 : 0),
+            (group_size > 3 ? b_group + 3 : b_group),
+            (group_size > 2 ? b_group + 2 : b_group),
+            (group_size > 1 ? b_group + 1 : b_group),
             b_group
         );
 
@@ -368,9 +370,10 @@ std::vector<GapComputation> compute_all_gap_computations(
     ExceptionRule rule,
     size_t total_bits
 ) {
-    using U = std::make_unsigned_t<T>;
-    uint8_t max_b = std::min(total_bits, static_cast<size_t>(sizeof(U) * 8 - 1));
-    return total_variation_of_shifted_vec_with_multiple_shifts(v, min_val, max_val, 0, max_b, rule);
+    // Cap total_bits to what fits in uint8_t (max 255, but realistically <= 128 for __int128)
+    // Note: Shifts of 64+ bits are defined (produce 0), so we allow the full range
+    uint8_t max_b_capped = static_cast<uint8_t>(std::min(total_bits, static_cast<size_t>(255)));
+    return total_variation_of_shifted_vec_with_multiple_shifts(v, min_val, max_val, 0, max_b_capped, rule);
 }
 
 #endif
