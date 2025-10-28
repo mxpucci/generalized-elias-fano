@@ -62,11 +62,11 @@ GapComputation variation_of_original_vec(
         const int64_t curr = static_cast<int64_t>(vec[i]) - static_cast<int64_t>(min_val);
         const int64_t prev = static_cast<int64_t>(vec[i - 1]) - static_cast<int64_t>(min_val);
         const int64_t diff = curr - prev;
-        
+
         // Branchless computation - compiler can vectorize this
         const bool is_positive = diff >= 0;
         const uint64_t mag = is_positive ? static_cast<uint64_t>(diff) : static_cast<uint64_t>(-diff);
-        
+
         pos_gaps += is_positive;
         sum_pos += is_positive ? mag : 0;
         sum_neg += is_positive ? 0 : mag;
@@ -200,14 +200,15 @@ total_variation_of_shifted_vec_with_multiple_shifts(
 
     // Precompute shifted values as unsigned to avoid signed issues
     using U = std::make_unsigned_t<T>;
-    std::vector<U> shifted(n);
+    using WU = unsigned __int128;
+    using WI = __int128;
+    std::vector<uint64_t> shifted(n);
     for (size_t i = 0; i < n; ++i) {
-        shifted[i] = static_cast<U>(vec[i] - min_val);
+        WI val = static_cast<WI>(vec[i]) - static_cast<WI>(min_val);
+        shifted[i] = static_cast<uint64_t>(val);
     }
 
     // Compute total_bits (used in both scalar and vector paths)
-    using WU = unsigned __int128;
-    using WI = __int128;
     const WI min_w = static_cast<WI>(min_val);
     const WI max_w = static_cast<WI>(max_val);
     const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
@@ -224,9 +225,17 @@ total_variation_of_shifted_vec_with_multiple_shifts(
     __m256i one_vec = _mm256_set1_epi64x(1);
     __m256i total_bits_vec = _mm256_set1_epi64x(total_bits);
 
+    auto ugt = [&](__m256i a, __m256i b) -> __m256i {
+        __m256i signed_gt = _mm256_cmpgt_epi64(a, b);
+        __m256i a_neg = _mm256_cmpgt_epi64(zero_vec, a);
+        __m256i b_neg = _mm256_cmpgt_epi64(zero_vec, b);
+        __m256i xor_signs = _mm256_xor_si256(a_neg, b_neg);
+        return _mm256_xor_si256(signed_gt, xor_signs);
+    };
+
     for (size_t b_group = min_b; b_group <= max_b; b_group += SIMD_LANES) {
         size_t group_size = std::min(SIMD_LANES, static_cast<size_t>(max_b - b_group + 1));
-        
+
         // Build b_vec with actual b values (not 0 for unused lanes) to ensure correct indexing
         __m256i b_vec = _mm256_set_epi64x(
             (group_size > 3 ? b_group + 3 : b_group),
@@ -247,52 +256,53 @@ total_variation_of_shifted_vec_with_multiple_shifts(
 
         // First gap (special case)
         __m256i curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[0]), b_vec);
-        __m256i gap = curr_high; // First "prev" is 0
-        __m256i is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
+        __m256i prev_high = zero_vec;
+        __m256i signed_less = _mm256_cmpgt_epi64(prev_high, curr_high);
+        __m256i curr_neg = _mm256_cmpgt_epi64(zero_vec, curr_high);
+        __m256i prev_neg = _mm256_cmpgt_epi64(zero_vec, prev_high);
+        __m256i xor_signs = _mm256_xor_si256(curr_neg, prev_neg);
+        __m256i is_neg = _mm256_xor_si256(signed_less, xor_signs);
         __m256i is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
-        // Custom abs
-#ifdef __AVX512VL__
-        __m256i mask = _mm256_srai_epi64(gap, 63);
-#else
-        __m256i mask = _mm256_cmpgt_epi64(zero_vec, gap);
-#endif
-        __m256i mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
-        __m256i is_exc = (rule == ExceptionRule::None) ? zero_vec : one_vec;
+        __m256i pos_diff = _mm256_sub_epi64(curr_high, prev_high);
+        __m256i neg_diff = _mm256_sub_epi64(prev_high, curr_high);
+        __m256i mag = _mm256_blendv_epi8(pos_diff, neg_diff, is_neg);
+        __m256i is_exc = (rule == ExceptionRule::None) ? zero_vec : _mm256_set1_epi64x(-1LL);
         __m256i pos_mask = is_pos;
         __m256i neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
         sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
         sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
-        pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
-        neg_gaps = _mm256_add_epi64(neg_gaps, neg_mask);
+        pos_gaps = _mm256_add_epi64(pos_gaps, _mm256_srli_epi64(pos_mask, 63));
+        neg_gaps = _mm256_add_epi64(neg_gaps, _mm256_srli_epi64(neg_mask, 63));
         __m256i no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
         sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
         sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
-        pos_exc = _mm256_add_epi64(pos_exc, _mm256_and_si256(is_exc, pos_mask));
-        neg_exc = _mm256_add_epi64(neg_exc, _mm256_and_si256(is_exc, neg_mask));
+        pos_exc = _mm256_add_epi64(pos_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, pos_mask), 63));
+        neg_exc = _mm256_add_epi64(neg_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, neg_mask), 63));
 
         // Main loop over pairs
         for (size_t i = 1; i < n; ++i) {
-            __m256i prev_high = curr_high;
+            prev_high = curr_high;
             curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[i]), b_vec);
-            gap = _mm256_sub_epi64(curr_high, prev_high);
-            is_neg = _mm256_cmpgt_epi64(zero_vec, gap);
+            signed_less = _mm256_cmpgt_epi64(prev_high, curr_high);
+            curr_neg = _mm256_cmpgt_epi64(zero_vec, curr_high);
+            prev_neg = _mm256_cmpgt_epi64(zero_vec, prev_high);
+            xor_signs = _mm256_xor_si256(curr_neg, prev_neg);
+            is_neg = _mm256_xor_si256(signed_less, xor_signs);
             is_pos = _mm256_xor_si256(is_neg, _mm256_set1_epi64x(-1LL));
-            // Custom abs
-#ifdef __AVX512VL__
-            __m256i mask = _mm256_srai_epi64(gap, 63);
-#else
-            __m256i mask = _mm256_cmpgt_epi64(zero_vec, gap);
-#endif
-            mag = _mm256_sub_epi64(_mm256_xor_si256(gap, mask), mask);
+            pos_diff = _mm256_sub_epi64(curr_high, prev_high);
+            neg_diff = _mm256_sub_epi64(prev_high, curr_high);
+            mag = _mm256_blendv_epi8(pos_diff, neg_diff, is_neg);
             is_exc = zero_vec;
             if (rule != ExceptionRule::None) {
                 __m256i hbits = _mm256_sub_epi64(total_bits_vec, b_vec);
+                __m256i gt_zero = _mm256_cmpgt_epi64(hbits, zero_vec);
+                hbits = _mm256_blendv_epi8(zero_vec, hbits, gt_zero);
                 if (rule == ExceptionRule::BGEF) {
                     __m256i threshold = _mm256_add_epi64(mag, _mm256_set1_epi64x(2));
-                    is_exc = _mm256_cmpgt_epi64(threshold, hbits);
+                    is_exc = ugt(threshold, hbits);
                 } else if (rule == ExceptionRule::UGEF) {
-                    __m256i threshold = _mm256_add_epi64(gap, one_vec);
-                    __m256i is_large = _mm256_cmpgt_epi64(threshold, hbits);
+                    __m256i threshold = _mm256_add_epi64(mag, one_vec);
+                    __m256i is_large = ugt(threshold, hbits);
                     is_exc = _mm256_or_si256(is_neg, is_large);
                 }
             }
@@ -300,13 +310,13 @@ total_variation_of_shifted_vec_with_multiple_shifts(
             neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
             sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
             sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
-            pos_gaps = _mm256_add_epi64(pos_gaps, pos_mask);
-            neg_gaps = _mm256_add_epi64(neg_gaps, neg_mask);
+            pos_gaps = _mm256_add_epi64(pos_gaps, _mm256_srli_epi64(pos_mask, 63));
+            neg_gaps = _mm256_add_epi64(neg_gaps, _mm256_srli_epi64(neg_mask, 63));
             no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
             sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
             sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
-            pos_exc = _mm256_add_epi64(pos_exc, _mm256_and_si256(is_exc, pos_mask));
-            neg_exc = _mm256_add_epi64(neg_exc, _mm256_and_si256(is_exc, neg_mask));
+            pos_exc = _mm256_add_epi64(pos_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, pos_mask), 63));
+            neg_exc = _mm256_add_epi64(neg_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, neg_mask), 63));
         }
 
         // Store results for this group
