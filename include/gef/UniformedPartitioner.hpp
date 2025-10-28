@@ -47,30 +47,45 @@ public:
      * @param args Additional arguments to be forwarded to the Compressor's constructor for each block.
      */
     UniformedPartitioner(const std::vector<T>& data, size_t k, CompressorArgs... args)
-        : m_original_size(data.size()), m_block_size(k) {
-        if (k == 0) {
-            throw std::invalid_argument("Block size k cannot be zero.");
-        }
+    : m_original_size(data.size()), m_block_size(k) {
+        if (k == 0) throw std::invalid_argument("Block size k cannot be zero.");
 
         const size_t num_partitions = (data.size() + k - 1) / k;
         m_partitions.resize(num_partitions);
 
-        // Embarrassingly parallel: each partition is completely independent
-        // Parallelization is beneficial when num_partitions >= 4 (enough work to justify overhead)
-        #ifdef _OPENMP
-        #pragma omp parallel for schedule(dynamic) if(num_partitions >= 4)
-        #endif
-        for (size_t partition_idx = 0; partition_idx < num_partitions; ++partition_idx) {
-            const size_t start_pos = partition_idx * k;
-            const size_t end_pos = std::min(start_pos + k, data.size());
-            
-            // Create chunk for this partition
-            std::vector<T> chunk(data.begin() + start_pos, data.begin() + end_pos);
-            
-            // Compress this partition independently
-            m_partitions[partition_idx] = std::make_unique<Compressor>(chunk, args...);
+    #ifdef _OPENMP
+        int threads = 1;
+        #pragma omp parallel
+        {
+            #pragma omp single
+            { threads = omp_get_num_threads(); }
         }
+        const size_t chunk = std::max<size_t>(1, (num_partitions + threads * 4 - 1) / (threads * 4));
+
+        #pragma omp parallel
+        {
+            #pragma omp for schedule(static, /*chunk*/ 1)
+            for (size_t p = 0; p < num_partitions; ++p) {
+                const size_t start = p * k;
+                const size_t end   = std::min(start + k, data.size());
+                const size_t len   = end - start;
+
+                std::span<const T> view(data.data() + start, len);
+                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+            }
+        }
+    #else
+        for (size_t p = 0; p < num_partitions; ++p) {
+            const size_t start = p * k;
+            const size_t end   = std::min(start + k, data.size());
+            const size_t len   = end - start;
+
+            std::span<const T> view(data.data() + start, len);
+            m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+        }
+    #endif
     }
+
 
     /**
      * @brief Default constructor. Used for loading from a stream.
