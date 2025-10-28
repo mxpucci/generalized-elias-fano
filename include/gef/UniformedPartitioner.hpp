@@ -17,6 +17,18 @@
 
 namespace gef {
 
+    #if __cplusplus < 202002L
+    template<typename T>
+    struct Span {
+        const T* ptr;
+        size_t n;
+        Span(const T* p, size_t n) : ptr(p), n(n) {}
+        const T* data() const { return ptr; }
+        size_t size() const { return n; }
+    };
+    #endif
+
+
 /**
  * @brief A class that partitions a sequence and applies a given compressor to each partition.
  *
@@ -70,7 +82,7 @@ public:
                 const size_t end   = std::min(start + k, data.size());
                 const size_t len   = end - start;
 
-                std::span<const T> view(data.data() + start, len);
+                Span<const T> view(data.data() + start, len);
                 m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
             }
         }
@@ -80,7 +92,7 @@ public:
             const size_t end   = std::min(start + k, data.size());
             const size_t len   = end - start;
 
-            std::span<const T> view(data.data() + start, len);
+            Span<const T> view(data.data() + start, len);
             m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
         }
     #endif

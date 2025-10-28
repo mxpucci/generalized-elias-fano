@@ -17,8 +17,8 @@
 
 template<typename T>
 struct RLE_GEF_Wrapper : public gef::RLE_GEF<T> {
-    RLE_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::RLE_GEF<T>(factory, data) {}
+    RLE_GEF_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
+            : gef::RLE_GEF<T>(factory, std::vector<T>(data.data(), data.data() + data.size())) {}
 
     RLE_GEF_Wrapper() : gef::RLE_GEF<T>() {}
 };

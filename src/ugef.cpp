@@ -18,8 +18,8 @@
 template<typename T>
 struct B_GEF_Wrapper : public gef::U_GEF<T> {
     // Constructor for compression
-    B_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::U_GEF<T>(factory, data) {}
+    B_GEF_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
+            : gef::U_GEF<T>(factory, std::vector<T>(data.data(), data.data() + data.size())) {}
 
     // Default constructor for loading from stream
     B_GEF_Wrapper() : gef::U_GEF<T>() {}

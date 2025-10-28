@@ -14,8 +14,8 @@
 template<typename T>
 struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
     // Constructor for compression
-    B_GEF_NO_RLE_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF_STAR<T>(factory, data, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
+    B_GEF_NO_RLE_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
+            : gef::B_GEF_STAR<T>(factory, std::vector<T>(data.data(), data.data() + data.size()), gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
     B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
