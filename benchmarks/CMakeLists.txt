@@ -4,7 +4,8 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     get_filename_component(benchmark_name ${benchmark_file} NAME_WE)
     
     # Skip compression_benchmark as we handle it separately below
-    if(benchmark_name STREQUAL "compression_benchmark")
+    if(benchmark_name STREQUAL "compression_benchmark" OR
+       benchmark_name STREQUAL "single_thread_compression_throughput")
         continue()
     endif()
     
@@ -79,10 +80,38 @@ if(OpenMP_CXX_FOUND)
             set_target_properties(compression_benchmark_no_omp PROPERTIES LINK_FLAGS "${LINK_FLAGS}")
         endif()
     endif()
-    
     message(STATUS "Building two compression_benchmark versions:")
     message(STATUS "  - compression_benchmark (WITH OpenMP)")
     message(STATUS "  - compression_benchmark_no_omp (WITHOUT OpenMP)")
 else()
     message(STATUS "OpenMP not found - both benchmark versions will be sequential")
 endif() 
+
+# ---------------------------------------------------------------------------
+# Single-thread compression throughput measurement executables
+# ---------------------------------------------------------------------------
+
+function(configure_single_thread_target target_name)
+    target_link_libraries(${target_name} PRIVATE gef::gef)
+    target_compile_options(${target_name} PRIVATE
+        -O3 -march=native -ffast-math -funroll-loops
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-ftree-vectorize -fvect-cost-model=dynamic>
+        -g0
+    )
+    set_target_properties(${target_name} PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION TRUE
+    )
+    if(OpenMP_CXX_FOUND)
+        target_compile_definitions(${target_name} PRIVATE _OPENMP=0)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(${target_name} PRIVATE -fno-openmp -Wno-unknown-pragmas)
+        endif()
+    endif()
+endfunction()
+
+add_executable(single_thread_compression_throughput_simd single_thread_compression_throughput.cpp)
+configure_single_thread_target(single_thread_compression_throughput_simd)
+
+add_executable(single_thread_compression_throughput single_thread_compression_throughput.cpp)
+configure_single_thread_target(single_thread_compression_throughput)
+target_compile_definitions(single_thread_compression_throughput PRIVATE GEF_DISABLE_SIMD)

@@ -33,7 +33,9 @@ jobs:
                      -DGEF_TARGET_ARCH=skylake-avx512 \
                      -DGEF_STATIC_LINK=ON \
                      -DGEF_BUILD_BENCHMARKS=ON && \
-            make compression_benchmark compression_benchmark_no_omp -j\$(nproc)
+            make compression_benchmark compression_benchmark_no_omp \
+                 single_thread_compression_throughput \
+                 single_thread_compression_throughput_simd -j\$(nproc)
           "
 
       # Verify both benchmark variants were built successfully
@@ -41,7 +43,9 @@ jobs:
         run: |
           ls -lh build/benchmarks/compression_benchmark
           ls -lh build/benchmarks/compression_benchmark_no_omp
-          echo "✓ Both benchmark variants built successfully"
+          ls -lh build/benchmarks/single_thread_compression_throughput
+          ls -lh build/benchmarks/single_thread_compression_throughput_simd
+          echo "✓ All benchmark and single-thread executables built successfully"
 
       # Upload the compiled benchmark executables as a workflow artifact.
       # Use v4 of the upload‑artifact action because earlier versions are
@@ -54,6 +58,8 @@ jobs:
           path: |
             build/benchmarks/compression_benchmark
             build/benchmarks/compression_benchmark_no_omp
+            build/benchmarks/single_thread_compression_throughput
+            build/benchmarks/single_thread_compression_throughput_simd
             build/benchmarks/simple_benchmark
             run_benchmarks.sh
             validate_benchmark_json.sh
