@@ -13,7 +13,7 @@
 #include <cmath>
 #include <type_traits>
 
-#ifdef __AVX2__
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
 #endif
 
@@ -215,7 +215,7 @@ total_variation_of_shifted_vec_with_multiple_shifts(
     }(range);
 
     // Process in SIMD-friendly way: for each pair, compute for all b
-#ifdef __AVX2__
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
     const size_t SIMD_LANES = 4; // AVX2: 256 bits / 64 bits = 4
     __m256i zero_vec = _mm256_setzero_si256();
     __m256i one_vec = _mm256_set1_epi64x(1);

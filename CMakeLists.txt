@@ -17,6 +17,11 @@ set(GEF_TARGET_ARCH "native" CACHE STRING "Target CPU architecture (native, skyl
 
 # Option for static linking (useful for CI builds targeting older systems)
 option(GEF_STATIC_LINK "Build with static linking" OFF)
+option(GEF_DISABLE_SIMD "Force-disable SIMD-specific intrinsics and use scalar fallbacks" OFF)
+
+if(GEF_DISABLE_SIMD)
+    message(STATUS "GEF SIMD optimizations disabled (GEF_DISABLE_SIMD=ON)")
+endif()
 
 # Add high-performance compiler flags for Release builds
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=${GEF_TARGET_ARCH} -ffast-math -funroll-loops")

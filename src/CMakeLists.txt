@@ -28,6 +28,10 @@ target_compile_options(gef PUBLIC
     $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-ftree-vectorize -fvect-cost-model=dynamic>
 )
 
+if(GEF_DISABLE_SIMD)
+    target_compile_definitions(gef PUBLIC GEF_DISABLE_SIMD)
+endif()
+
 # Enable Link-Time Optimization (LTO) in Release builds
 set_target_properties(gef PROPERTIES
     INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE

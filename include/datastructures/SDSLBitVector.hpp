@@ -11,9 +11,9 @@
 #include <algorithm> // For std::fill
 
 // Include headers for SIMD intrinsics
-#if defined(__AVX2__)
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
-#elif defined(__ARM_NEON)
+#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
 #include <arm_neon.h>
 #endif
 
@@ -214,7 +214,7 @@ public:
             uint64_t* body_begin = data + start_word + 1;
             const size_t body_words = end_word - (start_word + 1);
 
-#if defined(__AVX2__)
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
             __m256i val_vec = _mm256_set1_epi64x(fill_val);
             size_t i = 0;
             // Process 4 words (32 bytes) at a time
@@ -225,7 +225,7 @@ public:
             for (; i < body_words; ++i) {
                 body_begin[i] = fill_val;
             }
-#elif defined(__ARM_NEON)
+#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
             uint64x2_t val_vec = vdupq_n_u64(fill_val);
             size_t i = 0;
             // Process 2 words (16 bytes) at a time

@@ -20,11 +20,11 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 
-#if defined(__AVX2__) || defined(__SSE4_2__)
+#if (defined(__AVX2__) || defined(__SSE4_2__)) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
 #endif
 
-#if defined(__aarch64__) && defined(__ARM_NEON)
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
 #include <arm_neon.h>
 #endif
 
