@@ -21,31 +21,61 @@
 #pragma region Compressor Wrappers and Globals
 template<typename T>
 struct U_GEF_Wrapper : public gef::U_GEF<T> {
-    // This constructor now matches B_GEF's, taking a strategy.
-    // It is assumed the base class gef::U_GEF has been updated to accept this parameter.
-    U_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory, gef::SplitPointStrategy strategy)
+    // Primary constructor matching gef::U_GEF expectations
+    U_GEF_Wrapper(const std::vector<T>& data,
+                  const std::shared_ptr<IBitVectorFactory>& factory,
+                  gef::SplitPointStrategy strategy)
         : gef::U_GEF<T>(factory, data, strategy) {}
+
+    // Convenience overload accepting a lightweight span-view
+    U_GEF_Wrapper(gef::Span<const T> data,
+                  const std::shared_ptr<IBitVectorFactory>& factory,
+                  gef::SplitPointStrategy strategy)
+        : U_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+
     U_GEF_Wrapper() : gef::U_GEF<T>() {}
 };
 
 template<typename T>
 struct RLE_GEF_Wrapper : public gef::RLE_GEF<T> {
-    RLE_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory)
+    RLE_GEF_Wrapper(const std::vector<T>& data,
+                    const std::shared_ptr<IBitVectorFactory>& factory)
         : gef::RLE_GEF<T>(factory, data) {}
+
+    RLE_GEF_Wrapper(gef::Span<const T> data,
+                    const std::shared_ptr<IBitVectorFactory>& factory)
+        : RLE_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory) {}
+
     RLE_GEF_Wrapper() : gef::RLE_GEF<T>() {}
 };
 
 template<typename T>
 struct B_GEF_Wrapper : public gef::B_GEF<T> {
-    B_GEF_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory, gef::SplitPointStrategy strategy)
+    B_GEF_Wrapper(const std::vector<T>& data,
+                  const std::shared_ptr<IBitVectorFactory>& factory,
+                  gef::SplitPointStrategy strategy)
         : gef::B_GEF<T>(factory, data, strategy) {}
+
+    B_GEF_Wrapper(gef::Span<const T> data,
+                  const std::shared_ptr<IBitVectorFactory>& factory,
+                  gef::SplitPointStrategy strategy)
+        : B_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+
     B_GEF_Wrapper() : gef::B_GEF<T>() {}
 };
 
 template<typename T>
 struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
-    B_GEF_NO_RLE_Wrapper(const std::vector<T>& data, std::shared_ptr<IBitVectorFactory> factory, gef::SplitPointStrategy strategy)
+    B_GEF_NO_RLE_Wrapper(const std::vector<T>& data,
+                         const std::shared_ptr<IBitVectorFactory>& factory,
+                         gef::SplitPointStrategy strategy)
         : gef::B_GEF_STAR<T>(factory, data, strategy) {}
+
+    B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
+                         const std::shared_ptr<IBitVectorFactory>& factory,
+                         gef::SplitPointStrategy strategy)
+        : B_GEF_NO_RLE_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+
     B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
 };
 

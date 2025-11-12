@@ -10,6 +10,8 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -65,6 +67,20 @@ public:
         const size_t num_partitions = (data.size() + k - 1) / k;
         m_partitions.resize(num_partitions);
 
+        using PartitionView = Span<const T>;
+        constexpr bool accepts_view_value      = std::is_constructible_v<Compressor, PartitionView, CompressorArgs...>;
+        constexpr bool accepts_view_const_ref  = std::is_constructible_v<Compressor, const PartitionView&, CompressorArgs...>;
+        constexpr bool accepts_view_ref        = std::is_constructible_v<Compressor, PartitionView&, CompressorArgs...>;
+        constexpr bool accepts_vector_value    = std::is_constructible_v<Compressor, std::vector<T>, CompressorArgs...>;
+        constexpr bool accepts_vector_constref = std::is_constructible_v<Compressor, const std::vector<T>&, CompressorArgs...>;
+        constexpr bool accepts_vector_ref      = std::is_constructible_v<Compressor, std::vector<T>&, CompressorArgs...>;
+
+        constexpr bool can_use_view   = accepts_view_value || accepts_view_const_ref || accepts_view_ref;
+        constexpr bool can_use_vector = accepts_vector_value || accepts_vector_constref || accepts_vector_ref;
+
+        static_assert(can_use_view || can_use_vector,
+                      "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
+
     #ifdef _OPENMP
         int threads = 1;
         #pragma omp parallel
@@ -83,7 +99,15 @@ public:
                 const size_t len   = end - start;
 
                 Span<const T> view(data.data() + start, len);
-                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+                if constexpr (can_use_view) {
+                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+                } else if constexpr (accepts_vector_value) {
+                    std::vector<T> buffer(view.data(), view.data() + view.size());
+                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(std::move(buffer), args...));
+                } else {
+                    std::vector<T> buffer(view.data(), view.data() + view.size());
+                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(buffer, args...));
+                }
             }
         }
     #else
@@ -93,7 +117,15 @@ public:
             const size_t len   = end - start;
 
             Span<const T> view(data.data() + start, len);
-            m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+            if constexpr (can_use_view) {
+                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+            } else if constexpr (accepts_vector_value) {
+                std::vector<T> buffer(view.data(), view.data() + view.size());
+                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(std::move(buffer), args...));
+            } else {
+                std::vector<T> buffer(view.data(), view.data() + view.size());
+                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(buffer, args...));
+            }
         }
     #endif
     }
