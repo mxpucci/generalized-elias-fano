@@ -49,9 +49,7 @@ GapComputation variation_of_original_vec(
 
     // first gap is always non-negative since min_val <= vec[0]
     {
-        uint64_t a0 = static_cast<uint64_t>(vec[0]);
-        uint64_t b0 = static_cast<uint64_t>(min_val);
-        sum_pos += (a0 - b0);   // unsigned diff = correct magnitude
+        sum_pos += (static_cast<uint64_t>(vec[0]) - static_cast<uint64_t>(min_val));
         ++pos_gaps;             // count the initial positive gap
     }
 
@@ -59,9 +57,7 @@ GapComputation variation_of_original_vec(
     // Manual SIMD adds complexity without much benefit for modern compilers
     for (size_t i = 1; i < n; ++i) {
         // Use signed arithmetic for correct handling of negative values
-        const int64_t curr = static_cast<int64_t>(vec[i]) - static_cast<int64_t>(min_val);
-        const int64_t prev = static_cast<int64_t>(vec[i - 1]) - static_cast<int64_t>(min_val);
-        const int64_t diff = curr - prev;
+        const int64_t diff = static_cast<int64_t>(vec[i]) - static_cast<int64_t>(vec[i - 1]);
 
         // Branchless computation - compiler can vectorize this
         const bool is_positive = diff >= 0;

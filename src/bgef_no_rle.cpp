@@ -13,9 +13,16 @@
 // Wrapper to adapt B_GEF_NO_RLE constructor for UniformedPartitioner
 template<typename T>
 struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
-    // Constructor for compression
-    B_GEF_NO_RLE_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF_STAR<T>(factory, std::vector<T>(data.data(), data.data() + data.size()), gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
+    // Constructor for compression with explicit strategy
+    B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
+                         const std::shared_ptr<IBitVectorFactory>& factory,
+                         gef::SplitPointStrategy strategy)
+            : gef::B_GEF_STAR<T>(factory, std::vector<T>(data.data(), data.data() + data.size()), strategy) {}
+
+    // Convenience constructor using the default split-point strategy
+    B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
+                         const std::shared_ptr<IBitVectorFactory>& factory)
+            : B_GEF_NO_RLE_Wrapper(data, factory, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
     B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
