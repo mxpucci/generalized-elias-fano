@@ -137,6 +137,20 @@ public:
     virtual void enable_select1() = 0;
 
     virtual void enable_select0() = 0;
+
+    /**
+     * @brief Get raw pointer to underlying bit vector data for performance-critical operations
+     * 
+     * WARNING: This bypasses all abstraction and safety checks. Use only when:
+     * - You need maximum performance in tight loops
+     * - You understand bit-level manipulation
+     * - You will NOT modify support structures while using this pointer
+     * 
+     * @return Pointer to underlying uint64_t array storing the bit vector
+     */
+    virtual uint64_t* raw_data_ptr() = 0;
+    
+    virtual const uint64_t* raw_data_ptr() const = 0;
 };
 
 #endif
