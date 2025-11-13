@@ -13,7 +13,9 @@
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits>
+#include <chrono>
 #include "IGEF.hpp"
+#include "CompressionProfile.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -290,7 +292,14 @@ namespace gef {
         // Constructor
         B_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
             const std::vector<T> &S,
-            SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT) {
+            SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT,
+            CompressionBuildMetrics* metrics = nullptr) {
+          using clock = std::chrono::steady_clock;
+          std::chrono::time_point<clock> split_start;
+          if (metrics) {
+              split_start = clock::now();
+          }
+
           const size_t N = S.size();
           if (N == 0) {
               b = 0;
@@ -300,6 +309,10 @@ namespace gef {
               G_plus = nullptr;
               G_minus = nullptr;
               H.resize(0);
+              if (metrics) {
+                  double split_seconds = std::chrono::duration<double>(clock::now() - split_start).count();
+                  metrics->record_partition(split_seconds, 0.0, 0.0, 0, 0, 0);
+              }
               return;
           }
 
@@ -316,9 +329,29 @@ namespace gef {
           }
           h = (b >= total_bits) ? 0 : static_cast<uint8_t>(total_bits - b);
 
+          double split_seconds = 0.0;
+          if (metrics) {
+              split_seconds = std::chrono::duration<double>(clock::now() - split_start).count();
+          }
+
+          std::chrono::time_point<clock> allocation_start;
+          if (metrics) {
+              allocation_start = clock::now();
+          }
+
           L = sdsl::int_vector<>(N, 0, b);
 
           if (h == 0) {
+              double allocation_seconds = 0.0;
+              if (metrics) {
+                  allocation_seconds = std::chrono::duration<double>(clock::now() - allocation_start).count();
+              }
+
+              std::chrono::time_point<clock> population_start;
+              if (metrics) {
+                  population_start = clock::now();
+              }
+
               for (size_t i = 0; i < N; ++i) {
                   L[i] = S[i] - base;
               }
@@ -326,6 +359,16 @@ namespace gef {
               G_plus = nullptr;
               G_minus = nullptr;
               H.resize(0);
+
+              if (metrics) {
+                  double population_seconds = std::chrono::duration<double>(clock::now() - population_start).count();
+                  metrics->record_partition(split_seconds,
+                                            allocation_seconds,
+                                            population_seconds,
+                                            N,
+                                            0,
+                                            b);
+              }
               return;
           }
 
@@ -339,6 +382,16 @@ namespace gef {
           H = sdsl::int_vector<>(exceptions, 0, h);
           G_plus = bit_vector_factory->create(g_plus_bits);
           G_minus = bit_vector_factory->create(g_minus_bits);
+
+          double allocation_seconds = 0.0;
+          if (metrics) {
+              allocation_seconds = std::chrono::duration<double>(clock::now() - allocation_start).count();
+          }
+
+          std::chrono::time_point<clock> population_start;
+          if (metrics) {
+              population_start = clock::now();
+          }
 
           // Single pass to populate all structures
           size_t h_idx = 0;
@@ -393,6 +446,16 @@ namespace gef {
           G_plus->enable_select0();
           G_minus->enable_rank();
           G_minus->enable_select0();
+
+          if (metrics) {
+              double population_seconds = std::chrono::duration<double>(clock::now() - population_start).count();
+              metrics->record_partition(split_seconds,
+                                        allocation_seconds,
+                                        population_seconds,
+                                        N,
+                                        exceptions,
+                                        b);
+          }
       }
 
         std::vector<T> get_elements(size_t startIndex, size_t count) const override {

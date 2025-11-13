@@ -1,5 +1,6 @@
-#include "gef/B_GEF.hpp"
+#include "gef/B_GEF_STAR.hpp"
 #include "gef/UniformedPartitioner.hpp"
+#include "gef/CompressionProfile.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
@@ -28,7 +29,7 @@ namespace {
 
 struct ProgramOptions {
     std::filesystem::path dataset_path;
-    size_t partition_size = 8192;
+    size_t partition_size = 0; // 0 means auto (entire dataset)
     size_t iterations = 5;
     gef::SplitPointStrategy strategy = gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT;
     std::string bitvector = "sdsl";
@@ -36,14 +37,20 @@ struct ProgramOptions {
 };
 
 template<typename T>
-struct BGEFWrapper : public gef::B_GEF<T> {
-    BGEFWrapper(gef::Span<const T> data,
-                const std::shared_ptr<IBitVectorFactory>& factory,
-                gef::SplitPointStrategy strategy)
-        : gef::B_GEF<T>(factory,
-                        std::vector<T>(data.data(), data.data() + data.size()),
-                        strategy) {}
-    BGEFWrapper() : gef::B_GEF<T>() {}
+struct BGEFStarWrapper : public gef::B_GEF_STAR<T> {
+    BGEFStarWrapper(gef::Span<const T> data,
+                    const std::shared_ptr<IBitVectorFactory>& factory,
+                    gef::SplitPointStrategy strategy,
+                    gef::CompressionBuildMetrics* metrics = nullptr)
+        : BGEFStarWrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy, metrics) {}
+
+    BGEFStarWrapper(const std::vector<T>& data,
+                    const std::shared_ptr<IBitVectorFactory>& factory,
+                    gef::SplitPointStrategy strategy,
+                    gef::CompressionBuildMetrics* metrics = nullptr)
+        : gef::B_GEF_STAR<T>(factory, data, strategy, metrics) {}
+
+    BGEFStarWrapper() : gef::B_GEF_STAR<T>() {}
 };
 
 std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
@@ -107,10 +114,6 @@ std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
         throw std::invalid_argument("Iterations must be greater than zero");
     }
 
-    if (opts.partition_size == 0) {
-        throw std::invalid_argument("Partition size must be greater than zero");
-    }
-
     return opts;
 }
 
@@ -142,6 +145,7 @@ struct MeasurementResult {
     double throughput_mb_s = 0.0;
     double size_in_bytes = 0.0;
     double bits_per_int = 0.0;
+    gef::CompressionBuildMetrics build_metrics{};
 };
 
 MeasurementResult measure(const std::vector<int64_t>& data,
@@ -160,7 +164,10 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     for (size_t i = 0; i < iterations; ++i) {
         std::vector<int64_t> data_copy = data;
         auto t0 = steady_clock::now();
-        gef::UniformedPartitioner<int64_t, BGEFWrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
+        gef::UniformedPartitioner<int64_t,
+                                  BGEFStarWrapper<int64_t>,
+                                  std::shared_ptr<IBitVectorFactory>,
+                                  gef::SplitPointStrategy> compressor(
             data_copy, partition_size, factory, strategy);
         auto t1 = steady_clock::now();
         double seconds = duration<double>(t1 - t0).count();
@@ -179,8 +186,13 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     const double bytes_processed = static_cast<double>(data.size()) * sizeof(int64_t);
     const double throughput_mb_s = (bytes_processed / avg) / (1024.0 * 1024.0);
 
-    gef::UniformedPartitioner<int64_t, BGEFWrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
-        data, partition_size, factory, strategy);
+    gef::CompressionBuildMetrics build_metrics;
+    gef::UniformedPartitioner<int64_t,
+                              BGEFStarWrapper<int64_t>,
+                              std::shared_ptr<IBitVectorFactory>,
+                              gef::SplitPointStrategy,
+                              gef::CompressionBuildMetrics*> final_compressor(
+        data, partition_size, factory, strategy, &build_metrics);
     const double size_in_bytes = static_cast<double>(final_compressor.size_in_bytes());
     const double bits_per_int = (size_in_bytes * 8.0) / static_cast<double>(data.size());
 
@@ -190,13 +202,15 @@ MeasurementResult measure(const std::vector<int64_t>& data,
         .max_seconds = max,
         .throughput_mb_s = throughput_mb_s,
         .size_in_bytes = size_in_bytes,
-        .bits_per_int = bits_per_int
+        .bits_per_int = bits_per_int,
+        .build_metrics = build_metrics
     };
 }
 
-void print_options(const ProgramOptions& opts) {
+void print_options(const ProgramOptions& opts, size_t effective_partition_size) {
     std::cout << "Dataset:             " << opts.dataset_path << "\n"
-              << "Partition size:      " << opts.partition_size << "\n"
+              << "Partition size:      " << effective_partition_size
+              << (opts.partition_size == 0 ? " (auto)" : "") << "\n"
               << "Iterations:          " << opts.iterations << "\n"
               << "Strategy:            " << to_string(opts.strategy) << "\n"
               << "Bitvector factory:   " << opts.bitvector << "\n"
@@ -216,7 +230,7 @@ int main(int argc, char** argv) {
             std::cout << "Usage: " << argv[0]
                       << " [options] <dataset.bin>\n\n"
                       << "Options:\n"
-                      << "  --partition-size=<N>   Partition size (default: 8192)\n"
+                      << "  --partition-size=<N>   Partition size (default: auto - entire dataset)\n"
                       << "  --iterations=<N>       Number of measurement iterations (default: 5)\n"
                       << "  --strategy=<approx|optimal>  Split point strategy (default: optimal)\n"
                       << "  --bitvector=<sdsl|sux> Bitvector implementation (default: sdsl)\n"
@@ -226,15 +240,26 @@ int main(int argc, char** argv) {
         }
 
         const ProgramOptions& opts = *maybe_opts;
-        print_options(opts);
-
         auto data = read_data_binary<int64_t, int64_t>(opts.dataset_path.string(), true);
+
+        if (data.empty()) {
+            throw std::runtime_error("Dataset is empty");
+        }
+
+        size_t effective_partition_size = (opts.partition_size == 0) ? data.size() : opts.partition_size;
+        if (effective_partition_size == 0) {
+            effective_partition_size = data.size();
+        }
+        effective_partition_size = std::min(effective_partition_size, data.size());
+        effective_partition_size = std::max<size_t>(effective_partition_size, 1);
+
+        print_options(opts, effective_partition_size);
         std::cout << "Number of integers:  " << data.size() << "\n";
 
         auto factory = make_factory(opts.bitvector);
         auto result = measure(data,
                               opts.iterations,
-                              opts.partition_size,
+                              effective_partition_size,
                               factory,
                               opts.strategy,
                               opts.verbose);
@@ -246,6 +271,38 @@ int main(int argc, char** argv) {
                   << "Throughput:          " << result.throughput_mb_s << " MB/s\n"
                   << "Compressed size:     " << (result.size_in_bytes / (1024.0 * 1024.0)) << " MB\n"
                   << "Bits per integer:    " << result.bits_per_int << "\n";
+
+        const auto& metrics = result.build_metrics;
+        std::cout << "\nBuild phase timings ("
+                  << metrics.partitions << " partition"
+                  << (metrics.partitions == 1 ? "" : "s") << "):\n";
+        if (metrics.partitions == 0) {
+            std::cout << "  No partitions were constructed.\n";
+        } else {
+            const double split_avg = metrics.split_point_seconds / static_cast<double>(metrics.partitions);
+            const double allocation_avg = metrics.allocation_seconds / static_cast<double>(metrics.partitions);
+            const double population_avg = metrics.population_seconds / static_cast<double>(metrics.partitions);
+
+            std::cout << "  Split-point estimation: "
+                      << metrics.split_point_seconds << " s total ("
+                      << split_avg << " s / partition)\n";
+            std::cout << "  Structure allocation:   "
+                      << metrics.allocation_seconds << " s total ("
+                      << allocation_avg << " s / partition)\n";
+            std::cout << "  Structure population:   "
+                      << metrics.population_seconds << " s total ("
+                      << population_avg << " s / partition)\n";
+            std::cout << "  Elements processed:     "
+                      << metrics.elements_processed << "\n";
+            std::cout << "  Exceptions encountered: "
+                      << metrics.total_exceptions << "\n";
+            std::cout << "  Split point (avg/min/max): "
+                      << metrics.average_split_point() << " / "
+                      << static_cast<int>(metrics.min_split_point) << " / "
+                      << static_cast<int>(metrics.max_split_point) << "\n";
+        }
+
+        std::cout << std::endl;
 
         return 0;
     } catch (const std::exception& ex) {

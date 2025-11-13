@@ -6,6 +6,7 @@
 #include "gef/UniformedPartitioner.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "datastructures/SUXBitVectorFactory.hpp"
+#include "gef/CompressionProfile.hpp"
 #include "gef/utils.hpp"
 #include <vector>
 #include <random>
@@ -51,15 +52,17 @@ struct RLE_GEF_Wrapper : public gef::RLE_GEF<T> {
 
 template<typename T>
 struct B_GEF_Wrapper : public gef::B_GEF<T> {
-    B_GEF_Wrapper(const std::vector<T>& data,
-                  const std::shared_ptr<IBitVectorFactory>& factory,
-                  gef::SplitPointStrategy strategy)
-        : gef::B_GEF<T>(factory, data, strategy) {}
-
     B_GEF_Wrapper(gef::Span<const T> data,
                   const std::shared_ptr<IBitVectorFactory>& factory,
-                  gef::SplitPointStrategy strategy)
-        : B_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+                  gef::SplitPointStrategy strategy,
+                  CompressionBuildMetrics* metrics = nullptr)
+        : B_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy, metrics) {}
+
+    B_GEF_Wrapper(const std::vector<T>& data,
+                  const std::shared_ptr<IBitVectorFactory>& factory,
+                  gef::SplitPointStrategy strategy,
+                  CompressionBuildMetrics* metrics = nullptr)
+        : gef::B_GEF<T>(factory, data, strategy, metrics) {}
 
     B_GEF_Wrapper() : gef::B_GEF<T>() {}
 };
