@@ -10,6 +10,7 @@
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
 #include "IGEF.hpp"
+#include "FastBitWriter.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -225,16 +226,23 @@ namespace gef {
             B = bit_vector_factory->create(S.size());
             T lastHighBits = 0;
             size_t h_count = 0;
+            uint64_t* b_data = B->raw_data_ptr();
+            FastBitWriter b_writer(b_data);
             
             for (size_t i = 0; i < S.size(); ++i) {
                 const T element = S[i] - base;
                 const T highBits = highPart(element, total_bits, h);
                 L[i] = lowPart(element, b);
                 const bool is_new_run = (i == 0 || highBits != lastHighBits);
-                B->set(i, is_new_run);
+                if (is_new_run) {
+                    b_writer.set_ones_range(1);
+                } else {
+                    b_writer.set_zero();
+                }
                 h_count += is_new_run;
                 lastHighBits = highBits;
             }
+            assert(b_writer.position() == S.size());
             B->enable_rank();
 
             // Pass 2: Allocate exact size and populate H

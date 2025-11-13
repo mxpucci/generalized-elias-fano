@@ -28,124 +28,10 @@
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
+#include "FastBitWriter.hpp"
 
 
 namespace gef {
-    /**
-     * @brief Fast inline bit writer for hot path optimization
-     * Eliminates virtual function call overhead during construction by directly
-     * manipulating bit vector memory. Optimized for small gap sequences.
-     */
-    class FastBitWriter {
-    private:
-        uint64_t* data_;
-        size_t pos_;
-        
-    public:
-        explicit FastBitWriter(uint64_t* data, size_t start_pos = 0) 
-            : data_(data), pos_(start_pos) {}
-        
-        /**
-         * @brief Set a single bit to 0 (optimized for terminator pattern)
-         */
-        __attribute__((always_inline)) inline void set_zero() {
-            const size_t word_idx = pos_ >> 6;
-            const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-            data_[word_idx] &= ~(1ULL << bit_offset);
-            ++pos_;
-        }
-        
-        /**
-         * @brief Set a range of bits to 1 (optimized for all gap sizes)
-         * @param count Number of consecutive bits to set to 1
-         * 
-         * Optimized for:
-         * - Small gaps (0-8 bits): ~90% of cases in high-entropy data
-         * - Large gaps (100s-1000s bits): common when split point is near 0
-         */
-        __attribute__((always_inline)) inline void set_ones_range(uint64_t count) {
-            if (count == 0) return;
-            
-            // Fast path for very small counts (covers ~90% of gaps in high-entropy data)
-            if (count <= 8) [[likely]] {
-                for (uint64_t i = 0; i < count; ++i) {
-                    const size_t word_idx = pos_ >> 6;
-                    const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-                    data_[word_idx] |= (1ULL << bit_offset);
-                    ++pos_;
-                }
-                return;
-            }
-            
-            // For larger counts, use word-level operations with SIMD optimization
-            const size_t end_pos = pos_ + count - 1;
-            const size_t start_word = pos_ >> 6;
-            const size_t end_word = end_pos >> 6;
-            const uint32_t start_bit = static_cast<uint32_t>(pos_ & 63);
-            const uint32_t end_bit = static_cast<uint32_t>(end_pos & 63);
-            
-            if (start_word == end_word) {
-                // All bits in same word
-                const uint64_t mask = ((1ULL << count) - 1ULL) << start_bit;
-                data_[start_word] |= mask;
-            } else {
-                // Spans multiple words - optimize for large ranges
-                data_[start_word] |= (~0ULL << start_bit);
-                
-                const size_t num_full_words = end_word - start_word - 1;
-                if (num_full_words > 0) {
-                    uint64_t* body_start = data_ + start_word + 1;
-                    
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-                    // AVX2 path: write 4 words (32 bytes) at a time
-                    __m256i ones = _mm256_set1_epi64x(~0ULL);
-                    size_t w = 0;
-                    // Process 4 words at a time
-                    for (; w + 4 <= num_full_words; w += 4) {
-                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(body_start + w), ones);
-                    }
-                    // Handle remaining 0-3 words
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
-#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
-                    // NEON path: write 2 words (16 bytes) at a time
-                    uint64x2_t ones = vdupq_n_u64(~0ULL);
-                    size_t w = 0;
-                    // Process 2 words at a time
-                    for (; w + 2 <= num_full_words; w += 2) {
-                        vst1q_u64(body_start + w, ones);
-                    }
-                    // Handle remaining 0-1 word
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
-#else
-                    // Scalar path with loop unrolling for better performance
-                    size_t w = 0;
-                    // Unroll by 4 for better ILP (instruction-level parallelism)
-                    for (; w + 4 <= num_full_words; w += 4) {
-                        body_start[w] = ~0ULL;
-                        body_start[w + 1] = ~0ULL;
-                        body_start[w + 2] = ~0ULL;
-                        body_start[w + 3] = ~0ULL;
-                    }
-                    // Handle remaining 0-3 words
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
-#endif
-                }
-                
-                const uint64_t tail_mask = (1ULL << (end_bit + 1)) - 1ULL;
-                data_[end_word] |= tail_mask;
-            }
-            
-            pos_ += count;
-        }
-        
-        size_t position() const { return pos_; }
-    };
 
     template<typename T>
     class B_GEF_STAR : public IGEF<T> {
@@ -398,8 +284,6 @@ namespace gef {
             switch (strategy) {
                 case APPROXIMATE_SPLIT_POINT:
                 case OPTIMAL_SPLIT_POINT:
-                    // B_GEF_STAR's optimal formula doesn't match SDSL behavior precisely,
-                    // so we always use approximate strategy for correctness
                     std::tie(b, gap_computation) = approximate_optimal_split_point(S, base, max_val);
                     break;
             }

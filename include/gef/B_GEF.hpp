@@ -16,6 +16,7 @@
 #include <chrono>
 #include "IGEF.hpp"
 #include "CompressionProfile.hpp"
+#include "FastBitWriter.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -395,8 +396,6 @@ namespace gef {
 
           // Single pass to populate all structures
           size_t h_idx = 0;
-          size_t g_plus_pos = 0;
-          size_t g_minus_pos = 0;
           using U = std::make_unsigned_t<T>;
           U lastHighBits = 0;
           
@@ -405,6 +404,14 @@ namespace gef {
 
           // Optimize: compute low mask once (same as B_GEF_STAR)
           const U low_mask = b < sizeof(T) * 8 ? ((U(1) << b) - 1) : U(~U(0));
+
+          uint64_t* b_data = B->raw_data_ptr();
+          FastBitWriter b_writer(b_data);
+
+          uint64_t* g_plus_data = G_plus->raw_data_ptr();
+          uint64_t* g_minus_data = G_minus->raw_data_ptr();
+          FastBitWriter plus_writer(g_plus_data);
+          FastBitWriter minus_writer(g_minus_data);
 
           for (size_t i = 0; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
@@ -418,26 +425,25 @@ namespace gef {
               const bool is_exception = (i == 0) | ((abs_gap + 2) > hbits_u64);
 
               if (is_exception) [[unlikely]] {
-                  B->set(i, true);
+                  b_writer.set_ones_range(1);
                   H[h_idx++] = current_high_part;
               } else [[likely]] {
-                  B->set(i, false);
+                  b_writer.set_zero();
                   // Simplified branching like B_GEF_STAR
                   if (gap >= 0) {
-                      G_plus->set_range(g_plus_pos, abs_gap, true);
-                      g_plus_pos += abs_gap;
+                      plus_writer.set_ones_range(static_cast<uint64_t>(abs_gap));
                   } else {
-                      G_minus->set_range(g_minus_pos, abs_gap, true);
-                      g_minus_pos += abs_gap;
+                      minus_writer.set_ones_range(static_cast<uint64_t>(abs_gap));
                   }
-                  G_minus->set(g_minus_pos++, false);
-                  G_plus->set(g_plus_pos++, false);
+                  minus_writer.set_zero();
+                  plus_writer.set_zero();
               }
               lastHighBits = current_high_part;
           }
 
-          assert(g_minus_pos == g_minus_bits);
-          assert(g_plus_pos == g_plus_bits);
+          assert(b_writer.position() == N);
+          assert(minus_writer.position() == g_minus_bits);
+          assert(plus_writer.position() == g_plus_bits);
 
           // Enable rank/select support
           B->enable_rank();

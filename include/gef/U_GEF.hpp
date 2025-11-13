@@ -16,6 +16,7 @@
 #include <type_traits> // Required for std::make_unsigned
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
+#include "FastBitWriter.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -327,13 +328,18 @@ namespace gef {
 
             // Single pass to populate all structures
             size_t h_idx = 0;
-            size_t g_pos = 0;
             using U = std::make_unsigned_t<T>;
             U lastHighBits = 0;
             const uint64_t h_u64 = static_cast<uint64_t>(h);
             
             // Precompute low mask once (same optimization as B_GEF_STAR)
             const U low_mask = b < sizeof(T) * 8 ? ((U(1) << b) - 1) : U(~U(0));
+
+            uint64_t* b_data = B->raw_data_ptr();
+            FastBitWriter b_writer(b_data);
+
+            uint64_t* g_data = G->raw_data_ptr();
+            FastBitWriter g_writer(g_data);
 
             for (size_t i = 0; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
@@ -346,19 +352,19 @@ namespace gef {
                 const bool is_exception = (i == 0) | (gap < 0) | (static_cast<uint64_t>(gap) >= h_u64);
 
                 if (is_exception) [[unlikely]] {
-                    B->set(i, true);
+                    b_writer.set_ones_range(1);
                     H[h_idx++] = current_high_part;
                 } else [[likely]] {
-                    B->set(i, false);
+                    b_writer.set_zero();
                     const uint64_t g = static_cast<uint64_t>(gap);
-                    G->set_range(g_pos, g, true);
-                    g_pos += g;
-                    G->set(g_pos++, false);
+                    g_writer.set_ones_range(g);
+                    g_writer.set_zero();
                 }
                 lastHighBits = current_high_part;
             }
 
-            assert(g_pos == g_bits);
+            assert(b_writer.position() == N);
+            assert(g_writer.position() == g_bits);
 
             // Enable rank/select support
             B->enable_rank();
