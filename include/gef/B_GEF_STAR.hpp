@@ -138,8 +138,29 @@ namespace gef {
 
         static std::pair<uint8_t, GapComputation>
         optimal_split_point(const std::vector<T> &S, const T min, const T max) {
-            // B_GEF_STAR's optimal formula is inaccurate, so we use approximate for consistency
-            return approximate_optimal_split_point(S, min, max);
+            const size_t total_bits = ceil(log2((max - min + 1)));
+            const double approx_b = approximated_optimal_split_point(S, min, max);
+            size_t min_b = (size_t) std::max(0.0, floor(approx_b) - 1);
+            size_t max_b = (size_t) std::min((double) total_bits, ceil(approx_b) + 3);
+            
+            // The optimal split point is guaranteed to be in {min_b, ..., max_b, total_bits}
+            const std::vector<GapComputation> gap_computation =
+                total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, min_b, max_b, ExceptionRule::None);
+                
+            size_t best_index = 0;
+            size_t best_space = SIZE_MAX;
+            for (size_t i = 0; i < gap_computation.size(); i++) {
+                const size_t space = evaluate_space(gap_computation[i], min_b + i);
+                if (space < best_space) {
+                    best_space = space;
+                    best_index = i;
+                }
+            }
+            // best_space is in bytes, so convert S.size() * total_bits from bits to bytes
+            const size_t naive_space_bytes = ((S.size() * total_bits) + 7) / 8 + 64;  // +64 for metadata
+            if (best_space > naive_space_bytes)
+                return {total_bits, variation_of_shifted_vec(S, min, max, total_bits, ExceptionRule::None)};
+            return {min_b + best_index, gap_computation[best_index]};
         }
 
         static T highPart(const T x, const uint8_t total_bits, const uint8_t highBits) {
@@ -238,7 +259,7 @@ namespace gef {
         // Constructor
         B_GEF_STAR(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
                    const std::vector<T> &S,
-                   SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT,
+                   SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT,
                    CompressionBuildMetrics* metrics = nullptr) {
             using clock = std::chrono::steady_clock;
             std::chrono::time_point<clock> split_start;
@@ -283,9 +304,13 @@ namespace gef {
 
             switch (strategy) {
                 case APPROXIMATE_SPLIT_POINT:
-                case OPTIMAL_SPLIT_POINT:
                     std::tie(b, gap_computation) = approximate_optimal_split_point(S, base, max_val);
                     break;
+                case OPTIMAL_SPLIT_POINT:
+                    std::tie(b, gap_computation) = optimal_split_point(S, base, max_val);
+                    break;
+                default:
+                    throw std::invalid_argument("Invalid split point strategy");
             }
             h = total_bits - b;
 
