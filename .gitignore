@@ -10,6 +10,7 @@ compile_commands.json
 .idea/
 *.swp
 *.swo
+.vscode
 
 # Binaries
 *.out

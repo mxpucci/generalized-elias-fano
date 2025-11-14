@@ -7,6 +7,10 @@
 #include <vector>
 #include <memory>
 #include <type_traits>
+#include <typeinfo>
+
+#include "gef/gap_computation_utils.hpp"
+#include "split_point_utils.hpp"
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
 template<typename T>
@@ -115,3 +119,124 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
         }
     }
 }
+
+namespace {
+
+template<typename T>
+void assert_optimal_not_exceeded(const std::shared_ptr<IBitVectorFactory>& factory,
+                                 const std::vector<T>& sequence,
+                                 const std::string& label) {
+    ASSERT_FALSE(sequence.empty()) << "Sequence should not be empty for " << label;
+
+    gef::B_GEF_STAR<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+    const size_t optimal_size = optimal.theoretical_size_in_bytes();
+
+    auto [min_it, max_it] = std::minmax_element(sequence.begin(), sequence.end());
+    const size_t total_bits = gef::test::compute_total_bits_from_range(*min_it, *max_it);
+
+    for (size_t b = 0; b <= 64; ++b) {
+        const size_t candidate_size = gef::test::theoretical_size_for_split(sequence,
+                                                                            *min_it,
+                                                                            *max_it,
+                                                                            total_bits,
+                                                                            static_cast<uint8_t>(b));
+        EXPECT_LE(optimal_size, candidate_size)
+            << "[" << label << "] "
+            << "type=" << typeid(T).name()
+            << " optimal_size=" << optimal_size
+            << " candidate_size=" << candidate_size
+            << " candidate_b=" << b;
+    }
+}
+
+template<typename T>
+void run_full_sweep_assertions(const std::shared_ptr<IBitVectorFactory>& factory) {
+    struct TestCase {
+        std::string name;
+        std::vector<T> sequence;
+    };
+
+    std::vector<TestCase> test_cases;
+    test_cases.push_back({
+        "Highly Compressible",
+        gef::test::generate_random_sequence<T>(2000, 0, 100, 0.8, 10)
+    });
+    test_cases.push_back({
+        "Slightly Compressible",
+        gef::test::generate_random_sequence<T>(2000, 0, 1000, 0.3, 3)
+    });
+    test_cases.push_back({
+        "Poorly Compressible",
+        gef::test::generate_random_sequence<T>(2000, 0, 50000, 0.0, 1)
+    });
+    test_cases.push_back({
+        "All Elements Identical",
+        std::vector<T>(1000, static_cast<T>(42))
+    });
+
+    std::vector<T> alternating_seq;
+    alternating_seq.reserve(1000);
+    for (int i = 0; i < 1000; ++i) {
+        alternating_seq.push_back(i % 2 == 0 ? static_cast<T>(10) : static_cast<T>(1000));
+    }
+    test_cases.push_back({"Alternating Values", alternating_seq});
+
+    for (const auto& test : test_cases) {
+        SCOPED_TRACE("Full sweep test: " + test.name);
+        assert_optimal_not_exceeded(factory, test.sequence, test.name);
+    }
+}
+
+} // namespace
+
+TEST(B_GEF_STAR_SplitPointStrategy, OptimalDominatesAllSplitPoints) {
+    auto factory = std::make_shared<SDSLBitVectorFactory>();
+    run_full_sweep_assertions<int32_t>(factory);
+    run_full_sweep_assertions<uint32_t>(factory);
+    run_full_sweep_assertions<int64_t>(factory);
+    run_full_sweep_assertions<uint64_t>(factory);
+}
+
+template<typename T>
+void expect_split_point_variation() {
+    auto factory = std::make_shared<SDSLBitVectorFactory>();
+
+    bool difference_observed = false;
+    const size_t max_attempts = 200;
+
+    for (size_t attempt = 0; attempt < max_attempts; ++attempt) {
+        auto sequence = gef::test::generate_random_sequence<T>(
+            2000,
+            0,
+            100000,
+            0.5,
+            5
+        );
+
+        if (sequence.empty()) {
+            continue;
+        }
+
+        gef::B_GEF_STAR<T> approx(factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
+        gef::B_GEF_STAR<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+
+        if (approx.split_point() != optimal.split_point()) {
+            difference_observed = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(difference_observed)
+        << "Approximate and optimal split points were identical for all "
+        << max_attempts << " random sequences of type " << typeid(T).name()
+        << ". This suggests the approximation may be degenerating to the exact strategy.";
+}
+
+/*
+TEST(B_GEF_STAR_SplitPointStrategy, ApproximateOccasionallyDiffers) {
+    expect_split_point_variation<int32_t>();
+    expect_split_point_variation<uint32_t>();
+    expect_split_point_variation<int64_t>();
+    expect_split_point_variation<uint64_t>();
+}
+*/

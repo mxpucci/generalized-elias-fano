@@ -62,34 +62,24 @@ namespace gef {
          */
         T base;
 
-        static size_t evaluate_space(const GapComputation &gap_computation, const uint8_t b) {
-            // B_GEF_STAR allocates:
-            // - L vector: N elements, b bits each (sdsl::int_vector)
-            // - G_plus and G_minus: gap-encoded values
-            // Conservative estimate without complex SDSL internal modeling
+        static size_t evaluate_space(const GapComputation &gap_computation,
+                                     const uint8_t b,
+                                     const size_t total_bits) {
             const size_t N = gap_computation.negative_gaps + gap_computation.positive_gaps;
             if (N == 0) {
-                return 256;
+                return sizeof(T) + sizeof(uint8_t) * 2;
             }
-            
-            // Each component's storage need
-            const size_t L_bits = N * static_cast<size_t>(b);
-            const size_t G_plus_bits = gap_computation.sum_of_positive_gaps + N;
-            const size_t G_minus_bits = gap_computation.sum_of_negative_gaps + N;
-            
-            // Sum with overflow protection
-            size_t total_bits = 0;
-            if (L_bits > SIZE_MAX - G_plus_bits - G_minus_bits) {
-                return SIZE_MAX / 2;  // Avoid overflow
+
+            const auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
+            size_t total_bytes = sizeof(T) + sizeof(uint8_t) * 2;
+            total_bytes += bits_to_bytes(N * static_cast<size_t>(b));
+
+            if (b < total_bits) {
+                total_bytes += bits_to_bytes(gap_computation.sum_of_positive_gaps + N);
+                total_bytes += bits_to_bytes(gap_computation.sum_of_negative_gaps + N);
             }
-            total_bits = L_bits + G_plus_bits + G_minus_bits;
-            
-            // Conservative estimate: account for SDSL overhead (align to bytes, add metadata)
-            // Formula: roughly (total_bits / 8) * 1.5 for alignment + 256 for headers
-            const size_t bytes_min = total_bits / 8;
-            const size_t estimated = bytes_min + bytes_min / 2 + 256;  // 1.5x + overhead
-            
-            return estimated;
+
+            return total_bytes;
         }
 
         static double approximated_optimal_split_point(const std::vector<T> &S, const T min, const T max) {
@@ -101,66 +91,127 @@ namespace gef {
 
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const std::vector<T> &S,
             const T min, const T max) {
+            using WI = __int128;
+            using WU = unsigned __int128;
+            const WI min_w = static_cast<WI>(min);
+            const WI max_w = static_cast<WI>(max);
+            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+
+            size_t total_bits = 1;
+            if (range > 1) {
+                WU x = range - 1;
+                total_bits = 0;
+                while (x > 0) {
+                    ++total_bits;
+                    x >>= 1;
+                }
+            }
+            total_bits = std::min<size_t>(total_bits, sizeof(T) * 8);
+
             const double approx_b = approximated_optimal_split_point(S, min, max);
             
             if (ceil(approx_b) == floor(approx_b)) {
-                const uint8_t b_clamped = std::max(0.0, std::min(64.0, floor(approx_b)));
+                const uint8_t b_clamped = static_cast<uint8_t>(
+                    std::max(0.0, std::min<double>(total_bits, floor(approx_b))));
                 return {
                     b_clamped,
                     variation_of_shifted_vec(S, min, max, b_clamped, ExceptionRule::None)
                 };
             }
 
-            // Clamp to [0, 64] before casting to uint8_t to avoid underflow
-            const uint8_t ceilB = std::max(0.0, std::min(64.0, ceil(approx_b)));
-            const uint8_t floorB = std::max(0.0, std::min(64.0, floor(approx_b)));
+            const double ceil_candidate = std::min<double>(total_bits, ceil(approx_b));
+            const double floor_candidate = std::max(0.0, floor(approx_b));
+            const uint8_t ceilB = static_cast<uint8_t>(std::min<double>((double)total_bits, ceil_candidate));
+            const uint8_t floorB = static_cast<uint8_t>(std::max(0.0, floor_candidate));
+
             const std::vector<GapComputation> gap_computation =
                     total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, floorB, ceilB, ExceptionRule::None);
             
             size_t best_index = 0;
             size_t best_space = SIZE_MAX;
             for (size_t i = 0; i < gap_computation.size(); i++) {
-                const size_t space = evaluate_space(gap_computation[i], floorB + i);
+                const size_t space = evaluate_space(gap_computation[i],
+                                                    static_cast<uint8_t>(floorB + i),
+                                                    total_bits);
                 if (space < best_space) {
                     best_space = space;
                     best_index = i;
                 }
             }
 
-            const size_t total_bits = ceil(log2((max - min + 1)));
-            // best_space is in bytes, so convert S.size() * total_bits from bits to bytes
-            const size_t naive_space_bytes = ((S.size() * total_bits) + 7) / 8 + 64;  // +64 for metadata
-            if (best_space > naive_space_bytes)
-                return {total_bits, variation_of_shifted_vec(S, min, max, total_bits, ExceptionRule::None)};
-            return {floorB + best_index, gap_computation[best_index]};
+            const auto total_bits_stats =
+                variation_of_shifted_vec(S,
+                                         min,
+                                         max,
+                                         static_cast<uint8_t>(total_bits),
+                                         ExceptionRule::None);
+            const size_t total_bits_space =
+                evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits);
+
+            if (total_bits_space < best_space) {
+                return {static_cast<uint8_t>(total_bits), total_bits_stats};
+            }
+
+            return {static_cast<uint8_t>(floorB + best_index), gap_computation[best_index]};
         }
 
 
         static std::pair<uint8_t, GapComputation>
         optimal_split_point(const std::vector<T> &S, const T min, const T max) {
-            const size_t total_bits = ceil(log2((max - min + 1)));
+            using WI = __int128;
+            using WU = unsigned __int128;
+            const WI min_w = static_cast<WI>(min);
+            const WI max_w = static_cast<WI>(max);
+            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+
+            size_t total_bits = 1;
+            if (range > 1) {
+                WU x = range - 1;
+                total_bits = 0;
+                while (x > 0) {
+                    ++total_bits;
+                    x >>= 1;
+                }
+            }
+            total_bits = std::min<size_t>(total_bits, sizeof(T) * 8);
+
             const double approx_b = approximated_optimal_split_point(S, min, max);
-            size_t min_b = (size_t) std::max(0.0, floor(approx_b) - 1);
-            size_t max_b = (size_t) std::min((double) total_bits, ceil(approx_b) + 3);
-            
-            // The optimal split point is guaranteed to be in {min_b, ..., max_b, total_bits}
+            const size_t min_b = static_cast<size_t>(std::max(0.0, floor(approx_b) - 1));
+            const size_t max_b = static_cast<size_t>(std::min(static_cast<double>(total_bits), ceil(approx_b) + 3));
+
             const std::vector<GapComputation> gap_computation =
-                total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, min_b, max_b, ExceptionRule::None);
-                
+                total_variation_of_shifted_vec_with_multiple_shifts(S,
+                                                                    min,
+                                                                    max,
+                                                                    static_cast<uint8_t>(min_b),
+                                                                    static_cast<uint8_t>(max_b),
+                                                                    ExceptionRule::None);
+
             size_t best_index = 0;
             size_t best_space = SIZE_MAX;
             for (size_t i = 0; i < gap_computation.size(); i++) {
-                const size_t space = evaluate_space(gap_computation[i], min_b + i);
+                const uint8_t current_b = static_cast<uint8_t>(min_b + i);
+                const size_t space = evaluate_space(gap_computation[i], current_b, total_bits);
                 if (space < best_space) {
                     best_space = space;
                     best_index = i;
                 }
             }
-            // best_space is in bytes, so convert S.size() * total_bits from bits to bytes
-            const size_t naive_space_bytes = ((S.size() * total_bits) + 7) / 8 + 64;  // +64 for metadata
-            if (best_space > naive_space_bytes)
-                return {total_bits, variation_of_shifted_vec(S, min, max, total_bits, ExceptionRule::None)};
-            return {min_b + best_index, gap_computation[best_index]};
+
+            const auto total_bits_stats =
+                variation_of_shifted_vec(S,
+                                         min,
+                                         max,
+                                         static_cast<uint8_t>(total_bits),
+                                         ExceptionRule::None);
+            const size_t total_bits_space =
+                evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits);
+
+            if (total_bits_space < best_space) {
+                return {static_cast<uint8_t>(total_bits), total_bits_stats};
+            }
+
+            return {static_cast<uint8_t>(min_b + best_index), gap_computation[best_index]};
         }
 
         static T highPart(const T x, const uint8_t total_bits, const uint8_t highBits) {
