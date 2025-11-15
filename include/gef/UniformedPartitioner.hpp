@@ -82,18 +82,10 @@ public:
                       "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
 
     #ifdef _OPENMP
-        int threads = 1;
-        #pragma omp parallel
-        {
-            #pragma omp single
-            { threads = omp_get_num_threads(); }
-        }
-        const size_t chunk = std::max<size_t>(1, (num_partitions + threads * 4 - 1) / (threads * 4));
-
-        #pragma omp parallel
-        {
-            #pragma omp for schedule(static, /*chunk*/ 1)
-            for (size_t p = 0; p < num_partitions; ++p) {
+        // For uniform-sized partitions, use static scheduling without explicit chunk
+        // This distributes work evenly with minimal overhead
+        #pragma omp parallel for schedule(static)
+        for (size_t p = 0; p < num_partitions; ++p) {
                 const size_t start = p * k;
                 const size_t end   = std::min(start + k, data.size());
                 const size_t len   = end - start;
@@ -108,7 +100,6 @@ public:
                     std::vector<T> buffer(view.data(), view.data() + view.size());
                     m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(buffer, args...));
                 }
-            }
         }
     #else
         for (size_t p = 0; p < num_partitions; ++p) {
@@ -202,14 +193,15 @@ public:
         } else {
             const size_t num_partitions_spanned = end_partition - start_partition + 1;
             
-            // Parallelize when spanning 3+ partitions (worth the overhead)
+            // Parallelize when spanning 2+ partitions (uniform workload justifies lower threshold)
             #ifdef _OPENMP
-            if (num_partitions_spanned >= 3) {
+            if (num_partitions_spanned >= 2) {
                 // Parallel approach: each thread fetches from its partition(s)
                 // Then we combine results sequentially to maintain order
                 std::vector<std::vector<T>> partition_results(num_partitions_spanned);
                 
-                #pragma omp parallel for schedule(dynamic)
+                // Use static scheduling for uniform-sized partitions (less overhead than dynamic)
+                #pragma omp parallel for schedule(static)
                 for (size_t i = 0; i < num_partitions_spanned; ++i) {
                     const size_t p = start_partition + i;
                     const size_t partition_start = p * m_block_size;
