@@ -169,18 +169,18 @@ if [ "$decompression_count" -gt 0 ]; then
     fi
 fi
 
-# Check serialization benchmarks have expected counters
-serialization_count=$(jq '[.benchmarks[] | select(.name | contains("Serialization_Space"))] | length' "$JSON_FILE")
-if [ "$serialization_count" -gt 0 ]; then
-    serialization_sample=$(jq '[.benchmarks[] | select(.name | contains("Serialization_Space"))] | first' "$JSON_FILE")
+# Check size benchmarks have expected counters
+size_count=$(jq '[.benchmarks[] | select(.name | contains("SizeInBytes"))] | length' "$JSON_FILE")
+if [ "$size_count" -gt 0 ]; then
+    size_sample=$(jq '[.benchmarks[] | select(.name | contains("SizeInBytes"))] | first' "$JSON_FILE")
     
-    has_size=$(echo "$serialization_sample" | jq 'has("serialized_size_in_bytes")')
-    has_bpi=$(echo "$serialization_sample" | jq 'has("serialized_bpi")')
+    has_size=$(echo "$size_sample" | jq 'has("size_in_bytes")')
+    has_bpi=$(echo "$size_sample" | jq 'has("bpi")')
     
     if [ "$has_size" = "true" ] && [ "$has_bpi" = "true" ]; then
-        echo "  ✅ Serialization counters present (serialized_size_in_bytes, serialized_bpi)"
+        echo "  ✅ Size counters present (size_in_bytes, bpi)"
     else
-        echo "  ❌ Missing serialization counters"
+        echo "  ❌ Missing size counters"
         ((errors++))
     fi
 fi

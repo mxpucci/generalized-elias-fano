@@ -1,6 +1,7 @@
 #ifndef RLE_GEF_H
 #define RLE_GEF_H
 
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <type_traits> // Required for std::make_unsigned
 #include "IGEF.hpp"
 #include "FastBitWriter.hpp"
+#include "FastZeroTerminatedDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -136,6 +138,7 @@ namespace gef {
             if (other.h > 0) {
                 B = other.B->clone();
                 B->enable_rank();
+                B->enable_select1();
             } else {
                 B = nullptr;
             }
@@ -255,6 +258,7 @@ namespace gef {
             }
             assert(b_writer.position() == S.size());
             B->enable_rank();
+            B->enable_select1();
 
             // Pass 2: Allocate exact size and populate H
             H = sdsl::int_vector<>(h_count, 0, h);
@@ -288,30 +292,83 @@ namespace gef {
                 }
                 return result;
             }
-            
-            // Optimized range access: reuse rank computations within runs
+
+            const size_t total_runs = H.size();
             size_t current_rank = B->rank(startIndex + 1);
+            if (current_rank == 0) {
+                current_rank = 1;
+            }
             T current_high = H[current_rank - 1];
-            
-            for (size_t i = startIndex; i < endIndex; ++i) {
-                // Check if we've crossed into a new run
-                if ((*B)[i]) {
-                    // New run started at position i
-                    current_rank = B->rank(i + 1);
-                    current_high = H[current_rank - 1];
+
+            const size_t run_start_pos = B->select(current_rank);
+            const size_t offset_in_run = startIndex - run_start_pos;
+
+            FastZeroTerminatedDecoder run_decoder(
+                B->raw_data_ptr(),
+                B->size(),
+                std::min(run_start_pos + 1, B->size()));
+
+            constexpr size_t RUN_BATCH = 32;
+            uint32_t run_buffer[RUN_BATCH];
+            size_t run_buf_size = 0;
+            size_t run_buf_index = 0;
+
+            auto next_run_length = [&]() -> size_t {
+                if (run_buf_index >= run_buf_size) {
+                    run_buf_size = run_decoder.next_batch(run_buffer, RUN_BATCH);
+                    run_buf_index = 0;
+                    if (run_buf_size == 0) {
+                        run_buffer[0] = static_cast<uint32_t>(run_decoder.next());
+                        run_buf_size = 1;
+                    }
                 }
-                result.push_back(base + (L[i] | (current_high << b)));
+                return static_cast<size_t>(run_buffer[run_buf_index++]) + 1;
+            };
+
+            size_t current_run_length = next_run_length();
+            size_t remaining_in_run = (offset_in_run < current_run_length)
+                                          ? current_run_length - offset_in_run
+                                          : 0;
+
+            if (remaining_in_run == 0) {
+                if (current_rank < total_runs) {
+                    ++current_rank;
+                    current_high = H[current_rank - 1];
+                    current_run_length = next_run_length();
+                    remaining_in_run = current_run_length;
+                }
+            }
+
+            size_t i = startIndex;
+            while (i < endIndex) {
+                const size_t chunk = std::min(remaining_in_run, endIndex - i);
+                for (size_t j = 0; j < chunk; ++j, ++i) {
+                    result.push_back(base + (L[i] | (current_high << b)));
+                }
+
+                remaining_in_run -= chunk;
+                if (remaining_in_run == 0 && i < endIndex) {
+                    if (current_rank >= total_runs) {
+                        break;
+                    }
+                    ++current_rank;
+                    current_high = H[current_rank - 1];
+                    current_run_length = next_run_length();
+                    remaining_in_run = current_run_length;
+                }
             }
             
             return result;
         }
 
         T operator[](size_t index) const override {
-            if (h == 0)
+            if (h == 0) [[likely]]
                 return base + L[index];
 
             const size_t rank = B->rank(index + 1);
-            return base + (L[index] | (H[rank - 1] << b));
+            const T low = L[index];
+            const T high_shifted = H[rank - 1] << b;
+            return base + (low | high_shifted);
         }
 
         void serialize(std::ofstream &ofs) const override {
@@ -336,6 +393,7 @@ namespace gef {
             if (h > 0) {
                 B = bit_vector_factory->from_stream(ifs);
                 B->enable_rank();
+                B->enable_select1();
             } else {
                 B = nullptr;
             }

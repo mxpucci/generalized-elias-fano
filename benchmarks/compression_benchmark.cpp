@@ -154,7 +154,7 @@ public:
 // ============================================================================
 
 const std::vector<size_t> PARTITION_SIZES = {
-    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304
+    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304, 8388608
 };
 const size_t DEFAULT_PARTITION_SIZE = PARTITION_SIZES.back();
 const gef::SplitPointStrategy DEFAULT_LOOKUP_STRATEGY = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;
@@ -461,19 +461,19 @@ void RegisterBenchmarksForFile(size_t file_idx) {
 
     // Lookup
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Lookup)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Lookup)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Lookup)
-        ->Args(default_partition_args)
+        ->ArgsProduct(partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
     // Size benchmarks (single iteration, both strategies)
@@ -514,19 +514,19 @@ void RegisterBenchmarksForFile(size_t file_idx) {
 
     // Decompression Throughput
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Decompression)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Decompression)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Decompression)
-        ->Args(default_strategy_args)
+        ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Decompression)
-        ->Args(default_partition_args)
+        ->ArgsProduct(partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 }
 #pragma endregion

@@ -23,3 +23,8 @@ compile_commands.json
 
 # Python
 */__pycache__
+
+# Benchmarks
+benchmark_results/
+bench-output/
+plots/

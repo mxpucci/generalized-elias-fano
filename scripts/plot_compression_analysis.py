@@ -87,6 +87,10 @@ def calculate_compression_percentage(size_in_bytes, num_integers):
     return (size_in_bytes / (num_integers * 8)) * 100
 
 
+def _create_nested_metric_dict():
+    return defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
+
+
 def load_benchmark_data(bench_output_dir):
     """
     Load all benchmark JSON files and extract relevant data.
@@ -95,7 +99,9 @@ def load_benchmark_data(bench_output_dir):
         dict: Nested dictionary structure:
               {openmp_status: {dataset: {partition_size: {strategy: [data_points]}}}}
     """
-    data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
+    compression_data = _create_nested_metric_dict()
+    decompression_data = _create_nested_metric_dict()
+    lookup_data = _create_nested_metric_dict()
     
     bench_path = Path(bench_output_dir)
     json_files = list(bench_path.glob("*.json"))
@@ -147,30 +153,53 @@ def load_benchmark_data(bench_output_dir):
             
             # Extract fields
             name = bench.get('name', '')
+            name_parts = name.split('/')
+            if len(name_parts) < 2:
+                continue
+
+            benchmark_family = name_parts[1]
             partition_size = parse_partition_size(name)
             compressor_key = parse_compressor_and_strategy(name)
-            size_in_bytes = bench.get('size_in_bytes', 0)
-            num_integers = bench.get('num_integers', 0)
-            throughput = bench.get('compression_throughput_MBs', 0)
-            
             if partition_size is None or compressor_key is None:
                 continue
-            
-            # Calculate compression percentage
-            compression_pct = calculate_compression_percentage(size_in_bytes, num_integers)
-            
-            # Store data grouped by compressor type
-            data[openmp_status][dataset][partition_size][compressor_key].append({
-                'compression_percentage': compression_pct,
-                'throughput': throughput,
-                'size_in_bytes': size_in_bytes,
-                'num_integers': num_integers
-            })
+
+            if benchmark_family.endswith('_Compression'):
+                size_in_bytes = bench.get('size_in_bytes', 0)
+                num_integers = bench.get('num_integers', 0)
+                throughput = bench.get('compression_throughput_MBs', 0)
+                
+                if (size_in_bytes <= 0 or
+                        num_integers <= 0 or
+                        throughput <= 0):
+                    continue
+                
+                compression_pct = calculate_compression_percentage(size_in_bytes, num_integers)
+                
+                compression_data[openmp_status][dataset][partition_size][compressor_key].append({
+                    'compression_percentage': compression_pct,
+                    'throughput': throughput,
+                    'size_in_bytes': size_in_bytes,
+                    'num_integers': num_integers
+                })
+            elif benchmark_family.endswith('_Decompression'):
+                throughput = bench.get('decompression_throughput_MBs', 0)
+                if throughput <= 0:
+                    continue
+                decompression_data[openmp_status][dataset][partition_size][compressor_key].append({
+                    'throughput': throughput
+                })
+            elif benchmark_family.endswith('_Lookup'):
+                throughput = bench.get('lookup_throughput_MBs', 0)
+                if throughput <= 0:
+                    continue
+                lookup_data[openmp_status][dataset][partition_size][compressor_key].append({
+                    'throughput': throughput
+                })
     
-    return data
+    return compression_data, decompression_data, lookup_data
 
 
-def aggregate_by_compressor(data, openmp_status):
+def aggregate_by_compressor(dataset_map):
     """
     Calculate average compression percentage and throughput for each compressor type
     and strategy combination across all datasets.
@@ -181,39 +210,195 @@ def aggregate_by_compressor(data, openmp_status):
     # Collect data by compressor type and partition size
     compressor_data = defaultdict(lambda: defaultdict(lambda: {'compression_pct': [], 'throughput': []}))
     
-    for dataset, dataset_data in data[openmp_status].items():
+    for dataset, dataset_data in dataset_map.items():
         for partition_size, compressor_dict in dataset_data.items():
             for compressor_key, points in compressor_dict.items():
                 for point in points:
-                    compressor_data[compressor_key][partition_size]['compression_pct'].append(
-                        point['compression_percentage']
-                    )
-                    # Convert bytes/s to MB/s (decimal units)
-                    compressor_data[compressor_key][partition_size]['throughput'].append(
-                        point['throughput'] / 1000000.0
-                    )
+                    compression_value = point.get('compression_percentage')
+                    if compression_value is not None:
+                        compressor_data[compressor_key][partition_size]['compression_pct'].append(
+                            compression_value
+                        )
+                    throughput_value = point.get('throughput')
+                    if throughput_value is not None:
+                        # Convert bytes/s to MB/s (decimal units)
+                        compressor_data[compressor_key][partition_size]['throughput'].append(
+                            throughput_value / 1000000.0
+                        )
     
     # Calculate averages for each compressor
     results = {}
     for compressor_key, partition_dict in compressor_data.items():
-        partition_sizes = sorted(partition_dict.keys())
+        partition_sizes = []
         avg_compression_pct = []
         avg_throughput_mbs = []
         
-        for ps in partition_sizes:
-            avg_compression_pct.append(np.mean(partition_dict[ps]['compression_pct']))
-            avg_throughput_mbs.append(np.mean(partition_dict[ps]['throughput']))
+        for ps in sorted(partition_dict.keys()):
+            comp_values = partition_dict[ps]['compression_pct']
+            throughput_values = partition_dict[ps]['throughput']
+            
+            comp_mean = float(np.mean(comp_values)) if comp_values else None
+            throughput_mean = float(np.mean(throughput_values)) if throughput_values else None
+            
+            if comp_mean is None and throughput_mean is None:
+                continue
+            
+            partition_sizes.append(ps)
+            avg_compression_pct.append(comp_mean)
+            avg_throughput_mbs.append(throughput_mean)
         
-        results[compressor_key] = {
-            'partition_sizes': partition_sizes,
-            'compression_pct': avg_compression_pct,
-            'throughput': avg_throughput_mbs
-        }
+        if partition_sizes:
+            results[compressor_key] = {
+                'partition_sizes': partition_sizes,
+                'compression_pct': avg_compression_pct,
+                'throughput': avg_throughput_mbs
+            }
     
     return results
 
 
-def create_plots(data, output_dir):
+def merge_openmp_statuses(data):
+    """
+    Merge all OpenMP status buckets into a single dataset map so compression
+    ratios (which are identical regardless of threading) can be aggregated once.
+    """
+    merged = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    
+    for status_map in data.values():
+        for dataset, partition_dict in status_map.items():
+            for partition_size, compressor_dict in partition_dict.items():
+                for compressor_key, points in compressor_dict.items():
+                    merged[dataset][partition_size][compressor_key].extend(points)
+    
+    return merged
+
+
+def build_status_results(metric_data):
+    results = {}
+    for status, dataset_map in metric_data.items():
+        if dataset_map:
+            aggregated = aggregate_by_compressor(dataset_map)
+            if aggregated:
+                results[status] = aggregated
+    return results
+
+
+def select_status_dataset(status_results, preferred='with_omp'):
+    if preferred in status_results and status_results[preferred]:
+        return status_results[preferred], preferred
+    for status, data in status_results.items():
+        if data:
+            return data, status
+    return {}, None
+
+
+def plot_metric_lines(ax, metric_dict, value_key, compressor_styles, y_label, title):
+    plotted = False
+    for compressor_key, comp_data in sorted(metric_dict.items()):
+        if compressor_key not in compressor_styles:
+            continue
+        values = comp_data[value_key]
+        partition_sizes = comp_data['partition_sizes']
+        filtered_sizes = []
+        filtered_values = []
+        for ps, val in zip(partition_sizes, values):
+            if val is None:
+                continue
+            filtered_sizes.append(ps)
+            filtered_values.append(val)
+        if not filtered_sizes:
+            continue
+        style = compressor_styles[compressor_key]
+        ax.plot(filtered_sizes, filtered_values,
+                marker=style['marker'], linestyle=style['linestyle'],
+                linewidth=2, markersize=7, color=style['color'],
+                label=style['label'], alpha=0.85)
+        plotted = True
+    
+    ax.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
+    ax.set_ylabel(y_label, fontsize=13, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    if plotted:
+        ax.set_xscale('log', base=2)
+        ax.legend(fontsize=9, loc='best')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=10)
+    else:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12, fontweight='bold')
+        ax.set_axis_off()
+
+
+def create_multi_metric_plot(combined_results,
+                             compression_status_results,
+                             decompression_results,
+                             lookup_results,
+                             output_path,
+                             compressor_styles,
+                             status_titles):
+    fig, axes = plt.subplots(2, 2, figsize=(20, 13))
+    
+    # Compression ratio (threading agnostic)
+    plot_metric_lines(
+        axes[0, 0],
+        combined_results,
+        'compression_pct',
+        compressor_styles,
+        'Compression Ratio (%)',
+        'Compression Ratio vs Partition Size'
+    )
+    
+    # Compression throughput
+    compression_metric, comp_status = select_status_dataset(compression_status_results, 'with_omp')
+    comp_title = 'Compression Throughput vs Partition Size'
+    if comp_status:
+        comp_title += f" ({status_titles.get(comp_status, comp_status)})"
+    plot_metric_lines(
+        axes[0, 1],
+        compression_metric,
+        'throughput',
+        compressor_styles,
+        'Compression Throughput (MB/s)',
+        comp_title
+    )
+    
+    # Decompression throughput
+    decompression_metric, decomp_status = select_status_dataset(decompression_results, 'with_omp')
+    decomp_title = 'Decompression Throughput vs Partition Size'
+    if decomp_status:
+        decomp_title += f" ({status_titles.get(decomp_status, decomp_status)})"
+    plot_metric_lines(
+        axes[1, 0],
+        decompression_metric,
+        'throughput',
+        compressor_styles,
+        'Decompression Throughput (MB/s)',
+        decomp_title
+    )
+    
+    # Random access throughput
+    lookup_metric, lookup_status = select_status_dataset(lookup_results, 'with_omp')
+    lookup_title = 'Random Access Throughput vs Partition Size'
+    if lookup_status:
+        lookup_title += f" ({status_titles.get(lookup_status, lookup_status)})"
+    plot_metric_lines(
+        axes[1, 1],
+        lookup_metric,
+        'throughput',
+        compressor_styles,
+        'Random Access Throughput (MB/s)',
+        lookup_title
+    )
+    
+    plt.tight_layout()
+    output_file = output_path / 'multi_metric_comparison.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"Saved: {output_file}")
+    plt.close()
+
+
+def create_plots(compression_data, decompression_data, lookup_data, output_dir):
     """Create and save the plots showing each compressor separately."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -232,62 +417,52 @@ def create_plots(data, output_dir):
         'RLE_GEF': {'color': '#e377c2', 'marker': 'h', 'linestyle': ':', 'label': 'RLE-GEF'},
     }
     
-    # Aggregate data for both OpenMP statuses
-    results = {}
-    for openmp_status in ['with_omp', 'no_omp']:
-        if openmp_status in data:
-            results[openmp_status] = aggregate_by_compressor(data, openmp_status)
+    # Aggregate data for all metrics
+    status_titles = {
+        'with_omp': 'Multi-thread',
+        'no_omp': 'Single-thread'
+    }
     
-    if not results:
+    compression_results = build_status_results(compression_data)
+    decompression_results = build_status_results(decompression_data)
+    lookup_results = build_status_results(lookup_data)
+    
+    combined_results = {}
+    merged_dataset_map = merge_openmp_statuses(compression_data)
+    if merged_dataset_map:
+        combined_results = aggregate_by_compressor(merged_dataset_map)
+    
+    if not compression_results and not combined_results:
         print("Error: No data to plot")
         return
     
     # =========================================================================
-    # Plot 1: Compression Percentage vs Partition Size (With OpenMP)
+    # Plot 1: Compression Percentage vs Partition Size (threading agnostic)
     # =========================================================================
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-    
-    # Plot with OpenMP
-    if 'with_omp' in results:
-        for compressor_key, comp_data in sorted(results['with_omp'].items()):
+    if combined_results:
+        fig, ax = plt.subplots(figsize=(9, 7))
+        for compressor_key, comp_data in sorted(combined_results.items()):
             if compressor_key not in compressor_styles:
                 continue
             style = compressor_styles[compressor_key]
-            ax1.plot(comp_data['partition_sizes'], comp_data['compression_pct'],
+            ax.plot(comp_data['partition_sizes'], comp_data['compression_pct'],
                     marker=style['marker'], linestyle=style['linestyle'],
                     linewidth=2, markersize=7, color=style['color'],
-                    label=style['label'], alpha=0.8)
+                    label=style['label'], alpha=0.85)
         
-        ax1.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
-        ax1.set_ylabel('Compression Ratio (%)', fontsize=13, fontweight='bold')
-        ax1.set_title('Compression Ratio vs Partition Size (With OpenMP)',
-                     fontsize=14, fontweight='bold')
-        ax1.set_xscale('log', base=2)
-        ax1.legend(fontsize=10, loc='best')
-        ax1.grid(True, alpha=0.3)
-        ax1.tick_params(labelsize=10)
-    
-    # Plot without OpenMP
-    if 'no_omp' in results:
-        for compressor_key, comp_data in sorted(results['no_omp'].items()):
-            if compressor_key not in compressor_styles:
-                continue
-            style = compressor_styles[compressor_key]
-            ax2.plot(comp_data['partition_sizes'], comp_data['compression_pct'],
-                    marker=style['marker'], linestyle=style['linestyle'],
-                    linewidth=2, markersize=7, color=style['color'],
-                    label=style['label'], alpha=0.8)
+        ax.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Compression Ratio (%)', fontsize=13, fontweight='bold')
+        ax.set_title('Compression Ratio vs Partition Size', fontsize=14, fontweight='bold')
+        ax.set_xscale('log', base=2)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=10)
         
-        ax2.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
-        ax2.set_ylabel('Compression Ratio (%)', fontsize=13, fontweight='bold')
-        ax2.set_title('Compression Ratio vs Partition Size (Without OpenMP)',
-                     fontsize=14, fontweight='bold')
-        ax2.set_xscale('log', base=2)
-        ax2.legend(fontsize=10, loc='best')
-        ax2.grid(True, alpha=0.3)
-        ax2.tick_params(labelsize=10)
+        plt.tight_layout()
+    else:
+        print("Warning: No compression-ratio data available for plotting.")
+        fig, ax = plt.subplots()
     
-    plt.tight_layout()
     output_file = output_path / 'compression_ratio_by_compressor.png'
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"\nSaved: {output_file}")
@@ -299,8 +474,8 @@ def create_plots(data, output_dir):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
     
     # Plot with OpenMP
-    if 'with_omp' in results:
-        for compressor_key, comp_data in sorted(results['with_omp'].items()):
+    if 'with_omp' in compression_results:
+        for compressor_key, comp_data in sorted(compression_results['with_omp'].items()):
             if compressor_key not in compressor_styles:
                 continue
             style = compressor_styles[compressor_key]
@@ -311,7 +486,7 @@ def create_plots(data, output_dir):
         
         ax1.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
         ax1.set_ylabel('Compression Throughput (MB/s)', fontsize=13, fontweight='bold')
-        ax1.set_title('Compression Throughput vs Partition Size (With OpenMP)',
+        ax1.set_title(f"Compression Throughput vs Partition Size ({status_titles['with_omp']})",
                      fontsize=14, fontweight='bold')
         ax1.set_xscale('log', base=2)
         ax1.legend(fontsize=10, loc='best')
@@ -319,8 +494,8 @@ def create_plots(data, output_dir):
         ax1.tick_params(labelsize=10)
     
     # Plot without OpenMP
-    if 'no_omp' in results:
-        for compressor_key, comp_data in sorted(results['no_omp'].items()):
+    if 'no_omp' in compression_results:
+        for compressor_key, comp_data in sorted(compression_results['no_omp'].items()):
             if compressor_key not in compressor_styles:
                 continue
             style = compressor_styles[compressor_key]
@@ -331,7 +506,7 @@ def create_plots(data, output_dir):
         
         ax2.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
         ax2.set_ylabel('Compression Throughput (MB/s)', fontsize=13, fontweight='bold')
-        ax2.set_title('Compression Throughput vs Partition Size (Without OpenMP)',
+        ax2.set_title(f"Compression Throughput vs Partition Size ({status_titles['no_omp']})",
                      fontsize=14, fontweight='bold')
         ax2.set_xscale('log', base=2)
         ax2.legend(fontsize=10, loc='best')
@@ -350,16 +525,16 @@ def create_plots(data, output_dir):
     print("=" * 80)
     
     for openmp_status in ['with_omp', 'no_omp']:
-        if openmp_status not in results:
+        if openmp_status not in compression_results:
             continue
             
-        status_label = "WITH OpenMP" if openmp_status == 'with_omp' else "WITHOUT OpenMP"
+        status_label = status_titles.get(openmp_status, openmp_status).upper()
         print(f"\n{'='*80}")
         print(f"{status_label}")
         print(f"{'='*80}")
         
-        for compressor_key in sorted(results[openmp_status].keys()):
-            comp_data = results[openmp_status][compressor_key]
+        for compressor_key in sorted(compression_results[openmp_status].keys()):
+            comp_data = compression_results[openmp_status][compressor_key]
             print(f"\n{compressor_key}:")
             print("-" * 80)
             print(f"{'Partition':<12} {'Compression %':<18} {'Throughput (MB/s)':<20}")
@@ -373,6 +548,17 @@ def create_plots(data, output_dir):
                 print(f"{ps:<12} {comp_pct:<18.2f} {throughput:<20.2f}")
     
     print("\n" + "=" * 80)
+    
+    # Multi-metric comparison plot
+    create_multi_metric_plot(
+        combined_results,
+        compression_results,
+        decompression_results,
+        lookup_results,
+        output_path,
+        compressor_styles,
+        status_titles
+    )
 
 
 def main():
@@ -391,15 +577,15 @@ def main():
     
     # Load data
     print("Loading benchmark data...")
-    data = load_benchmark_data(bench_output_dir)
+    compression_data, decompression_data, lookup_data = load_benchmark_data(bench_output_dir)
     
-    if not data:
+    if (not compression_data and not decompression_data and not lookup_data):
         print("Error: No data loaded")
         sys.exit(1)
     
     # Create plots
     print("\nGenerating plots...")
-    create_plots(data, output_dir)
+    create_plots(compression_data, decompression_data, lookup_data, output_dir)
     
     print("\n" + "=" * 80)
     print("✓ All plots generated successfully!")

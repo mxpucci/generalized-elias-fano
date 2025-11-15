@@ -5,6 +5,7 @@
 #ifndef B_GEF_NO_RLE_NO_RLE_HPP
 #define B_GEF_NO_RLE_NO_RLE_HPP
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -25,6 +26,7 @@
 #include "RLE_GEF.hpp"
 #include "gap_computation_utils.hpp"
 #include "CompressionProfile.hpp"
+#include "FastUnaryDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -496,30 +498,99 @@ namespace gef {
                 return result;
             }
             
-            // Optimized range access: compute gaps incrementally
-            // We can reuse select0 positions by doing incremental selects
             using U = std::make_unsigned_t<T>;
-            
+
+            const size_t plus_bits = G_plus->size();
+            const size_t minus_bits = G_minus->size();
+            const size_t pos_prefix =
+                (startIndex > 0) ? G_plus->rank(G_plus->select0(startIndex)) : 0;
+            const size_t neg_prefix =
+                (startIndex > 0) ? G_minus->rank(G_minus->select0(startIndex)) : 0;
+
+            size_t current_pos_sum = pos_prefix;
+            size_t current_neg_sum = neg_prefix;
+
+            const size_t plus_start_bit =
+                startIndex > 0 ? std::min(G_plus->select0(startIndex) + 1, plus_bits) : 0;
+            const size_t minus_start_bit =
+                startIndex > 0 ? std::min(G_minus->select0(startIndex) + 1, minus_bits) : 0;
+
+            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+
+            constexpr size_t GAP_BATCH = 64;
+            uint32_t pos_buffer[GAP_BATCH];
+            uint32_t neg_buffer[GAP_BATCH];
+            size_t pos_size = 0, pos_index = 0;
+            size_t neg_size = 0, neg_index = 0;
+
+            // Maintain high as signed throughout to avoid conversions
+            long long high_signed = static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
+
             for (size_t i = startIndex; i < endIndex; ++i) {
-                const size_t pos_gap = G_plus->rank(G_plus->select0(i + 1));
-                const size_t neg_gap = G_minus->rank(G_minus->select0(i + 1));
-                const T high_val = static_cast<T>(pos_gap - neg_gap);
-                result.push_back(base + (L[i] | (high_val << b)));
+                // Inline gap fetches to reduce function call overhead
+                if (pos_index >= pos_size) [[unlikely]] {
+                    pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
+                    pos_index = 0;
+                    if (pos_size == 0) [[unlikely]] {
+                        pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
+                        pos_size = 1;
+                    }
+                }
+                if (neg_index >= neg_size) [[unlikely]] {
+                    neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
+                    neg_index = 0;
+                    if (neg_size == 0) [[unlikely]] {
+                        neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
+                        neg_size = 1;
+                    }
+                }
+                high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                
+                const U high_u = static_cast<U>(high_signed);
+                const U combined = static_cast<U>(L[i]) | (high_u << b);
+                result.push_back(base + static_cast<T>(combined));
             }
             
             return result;
         }
 
         T operator[](size_t index) const override {
-            if (h == 0)
+            if (h == 0) [[likely]]
                 return base + L[index];
+            
+            using U = std::make_unsigned_t<T>;
 
-            const T base_high_val = 0;
-            const size_t pos_gap = G_plus->rank(G_plus->select0(index + 1));
-            const size_t neg_gap = G_minus->rank(G_minus->select0(index + 1));
-            const T high_val = base_high_val + pos_gap - neg_gap;
+            const size_t plus_bits = G_plus->size();
+            const size_t minus_bits = G_minus->size();
+            size_t pos_prefix = (index > 0) ? G_plus->rank(G_plus->select0(index)) : 0;
+            size_t neg_prefix = (index > 0) ? G_minus->rank(G_minus->select0(index)) : 0;
 
-            return base + (L[index] | (high_val << b));
+            const size_t plus_start_bit =
+                index > 0 ? std::min(G_plus->select0(index) + 1, plus_bits) : 0;
+            const size_t minus_start_bit =
+                index > 0 ? std::min(G_minus->select0(index) + 1, minus_bits) : 0;
+            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+
+            uint32_t pos_gap = 0;
+            uint32_t neg_gap = 0;
+            if (plus_decoder.next_batch(&pos_gap, 1) == 0) [[unlikely]] {
+                pos_gap = static_cast<uint32_t>(plus_decoder.next());
+            }
+            if (minus_decoder.next_batch(&neg_gap, 1) == 0) [[unlikely]] {
+                neg_gap = static_cast<uint32_t>(minus_decoder.next());
+            }
+
+            pos_prefix += pos_gap;
+            neg_prefix += neg_gap;
+
+            const long long high_signed =
+                static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
+            const U high_u = static_cast<U>(high_signed);
+            const U combined = static_cast<U>(L[index]) | (high_u << b);
+            return base + static_cast<T>(combined);
         }
 
         void serialize(std::ofstream &ofs) const override {

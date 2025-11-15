@@ -6,6 +6,7 @@
 #define U_GEF_HPP
 
 #include "gap_computation_utils.hpp"
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <fstream>
@@ -17,6 +18,7 @@
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
 #include "FastBitWriter.hpp"
+#include "FastUnaryDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
@@ -395,81 +397,113 @@ namespace gef {
                 return result;
             }
             
-            // Optimized range access with incremental rank computation
             using U = std::make_unsigned_t<T>;
-            
-            size_t current_rank = B->rank(startIndex + 1);
-            T base_high_val = H[current_rank - 1];
-            size_t run_start_pos = B->select(current_rank);
-            size_t zeros_before_run = (run_start_pos + 1) - current_rank;
-            
+
+            const bool start_is_exception = (*B)[startIndex];
+            size_t exception_rank_before = B->rank(startIndex);
+            size_t exception_rank = exception_rank_before;
+            const size_t zero_before = startIndex - exception_rank_before;
+
+            U current_high = (exception_rank_before == 0)
+                                 ? U(0)
+                                 : static_cast<U>(H[exception_rank_before - 1]);
+
+            if (!start_is_exception) {
+                const size_t current_rank = B->rank(startIndex + 1); // equals exception_rank_before
+                size_t zeros_before_run = 0;
+                if (current_rank > 0) {
+                    const size_t run_start_pos = B->select(current_rank);
+                    zeros_before_run = (run_start_pos + 1) - current_rank;
+                }
+                const size_t gap_before_run =
+                    zeros_before_run > 0 ? G->rank(G->select0(zeros_before_run)) : 0;
+                const size_t gap_before_start =
+                    zero_before > 0 ? G->rank(G->select0(zero_before)) : 0;
+                current_high = static_cast<U>(
+                    current_high + static_cast<U>(gap_before_start - gap_before_run));
+            }
+
+            const size_t total_gap_bits = G->size();
+            const size_t start_bit =
+                zero_before > 0 ? std::min(G->select0(zero_before) + 1, total_gap_bits) : 0;
+            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), total_gap_bits, start_bit);
+
+            constexpr size_t GAP_BATCH = 64;
+            uint32_t gap_buffer[GAP_BATCH];
+            size_t buffer_size = 0;
+            size_t buffer_index = 0;
+
             for (size_t i = startIndex; i < endIndex; ++i) {
                 const bool is_exception = (*B)[i];
-                
                 if (is_exception) [[unlikely]] {
-                    // Update tracking for new run
-                    if (i != startIndex) {
-                        current_rank = B->rank(i + 1);
-                        base_high_val = H[current_rank - 1];
-                        run_start_pos = B->select(current_rank);
-                        zeros_before_run = (run_start_pos + 1) - current_rank;
-                    }
-                    result.push_back(base + (L[i] | (base_high_val << b)));
+                    ++exception_rank;
+                    current_high = static_cast<U>(H[exception_rank - 1]);
                 } else [[likely]] {
-                    const size_t zero_rank_at_i = (i + 1) - current_rank;
-                    
-                    size_t gap_in_run;
-                    if (zeros_before_run == 0) [[unlikely]] {
-                        gap_in_run = G->rank(G->select0(zero_rank_at_i));
-                    } else [[likely]] {
-                        const size_t total_gap_sum = G->rank(G->select0(zero_rank_at_i));
-                        const size_t gap_before_run = G->rank(G->select0(zeros_before_run));
-                        gap_in_run = total_gap_sum - gap_before_run;
+                    // Inline the gap fetch to reduce function call overhead
+                    if (buffer_index >= buffer_size) [[unlikely]] {
+                        buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
+                        buffer_index = 0;
+                        if (buffer_size == 0) [[unlikely]] {
+                            gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
+                            buffer_size = 1;
+                        }
                     }
-                    
-                    const T high_val = base_high_val + static_cast<T>(gap_in_run);
-                    result.push_back(base + (L[i] | (high_val << b)));
+                    current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
+
+                const U low = static_cast<U>(L[i]);
+                result.push_back(base + static_cast<T>(low | (current_high << b)));
             }
-            
+
             return result;
         }
 
         T operator[](size_t index) const override {
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
-            if (h == 0) {
+            if (h == 0) [[likely]] {
                 return base + L[index];
             }
 
-            // Find the number of exceptions up to and including 'index'.
-            const size_t run_index = B->rank(index + 1);
-            const T base_high_val = H[run_index - 1];
-            
-            // Fast path: check if this is an exception
+            using U = std::make_unsigned_t<T>;
+            const U low = static_cast<U>(L[index]);
+
             const bool is_exception = (*B)[index];
             if (is_exception) [[unlikely]] {
-                // Exception: high part stored explicitly, just combine with low part
-                return base + (L[index] | (base_high_val << b));
+                const size_t exception_rank = B->rank(index + 1);
+                const U high_val = static_cast<U>(H[exception_rank - 1]);
+                return base + static_cast<T>(low | (high_val << b));
             }
+
+            // Compute exception_rank and zero_before together
+            const size_t exception_rank = B->rank(index);
+            const size_t zero_before = index - exception_rank;
             
-            // Non-exception: reconstruct from gaps
-            const size_t run_start_pos = B->select(run_index);
-            const size_t zero_rank_at_index = (index + 1) - run_index;
-            const size_t zeros_before_run = (run_start_pos + 1) - run_index;
-
-            // Optimize common case: first element in run
-            size_t gap_in_run;
-            if (zeros_before_run == 0) [[unlikely]] {
-                gap_in_run = G->rank(G->select0(zero_rank_at_index));
-            } else [[likely]] {
-                const size_t total_gap_sum = G->rank(G->select0(zero_rank_at_index));
-                const size_t gap_before_run = G->rank(G->select0(zeros_before_run));
-                gap_in_run = total_gap_sum - gap_before_run;
+            U current_high = (exception_rank == 0) ? U(0) : static_cast<U>(H[exception_rank - 1]);
+            
+            size_t zeros_before_run = 0;
+            if (exception_rank > 0) {
+                const size_t run_start_pos = B->select(exception_rank);
+                zeros_before_run = (run_start_pos + 1) - exception_rank;
             }
+            const size_t gap_before_run =
+                zeros_before_run > 0 ? G->rank(G->select0(zeros_before_run)) : 0;
+            const size_t gap_before_index =
+                zero_before > 0 ? G->rank(G->select0(zero_before)) : 0;
+            current_high += static_cast<U>(gap_before_index - gap_before_run);
 
-            const T high_val = base_high_val + static_cast<T>(gap_in_run);
-            return base + (L[index] | (high_val << b));
+            // Decode final gap
+            const size_t total_gap_bits = G->size();
+            const size_t start_bit =
+                zero_before > 0 ? std::min(G->select0(zero_before) + 1, total_gap_bits) : 0;
+            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), total_gap_bits, start_bit);
+            uint32_t gap_value = 0;
+            if (gap_decoder.next_batch(&gap_value, 1) == 0) [[unlikely]] {
+                gap_value = static_cast<uint32_t>(gap_decoder.next());
+            }
+            current_high += static_cast<U>(gap_value);
+
+            return base + static_cast<T>(low | (current_high << b));
         }
 
         void serialize(std::ofstream &ofs) const override {
