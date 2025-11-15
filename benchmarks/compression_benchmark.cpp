@@ -154,7 +154,7 @@ public:
 // ============================================================================
 
 const std::vector<size_t> PARTITION_SIZES = {
-    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576
+    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304
 };
 const size_t DEFAULT_PARTITION_SIZE = PARTITION_SIZES.back();
 const gef::SplitPointStrategy DEFAULT_LOOKUP_STRATEGY = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;

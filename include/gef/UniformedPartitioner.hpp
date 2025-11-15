@@ -157,6 +157,8 @@ public:
         // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
+        // Note: std::unique_ptr overhead is runtime memory overhead, not serialized data size
+        total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
 
         for (const auto& p : m_partitions) {
             total_bytes += p->size_in_bytes();
@@ -168,6 +170,8 @@ public:
         size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
+        // Note: std::unique_ptr overhead is runtime memory overhead, not serialized data size
+        total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
 
         for (const auto& p : m_partitions) {
             total_bytes += p->theoretical_size_in_bytes();
