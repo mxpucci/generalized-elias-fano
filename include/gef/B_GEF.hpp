@@ -353,8 +353,12 @@ namespace gef {
                   population_start = clock::now();
               }
 
+              // All in L - use unsigned arithmetic for efficiency
+              using U = std::make_unsigned_t<T>;
               for (size_t i = 0; i < N; ++i) {
-                  L[i] = S[i] - base;
+                  L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
+                      static_cast<U>(S[i]) - static_cast<U>(base)
+                  );
               }
               B = nullptr;
               G_plus = nullptr;
@@ -402,8 +406,8 @@ namespace gef {
           // Precompute constant for exception check  
           const uint64_t hbits_u64 = static_cast<uint64_t>(h);
 
-          // Optimize: compute low mask once (same as B_GEF_STAR)
-          const U low_mask = b < sizeof(T) * 8 ? ((U(1) << b) - 1) : U(~U(0));
+          // Precompute low mask once - b < total_bits is guaranteed by h > 0
+          const U low_mask = ((U(1) << b) - 1);
 
           uint64_t* b_data = B->raw_data_ptr();
           FastBitWriter b_writer(b_data);
@@ -417,7 +421,8 @@ namespace gef {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
               L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
               
-              const U current_high_part = (b < sizeof(T) * 8) ? (element_u >> b) : U(0);
+              // Direct shift - b < total_bits is guaranteed by early h==0 return
+              const U current_high_part = element_u >> b;
               const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
               const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
               

@@ -201,8 +201,9 @@ namespace gef {
                 return;
             }
 
-            base = *std::min_element(S.begin(), S.end());
-            const int64_t max_val = *std::max_element(S.begin(), S.end());
+            auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
+            base = *min_it;
+            const int64_t max_val = *max_it;
             const int64_t min_val = base;
             const uint64_t u = max_val - min_val + 1;
             const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
@@ -215,8 +216,13 @@ namespace gef {
 
             L = sdsl::int_vector<>(S.size(), 0, b);
             if (h == 0) {
-                for (size_t i = 0; i < S.size(); i++)
-                    L[i] = S[i] - base;
+                // All in L - use unsigned arithmetic for efficiency
+                using U = std::make_unsigned_t<T>;
+                for (size_t i = 0; i < S.size(); i++) {
+                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
+                        static_cast<U>(S[i]) - static_cast<U>(base)
+                    );
+                }
                 B = nullptr;
                 H.resize(0);
                 return;
@@ -229,11 +235,16 @@ namespace gef {
             uint64_t* b_data = B->raw_data_ptr();
             FastBitWriter b_writer(b_data);
             
+            // Precompute low mask once - b < total_bits is guaranteed by h > 0
+            using U = std::make_unsigned_t<T>;
+            const U low_mask = ((U(1) << b) - 1);
+            
             for (size_t i = 0; i < S.size(); ++i) {
-                const T element = S[i] - base;
-                const T highBits = highPart(element, total_bits, h);
-                L[i] = lowPart(element, b);
-                const bool is_new_run = (i == 0 || highBits != lastHighBits);
+                const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                // Direct shift - b < total_bits is guaranteed by early h==0 return
+                const T highBits = static_cast<T>(element_u >> b);
+                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                const bool is_new_run = (i == 0) | (highBits != lastHighBits);
                 if (is_new_run) {
                     b_writer.set_ones_range(1);
                 } else {
@@ -250,9 +261,10 @@ namespace gef {
             lastHighBits = 0;
             size_t h_idx = 0;
             for (size_t i = 0; i < S.size(); ++i) {
-                const T element = S[i] - base;
-                const T highBits = highPart(element, total_bits, h);
-                if (i == 0 || highBits != lastHighBits) {
+                const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                // Direct shift - b < total_bits is guaranteed by early h==0 return
+                const T highBits = static_cast<T>(element_u >> b);
+                if ((i == 0) | (highBits != lastHighBits)) {
                     H[h_idx++] = highBits;
                 }
                 lastHighBits = highBits;
