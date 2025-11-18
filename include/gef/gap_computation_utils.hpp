@@ -194,21 +194,14 @@ total_variation_of_shifted_vec_with_multiple_shifts(
 
     if (n < 2) return results;
 
-    // Precompute shifted values as unsigned to avoid signed issues
+    // Compute total_bits (used in both scalar and vector paths)
     using U = std::make_unsigned_t<T>;
     using WU = unsigned __int128;
     using WI = __int128;
-    std::vector<uint64_t> shifted(n);
-    for (size_t i = 0; i < n; ++i) {
-        WI val = static_cast<WI>(vec[i]) - static_cast<WI>(min_val);
-        shifted[i] = static_cast<uint64_t>(val);
-    }
-
-    // Compute total_bits (used in both scalar and vector paths)
     const WI min_w = static_cast<WI>(min_val);
     const WI max_w = static_cast<WI>(max_val);
     const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
-    size_t total_bits = (range <= 1) ? 1 : [] (WU r) {
+    const size_t total_bits = (range <= 1) ? 1 : [] (WU r) {
         size_t bits = 0; WU x = r - 1;
         while (x > 0) { ++bits; x >>= 1; }
         return bits;
@@ -251,7 +244,8 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         __m256i neg_exc = zero_vec;
 
         // First gap (special case)
-        __m256i curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[0]), b_vec);
+        WI val_0 = static_cast<WI>(vec[0]) - static_cast<WI>(min_val);
+        __m256i curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(static_cast<long long>(static_cast<uint64_t>(val_0))), b_vec);
         __m256i prev_high = zero_vec;
         __m256i signed_less = _mm256_cmpgt_epi64(prev_high, curr_high);
         __m256i curr_neg = _mm256_cmpgt_epi64(zero_vec, curr_high);
@@ -278,7 +272,8 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         // Main loop over pairs
         for (size_t i = 1; i < n; ++i) {
             prev_high = curr_high;
-            curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(shifted[i]), b_vec);
+            WI val_i = static_cast<WI>(vec[i]) - static_cast<WI>(min_val);
+            curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(static_cast<long long>(static_cast<uint64_t>(val_i))), b_vec);
             signed_less = _mm256_cmpgt_epi64(prev_high, curr_high);
             curr_neg = _mm256_cmpgt_epi64(zero_vec, curr_high);
             prev_neg = _mm256_cmpgt_epi64(zero_vec, prev_high);

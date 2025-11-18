@@ -286,12 +286,33 @@ namespace gef {
             
             const size_t endIndex = std::min(startIndex + count, size());
             size_t write_index = 0;
-            const T base_value = base;
+            
+            // Precompute constants for L reading
+            const uint64_t* l_data = L.data();
+            const uint64_t mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
+            
+            // Initialize bit reader state for L
+            size_t l_bit_pos = startIndex * b;
+            size_t word_idx = l_bit_pos / 64;
+            size_t bit_off = l_bit_pos % 64;
             
             // Fast path: h == 0, all data in L
-            if (h == 0) {
+            if (h == 0) [[unlikely]] {
+                const T base_val = base;
                 for (size_t i = startIndex; i < endIndex; ++i) {
-                    output[write_index++] = base_value + L[i];
+                    uint64_t val = (l_data[word_idx] >> bit_off);
+                    if (bit_off + b > 64) {
+                        val |= (l_data[word_idx + 1] << (64 - bit_off));
+                    }
+                    val &= mask;
+                    
+                    output[write_index++] = base_val + static_cast<T>(val);
+                    
+                    bit_off += b;
+                    if (bit_off >= 64) {
+                        bit_off -= 64;
+                        word_idx++;
+                    }
                 }
                 return write_index;
             }
@@ -303,8 +324,9 @@ namespace gef {
             size_t current_rank_idx = B->rank(startIndex + 1);
             if (current_rank_idx == 0) current_rank_idx = 1; // Handle potentially empty prefix
             
-            // Load the initial High part
+            // Load the initial High part and precompute base + shifted high
             T current_high = H[current_rank_idx - 1];
+            T current_base_plus_high = base + (current_high << b);
         
             // Access raw data for fast bit scanning
             const uint64_t* b_data = B->raw_data_ptr();
@@ -319,24 +341,24 @@ namespace gef {
                 // --- Fast Bit Scan Logic ---
                 // Calculate where to start searching in the raw 64-bit array
                 size_t search_start = current_pos + 1;
-                size_t word_idx = search_start / 64;
-                size_t bit_offset = search_start % 64;
+                size_t b_word_idx = search_start / 64;
+                size_t b_bit_offset = search_start % 64;
                 size_t max_words = (b_size + 63) / 64;
         
-                if (word_idx < max_words) {
-                    uint64_t word = b_data[word_idx];
+                if (b_word_idx < max_words) {
+                    uint64_t word = b_data[b_word_idx];
                     
-                    // Create a mask to ignore bits before 'bit_offset'.
-                    // (~0ULL << bit_offset) creates a mask like 11110000...
-                    uint64_t mask = (~0ULL) << bit_offset;
-                    uint64_t masked_word = word & mask;
+                    // Create a mask to ignore bits before 'b_bit_offset'.
+                    // (~0ULL << b_bit_offset) creates a mask like 11110000...
+                    uint64_t b_mask = (~0ULL) << b_bit_offset;
+                    uint64_t masked_word = word & b_mask;
         
                     if (masked_word != 0) {
                         // Found a 1 in the current word
-                        next_one_pos = word_idx * 64 + __builtin_ctzll(masked_word);
+                        next_one_pos = b_word_idx * 64 + __builtin_ctzll(masked_word);
                     } else {
                         // Scan subsequent words 64 bits at a time
-                        for (size_t w = word_idx + 1; w < max_words; ++w) {
+                        for (size_t w = b_word_idx + 1; w < max_words; ++w) {
                             if (b_data[w] != 0) {
                                 next_one_pos = w * 64 + __builtin_ctzll(b_data[w]);
                                 break;
@@ -350,11 +372,21 @@ namespace gef {
                 // It's limited by either the request count (endIndex) or the start of the next run (next_one_pos)
                 size_t run_limit = std::min(endIndex, next_one_pos);
         
-                // Tight loop to fill output
-                // Pre-shift high part to avoid doing it inside the loop
-                const T high_shifted = current_high << b;
+                // Tight loop to fill output using manual L read
                 for (; current_pos < run_limit; ++current_pos) {
-                    output[write_index++] = base_value + (L[current_pos] | high_shifted);
+                    uint64_t val = (l_data[word_idx] >> bit_off);
+                    if (bit_off + b > 64) {
+                        val |= (l_data[word_idx + 1] << (64 - bit_off));
+                    }
+                    val &= mask;
+
+                    output[write_index++] = current_base_plus_high + static_cast<T>(val);
+
+                    bit_off += b;
+                    if (bit_off >= 64) {
+                        bit_off -= 64;
+                        word_idx++;
+                    }
                 }
         
                 // If we stopped because we hit the start of a new run (a 1-bit at next_one_pos)
@@ -364,6 +396,7 @@ namespace gef {
                     // Update High part
                     if (current_rank_idx <= H.size()) {
                         current_high = H[current_rank_idx - 1];
+                        current_base_plus_high = base + (current_high << b);
                     }
                     // Note: We do not increment current_pos here. 
                     // The loop continues, and the element at `next_one_pos` (which is now `current_pos`)

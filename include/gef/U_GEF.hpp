@@ -347,24 +347,35 @@ namespace gef {
             uint64_t* g_data = G->raw_data_ptr();
             FastBitWriter g_writer(g_data);
 
-            for (size_t i = 0; i < N; ++i) {
+            // Handle first element separately to avoid i==0 check in loop
+            if (N > 0) {
+                const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
+                L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                const U current_high_part = element_u >> b;
+                
+                // i=0 is always an exception
+                b_writer.set_ones_range(1);
+                H[h_idx++] = current_high_part;
+                lastHighBits = current_high_part;
+            }
+
+            for (size_t i = 1; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
                 L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
                 
-                // Direct shift - b < total_bits is guaranteed by early h==0 return
                 const U current_high_part = element_u >> b;
                 const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
                 
-                // Exception check: i==0 or gap<0 or gap>=h
-                const bool is_exception = (i == 0) | (gap < 0) | (static_cast<uint64_t>(gap) >= h_u64);
+                // Exception check: gap<0 or gap>=h
+                // Optimized: cast to uint64_t handles negative check automatically
+                const bool is_exception = (static_cast<uint64_t>(gap) >= h_u64);
 
                 if (is_exception) [[unlikely]] {
                     b_writer.set_ones_range(1);
                     H[h_idx++] = current_high_part;
                 } else [[likely]] {
                     b_writer.set_zero();
-                    const uint64_t g = static_cast<uint64_t>(gap);
-                    g_writer.set_ones_range(g);
+                    g_writer.set_ones_range(static_cast<uint64_t>(gap));
                     g_writer.set_zero();
                 }
                 lastHighBits = current_high_part;
@@ -466,28 +477,108 @@ namespace gef {
             size_t buffer_size = 0;
             size_t buffer_index = 0;
 
-            // Main loop
-            for (size_t i = startIndex; i < endIndex; ++i) {
-                if (read_bit(i)) [[unlikely]] {
-                    // It is an exception: reset current_high from H
+            size_t i = startIndex;
+            
+            // 1. Align to 64-bit boundary of B
+            while (i < endIndex && (i & 63)) {
+                 if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
                     current_high = static_cast<U>(H[exception_rank - 1]);
                 } else [[likely]] {
-                    // It is a gap: decode and add to current_high
                     if (buffer_index >= buffer_size) [[unlikely]] {
                         buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
                         buffer_index = 0;
                         if (buffer_size == 0) [[unlikely]] {
-                            // Fallback/Safety
                             gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
                             buffer_size = 1;
                         }
                     }
                     current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
-
                 const U low = static_cast<U>(L[i]);
                 output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                ++i;
+            }
+
+            // 2. Process 64-bit blocks
+            const uint64_t* b_blocks = b_data + (i >> 6);
+            
+            // Prepare optimized L pointers if possible
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+
+            while (i + 64 <= endIndex) {
+                uint64_t block = *b_blocks++;
+                
+                if (block == 0) { // Fast path: 64 non-exceptions
+                    for (int k = 0; k < 64; ++k) {
+                         if (buffer_index >= buffer_size) [[unlikely]] {
+                            buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
+                            buffer_index = 0;
+                            if (buffer_size == 0) [[unlikely]] {
+                                gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
+                                buffer_size = 1;
+                            }
+                        }
+                        current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                        
+                        U low;
+                        if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
+                        else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
+                        else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
+                        else low = static_cast<U>(L[i + k]);
+                        
+                        output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                    }
+                } else { // Slow path: mixed exceptions
+                     for (int k = 0; k < 64; ++k) {
+                        if ((block >> k) & 1) {
+                            ++exception_rank;
+                            current_high = static_cast<U>(H[exception_rank - 1]);
+                        } else {
+                             if (buffer_index >= buffer_size) [[unlikely]] {
+                                buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
+                                buffer_index = 0;
+                                if (buffer_size == 0) [[unlikely]] {
+                                    gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
+                                    buffer_size = 1;
+                                }
+                            }
+                            current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                        }
+                        
+                        U low;
+                        if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
+                        else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
+                        else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
+                        else low = static_cast<U>(L[i + k]);
+
+                        output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                     }
+                }
+                i += 64;
+            }
+
+            // 3. Epilogue
+            while (i < endIndex) {
+                 if (read_bit(i)) [[unlikely]] {
+                    ++exception_rank;
+                    current_high = static_cast<U>(H[exception_rank - 1]);
+                } else [[likely]] {
+                    if (buffer_index >= buffer_size) [[unlikely]] {
+                        buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
+                        buffer_index = 0;
+                        if (buffer_size == 0) [[unlikely]] {
+                             gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
+                             buffer_size = 1;
+                        }
+                    }
+                    current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                }
+                const U low = static_cast<U>(L[i]);
+                output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                ++i;
             }
 
             return write_index;

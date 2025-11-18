@@ -354,7 +354,7 @@ void GetElementsRangeBenchmark(benchmark::State& state,
         return;
     }
     if (range > data.size()) {
-        state.SkipWithError("Range exceeds input size for get_elements benchmark.");
+        state.SkipWithMessage("Range exceeds input size for get_elements benchmark; skipping.");
         return;
     }
 

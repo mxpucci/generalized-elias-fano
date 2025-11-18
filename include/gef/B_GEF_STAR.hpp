@@ -434,12 +434,31 @@ namespace gef {
             FastBitWriter minus_writer(g_minus_data);
             U lastHighBits = 0;
 
+            // L writer state
+            uint64_t* l_data = L.data();
+            uint64_t l_buffer = 0;
+            uint8_t l_bits = 0;
+            size_t l_word_idx = 0;
+
             for (size_t i = 0; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
                 
                 // Store low part
                 if (b > 0) [[likely]] {
-                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                    uint64_t val = static_cast<uint64_t>(element_u & low_mask);
+                    l_buffer |= (val << l_bits);
+                    if (l_bits + b >= 64) {
+                        l_data[l_word_idx++] = l_buffer;
+                        if (l_bits + b > 64) {
+                            l_buffer = val >> (64 - l_bits);
+                            l_bits = l_bits + b - 64;
+                        } else {
+                            l_buffer = 0;
+                            l_bits = 0;
+                        }
+                    } else {
+                        l_bits += b;
+                    }
                 }
 
                 // Compute high part and gap
@@ -459,6 +478,11 @@ namespace gef {
                 plus_writer.set_zero();
 
                 lastHighBits = currentHighBits;
+            }
+            
+            // Flush L buffer
+            if (b > 0 && l_bits > 0) {
+                l_data[l_word_idx] = l_buffer;
             }
             // ===== END POPULATION PHASE =====
 
@@ -524,8 +548,35 @@ namespace gef {
 
             // Maintain high as signed throughout to avoid conversions
             long long high_signed = static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
+            
+            // Initialize L reader
+            const uint64_t* l_data = L.data();
+            size_t l_start_bit = startIndex * b;
+            size_t l_word_idx = l_start_bit / 64;
+            uint8_t l_bits_consumed = l_start_bit % 64;
+            uint64_t l_buffer = (b > 0) ? l_data[l_word_idx] : 0;
+            const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
 
             for (size_t i = startIndex; i < endIndex; ++i) {
+                // Optimized L read
+                U low_part = 0;
+                if (b > 0) [[likely]] {
+                    uint64_t val = (l_buffer >> l_bits_consumed);
+                    if (l_bits_consumed + b > 64) {
+                        uint64_t next_word = l_data[++l_word_idx];
+                        val |= (next_word << (64 - l_bits_consumed));
+                        l_buffer = next_word;
+                        l_bits_consumed = l_bits_consumed + b - 64;
+                    } else if (l_bits_consumed + b == 64) {
+                        l_word_idx++;
+                        if (i + 1 < endIndex) l_buffer = l_data[l_word_idx];
+                        l_bits_consumed = 0;
+                    } else {
+                        l_bits_consumed += b;
+                    }
+                    low_part = static_cast<U>(val & l_mask);
+                }
+
                 // Inline gap fetches to reduce function call overhead
                 if (pos_index >= pos_size) [[unlikely]] {
                     pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
@@ -547,7 +598,7 @@ namespace gef {
                 high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                 
                 const U high_u = static_cast<U>(high_signed);
-                const U combined = static_cast<U>(L[i]) | (high_u << b);
+                const U combined = low_part | (high_u << b);
                 output[write_index++] = base + static_cast<T>(combined);
             }
             

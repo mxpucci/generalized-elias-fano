@@ -24,10 +24,10 @@ namespace gef {
         size_t pos_;
 
         static inline uint64_t mask_for_bits(size_t bits) {
-            if (bits >= 64) {
-                return std::numeric_limits<uint64_t>::max();
-            }
-            return (uint64_t(1) << bits) - 1;
+            // Branchless mask generation.
+            // Assumes bits > 0 and bits <= 64.
+            // Caller must ensure bits > 0.
+            return (~0ULL >> (64 - bits));
         }
 
     public:
@@ -45,10 +45,12 @@ namespace gef {
             while (pos_ < total_bits_) {
                 const size_t word_idx = pos_ >> 6;
                 const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
+                // bits_remaining is always > 0 because pos_ < total_bits_ and 64-offset > 0
                 const size_t bits_remaining_in_word = std::min<size_t>(64 - bit_offset, total_bits_ - pos_);
                 const uint64_t word = data_[word_idx];
-                const uint64_t chunk = (word >> bit_offset) & mask_for_bits(bits_remaining_in_word);
-                const uint64_t inverted = (~chunk) & mask_for_bits(bits_remaining_in_word);
+                const uint64_t mask = mask_for_bits(bits_remaining_in_word);
+                const uint64_t chunk = (word >> bit_offset) & mask;
+                const uint64_t inverted = (~chunk) & mask;
 
                 if (inverted != 0ULL) {
                     const uint32_t zero_offset = static_cast<uint32_t>(__builtin_ctzll(inverted));
@@ -135,7 +137,7 @@ namespace gef {
                     pos_ += zero_offset + 1;
                     bits_remaining_in_word -= zero_offset + 1;
                     chunk >>= (zero_offset + 1);
-                    chunk_mask = mask_for_bits(bits_remaining_in_word);
+                    
                     emit_gap(static_cast<uint32_t>(pending_gap));
                     pending_gap = 0;
 
@@ -147,6 +149,8 @@ namespace gef {
                     if (bits_remaining_in_word == 0) {
                         break;
                     }
+
+                    chunk_mask = mask_for_bits(bits_remaining_in_word);
                 }
             }
 

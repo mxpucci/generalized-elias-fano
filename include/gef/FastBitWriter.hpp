@@ -50,18 +50,8 @@ namespace gef {
         __attribute__((always_inline)) inline void set_ones_range(uint64_t count) {
             if (count == 0) return;
 
-            // Fast path for very small counts (covers ~90% of gaps in high-entropy data)
-            if (count <= 8) [[likely]] {
-                for (uint64_t i = 0; i < count; ++i) {
-                    const size_t word_idx = pos_ >> 6;
-                    const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-                    data_[word_idx] |= (1ULL << bit_offset);
-                    ++pos_;
-                }
-                return;
-            }
-
-            // For larger counts, use word-level operations with SIMD optimization
+            // Unified path using word-level operations.
+            // This eliminates the loop overhead for small counts and uses efficient masking.
             const size_t end_pos = pos_ + count - 1;
             const size_t start_word = pos_ >> 6;
             const size_t end_word = end_pos >> 6;
@@ -69,11 +59,15 @@ namespace gef {
             const uint32_t end_bit = static_cast<uint32_t>(end_pos & 63);
 
             if (start_word == end_word) {
-                // All bits in same word
-                const uint64_t mask = ((1ULL << count) - 1ULL) << start_bit;
+                // All bits in same word - single mask operation
+                // (~0ULL >> (64 - count)) creates a mask of 'count' ones at the LSBs.
+                // We then shift it to the correct position.
+                // This handles count=64 correctly if start_bit=0.
+                const uint64_t mask = (~0ULL >> (64 - count)) << start_bit;
                 data_[start_word] |= mask;
             } else {
-                // Spans multiple words - optimize for large ranges
+                // Spans multiple words
+                // Head: set bits from start_bit to 63
                 data_[start_word] |= (~0ULL << start_bit);
 
                 const size_t num_full_words = end_word - start_word - 1;
@@ -121,7 +115,9 @@ namespace gef {
 #endif
                 }
 
-                const uint64_t tail_mask = (1ULL << (end_bit + 1)) - 1ULL;
+                // Tail: set bits from 0 to end_bit
+                // (~0ULL >> (63 - end_bit)) creates a mask of (end_bit + 1) ones at LSBs
+                const uint64_t tail_mask = ~0ULL >> (63 - end_bit);
                 data_[end_word] |= tail_mask;
             }
 

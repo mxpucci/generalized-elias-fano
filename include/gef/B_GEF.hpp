@@ -420,7 +420,20 @@ namespace gef {
           FastBitWriter plus_writer(g_plus_data);
           FastBitWriter minus_writer(g_minus_data);
 
-          for (size_t i = 0; i < N; ++i) {
+          // 1. Handle first element (i=0)
+          if (N > 0) {
+              const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
+              L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              const U current_high_part = element_u >> b;
+              
+              // i=0 is always an exception
+              b_writer.set_ones_range(1);
+              H[h_idx++] = current_high_part;
+              lastHighBits = current_high_part;
+          }
+
+          // 2. Loop from 1 to N-1
+          for (size_t i = 1; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
               L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
               
@@ -429,8 +442,16 @@ namespace gef {
               const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
               const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
               
-              // Exception check
-              const bool is_exception = (i == 0) | ((abs_gap + 2) > hbits_u64);
+              // Exception check: (abs_gap + 2) > hbits_u64
+              // Replaces (abs_gap >= h - 1) approx logic from original but exact formula is:
+              // Original: 0 <= gap <= h. 
+              // Code uses: 0 <= highPart(i) - highPart(i-1) <= h ???
+              // Original code comment: B[i]=0 <==> 0 <= highPart(i) - highPart(i-1) <= h
+              // Actually code check was: (abs_gap + 2) > hbits_u64
+              // Wait, if gap is -1, abs_gap=1. 1+2 = 3.
+              // If h=2. 3 > 2 is true. Exception.
+              // It seems the condition is strict.
+              const bool is_exception = ((abs_gap + 2) > hbits_u64);
 
               if (is_exception) [[unlikely]] {
                   b_writer.set_ones_range(1);
@@ -545,8 +566,10 @@ namespace gef {
             size_t pos_size = 0, pos_index = 0;
             size_t neg_size = 0, neg_index = 0;
 
-            // Main loop with direct bit access
-            for (size_t i = startIndex; i < endIndex; ++i) {
+            size_t i = startIndex;
+
+            // 1. Align to 64-bit boundary of B
+            while (i < endIndex && (i & 63)) {
                 if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
                     high_signed = static_cast<long long>(H[exception_rank - 1]);
@@ -576,6 +599,125 @@ namespace gef {
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
                 const Wide offset = low | high_shifted;
                 output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                ++i;
+            }
+
+            // 2. Process 64-bit blocks
+            const uint64_t* b_blocks = b_data + (i >> 6);
+            
+            // Prepare optimized L pointers if possible
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+
+            while (i + 64 <= endIndex) {
+                uint64_t block = *b_blocks++;
+                
+                if (block == 0) { // Fast path: 64 non-exceptions
+                    for (int k = 0; k < 64; ++k) {
+                         if (pos_index >= pos_size) [[unlikely]] {
+                            pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
+                            pos_index = 0;
+                            if (pos_size == 0) [[unlikely]] {
+                                pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
+                                pos_size = 1;
+                            }
+                        }
+                        if (neg_index >= neg_size) [[unlikely]] {
+                            neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
+                            neg_index = 0;
+                            if (neg_size == 0) [[unlikely]] {
+                                neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
+                                neg_size = 1;
+                            }
+                        }
+                        high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                        high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                        
+                        U high_val = static_cast<U>(high_signed);
+                        Wide low;
+                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]);
+                        else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]);
+                        else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]);
+                        else low = static_cast<Wide>(L[i + k]);
+
+                        const Wide high_shifted = static_cast<Wide>(high_val) << b;
+                        const Wide offset = low | high_shifted;
+                        output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                    }
+                } else { // Slow path
+                     for (int k = 0; k < 64; ++k) {
+                        if ((block >> k) & 1) {
+                            ++exception_rank;
+                            high_signed = static_cast<long long>(H[exception_rank - 1]);
+                        } else {
+                             if (pos_index >= pos_size) [[unlikely]] {
+                                pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
+                                pos_index = 0;
+                                if (pos_size == 0) [[unlikely]] {
+                                    pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
+                                    pos_size = 1;
+                                }
+                            }
+                            if (neg_index >= neg_size) [[unlikely]] {
+                                neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
+                                neg_index = 0;
+                                if (neg_size == 0) [[unlikely]] {
+                                    neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
+                                    neg_size = 1;
+                                }
+                            }
+                            high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                            high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                        }
+                        
+                        U high_val = static_cast<U>(high_signed);
+                        Wide low;
+                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]);
+                        else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]);
+                        else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]);
+                        else low = static_cast<Wide>(L[i + k]);
+
+                        const Wide high_shifted = static_cast<Wide>(high_val) << b;
+                        const Wide offset = low | high_shifted;
+                        output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                     }
+                }
+                i += 64;
+            }
+
+            // 3. Epilogue
+            while (i < endIndex) {
+                if (read_bit(i)) [[unlikely]] {
+                    ++exception_rank;
+                    high_signed = static_cast<long long>(H[exception_rank - 1]);
+                } else [[likely]] {
+                    if (pos_index >= pos_size) [[unlikely]] {
+                        pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
+                        pos_index = 0;
+                        if (pos_size == 0) [[unlikely]] {
+                            pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
+                            pos_size = 1;
+                        }
+                    }
+                    if (neg_index >= neg_size) [[unlikely]] {
+                        neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
+                        neg_index = 0;
+                        if (neg_size == 0) [[unlikely]] {
+                            neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
+                            neg_size = 1;
+                        }
+                    }
+                    high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                    high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                }
+
+                const U high_val = static_cast<U>(high_signed);
+                const Wide low = static_cast<Wide>(L[i]);
+                const Wide high_shifted = static_cast<Wide>(high_val) << b;
+                const Wide offset = low | high_shifted;
+                output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                ++i;
             }
             
             return write_index;
