@@ -5,6 +5,7 @@ Compression Analysis Plotting Script
 This script analyzes compression benchmark results and generates plots showing:
 1. Average compression percentage across datasets for different partition sizes
 2. Average compression throughput across datasets for different partition sizes
+3. Decompression throughput comparisons (multi-thread vs single-thread)
 
 Both metrics are plotted separately for OpenMP-enabled and OpenMP-disabled runs.
 
@@ -330,6 +331,45 @@ def plot_metric_lines(ax, metric_dict, value_key, compressor_styles, y_label, ti
         ax.set_axis_off()
 
 
+def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
+    """
+    Plot throughput values for a specific OpenMP status on a provided axis.
+    """
+    if not status_data:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12, fontweight='bold')
+        ax.set_axis_off()
+        return
+
+    plotted = False
+    for compressor_key, comp_data in sorted(status_data.items()):
+        if compressor_key not in compressor_styles:
+            continue
+        style = compressor_styles[compressor_key]
+        partition_sizes = comp_data.get('partition_sizes', [])
+        throughputs = comp_data.get('throughput', [])
+        if not partition_sizes or not throughputs:
+            continue
+        ax.plot(partition_sizes, throughputs,
+                marker=style['marker'], linestyle=style['linestyle'],
+                linewidth=2, markersize=7, color=style['color'],
+                label=style['label'], alpha=0.8)
+        plotted = True
+
+    if plotted:
+        ax.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
+        ax.set_ylabel(y_label, fontsize=13, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xscale('log', base=2)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=10)
+    else:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12, fontweight='bold')
+        ax.set_axis_off()
+
+
 def create_multi_metric_plot(combined_results,
                              compression_status_results,
                              decompression_results,
@@ -472,52 +512,54 @@ def create_plots(compression_data, decompression_data, lookup_data, output_dir):
     # Plot 2: Compression Throughput vs Partition Size
     # =========================================================================
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-    
-    # Plot with OpenMP
-    if 'with_omp' in compression_results:
-        for compressor_key, comp_data in sorted(compression_results['with_omp'].items()):
-            if compressor_key not in compressor_styles:
-                continue
-            style = compressor_styles[compressor_key]
-            ax1.plot(comp_data['partition_sizes'], comp_data['throughput'],
-                    marker=style['marker'], linestyle=style['linestyle'],
-                    linewidth=2, markersize=7, color=style['color'],
-                    label=style['label'], alpha=0.8)
-        
-        ax1.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
-        ax1.set_ylabel('Compression Throughput (MB/s)', fontsize=13, fontweight='bold')
-        ax1.set_title(f"Compression Throughput vs Partition Size ({status_titles['with_omp']})",
-                     fontsize=14, fontweight='bold')
-        ax1.set_xscale('log', base=2)
-        ax1.legend(fontsize=10, loc='best')
-        ax1.grid(True, alpha=0.3)
-        ax1.tick_params(labelsize=10)
-    
-    # Plot without OpenMP
-    if 'no_omp' in compression_results:
-        for compressor_key, comp_data in sorted(compression_results['no_omp'].items()):
-            if compressor_key not in compressor_styles:
-                continue
-            style = compressor_styles[compressor_key]
-            ax2.plot(comp_data['partition_sizes'], comp_data['throughput'],
-                    marker=style['marker'], linestyle=style['linestyle'],
-                    linewidth=2, markersize=7, color=style['color'],
-                    label=style['label'], alpha=0.8)
-        
-        ax2.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
-        ax2.set_ylabel('Compression Throughput (MB/s)', fontsize=13, fontweight='bold')
-        ax2.set_title(f"Compression Throughput vs Partition Size ({status_titles['no_omp']})",
-                     fontsize=14, fontweight='bold')
-        ax2.set_xscale('log', base=2)
-        ax2.legend(fontsize=10, loc='best')
-        ax2.grid(True, alpha=0.3)
-        ax2.tick_params(labelsize=10)
+    plot_status_subplot(
+        ax1,
+        compression_results.get('with_omp'),
+        compressor_styles,
+        'Compression Throughput (MB/s)',
+        f"Compression Throughput vs Partition Size ({status_titles['with_omp']})"
+    )
+    plot_status_subplot(
+        ax2,
+        compression_results.get('no_omp'),
+        compressor_styles,
+        'Compression Throughput (MB/s)',
+        f"Compression Throughput vs Partition Size ({status_titles['no_omp']})"
+    )
     
     plt.tight_layout()
     output_file = output_path / 'compression_throughput_by_compressor.png'
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Saved: {output_file}")
     plt.close()
+
+    # =========================================================================
+    # Plot 3: Decompression Throughput vs Partition Size
+    # =========================================================================
+    if decompression_results:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        plot_status_subplot(
+            ax1,
+            decompression_results.get('with_omp'),
+            compressor_styles,
+            'Decompression Throughput (MB/s)',
+            f"Decompression Throughput vs Partition Size ({status_titles['with_omp']})"
+        )
+        plot_status_subplot(
+            ax2,
+            decompression_results.get('no_omp'),
+            compressor_styles,
+            'Decompression Throughput (MB/s)',
+            f"Decompression Throughput vs Partition Size ({status_titles['no_omp']})"
+        )
+        
+        plt.tight_layout()
+        output_file = output_path / 'decompression_throughput_by_compressor.png'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Saved: {output_file}")
+        plt.close()
+    else:
+        print("Warning: No decompression throughput data available for plotting.")
     
     # Print summary statistics by compressor
     print("\n" + "=" * 80)

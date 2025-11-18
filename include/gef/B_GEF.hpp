@@ -15,6 +15,7 @@
 #include <vector>
 #include <type_traits>
 #include <chrono>
+#include <stdexcept>
 #include "IGEF.hpp"
 #include "CompressionProfile.hpp"
 #include "FastBitWriter.hpp"
@@ -471,15 +472,16 @@ namespace gef {
           }
       }
 
-        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
-            std::vector<T> result;
-            result.reserve(count);
-            
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
             if (count == 0 || startIndex >= size()) {
-                return result;
+                return 0;
+            }
+            if (output.size() < count) {
+                throw std::invalid_argument("output buffer is smaller than requested count");
             }
             
             const size_t endIndex = std::min(startIndex + count, size());
+            size_t write_index = 0;
             
             // Fast path: h == 0, all data in L
             if (h == 0) {
@@ -488,51 +490,52 @@ namespace gef {
                 for (size_t i = startIndex; i < endIndex; ++i) {
                     const Wide low = static_cast<Wide>(L[i]);
                     const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
-                    result.push_back(static_cast<T>(sum));
+                    output[write_index++] = static_cast<T>(sum);
                 }
-                return result;
+                return write_index;
             }
             
             using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
             using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
             using U = std::make_unsigned_t<T>;
 
-            const bool start_is_exception = (*B)[startIndex];
-            size_t exception_rank_before = B->rank(startIndex);
-            size_t exception_rank = exception_rank_before;
-            const size_t zero_before = startIndex - exception_rank_before;
-
-            long long current_high_signed =
-                (exception_rank_before == 0)
-                    ? 0LL
-                    : static_cast<long long>(H[exception_rank_before - 1]);
-
-            if (!start_is_exception) {
-                const size_t current_rank = B->rank(startIndex + 1);
-                size_t zeros_before_run = 0;
-                if (current_rank > 0) {
-                    const size_t run_start_pos = B->select(current_rank);
-                    zeros_before_run = (run_start_pos + 1) - current_rank;
+            // Setup: compute starting state
+            size_t exception_rank = B->rank(startIndex);
+            const size_t zero_before = startIndex - exception_rank;
+            
+            long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
+            
+            // Fast bit access helper
+            const uint64_t* b_data = B->raw_data_ptr();
+            auto read_bit = [b_data](size_t pos) -> bool {
+                return (b_data[pos >> 6] >> (pos & 63)) & 1;
+            };
+            
+            // If starting at non-exception, add cumulative gaps to current position
+            const bool start_is_exception = read_bit(startIndex);
+            if (!start_is_exception && zero_before > 0) {
+                size_t gap_run_start = 0;
+                if (exception_rank > 0) {
+                    const size_t last_exc_pos = B->select(exception_rank);
+                    gap_run_start = last_exc_pos - exception_rank + 1;
                 }
-                const size_t pos_gap_before_run =
-                    zeros_before_run > 0 ? G_plus->rank(G_plus->select0(zeros_before_run)) : 0;
-                const size_t neg_gap_before_run =
-                    zeros_before_run > 0 ? G_minus->rank(G_minus->select0(zeros_before_run)) : 0;
-                const size_t pos_gap_before_start =
-                    zero_before > 0 ? G_plus->rank(G_plus->select0(zero_before)) : 0;
-                const size_t neg_gap_before_start =
-                    zero_before > 0 ? G_minus->rank(G_minus->select0(zero_before)) : 0;
-
-                current_high_signed += static_cast<long long>(pos_gap_before_start - pos_gap_before_run);
-                current_high_signed -= static_cast<long long>(neg_gap_before_start - neg_gap_before_run);
+                const size_t pos_gap_start = gap_run_start > 0 ? G_plus->select0(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t pos_gap_end = G_plus->select0(zero_before) - (zero_before - 1);
+                const size_t neg_gap_start = gap_run_start > 0 ? G_minus->select0(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t neg_gap_end = G_minus->select0(zero_before) - (zero_before - 1);
+                high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
+                high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
+            } else if (start_is_exception) {
+                ++exception_rank;
+                high_signed = static_cast<long long>(H[exception_rank - 1]);
             }
 
+            // Initialize decoders
             const size_t plus_bits = G_plus->size();
             const size_t minus_bits = G_minus->size();
-            const size_t plus_start_bit =
-                zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
-            const size_t minus_start_bit =
-                zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
+            const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
+            const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
+            
             FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
             FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
 
@@ -542,16 +545,12 @@ namespace gef {
             size_t pos_size = 0, pos_index = 0;
             size_t neg_size = 0, neg_index = 0;
 
-            // Maintain high as signed throughout to avoid conversions
-            long long high_signed = current_high_signed;
-
+            // Main loop with direct bit access
             for (size_t i = startIndex; i < endIndex; ++i) {
-                const bool is_exception = (*B)[i];
-                if (is_exception) [[unlikely]] {
+                if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
                     high_signed = static_cast<long long>(H[exception_rank - 1]);
                 } else [[likely]] {
-                    // Inline gap fetches to reduce function call overhead
                     if (pos_index >= pos_size) [[unlikely]] {
                         pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
                         pos_index = 0;
@@ -576,16 +575,16 @@ namespace gef {
                 const Wide low = static_cast<Wide>(L[i]);
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
                 const Wide offset = low | high_shifted;
-                result.push_back(static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset)));
+                output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
             }
             
-            return result;
+            return write_index;
         }
 
         T operator[](size_t index) const override {
             // Case 1: No high bits are used (h=0).
             // The value is fully stored in the L vector.
-            if (h == 0) [[likely]] {
+            if (h == 0) [[unlikely]] {
                 using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
                 using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
                 const Wide low = static_cast<Wide>(L[index]);
@@ -599,6 +598,12 @@ namespace gef {
             
             const Wide low = static_cast<Wide>(L[index]);
 
+            // Helper to compute cumulative gaps: sum of first 'count' gaps
+            const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
+                return (count == 0) ? 0 : bv->select0(count) - (count - 1);
+            };
+
+            // Check if this position is an exception
             if ((*B)[index]) [[unlikely]] {
                 const size_t exception_rank = B->rank(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
@@ -608,50 +613,31 @@ namespace gef {
                 return static_cast<T>(sum);
             }
 
+            // Non-exception case: reconstruct from gaps
             const size_t exception_rank = B->rank(index);
-            long long current_high_signed =
-                (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
-
             const size_t zero_before = index - exception_rank;
-            size_t zeros_before_run = 0;
+            
+            // Start from last exception high (or 0 if no prior exceptions)
+            long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
+
+            // Find where the current gap run starts (after last exception)
+            size_t gap_run_start = 0;
             if (exception_rank > 0) {
-                const size_t run_start_pos = B->select(exception_rank);
-                zeros_before_run = (run_start_pos + 1) - exception_rank;
-            }
-            const size_t pos_gap_before_run =
-                zeros_before_run > 0 ? G_plus->rank(G_plus->select0(zeros_before_run)) : 0;
-            const size_t neg_gap_before_run =
-                zeros_before_run > 0 ? G_minus->rank(G_minus->select0(zeros_before_run)) : 0;
-            const size_t pos_gap_before_index =
-                zero_before > 0 ? G_plus->rank(G_plus->select0(zero_before)) : 0;
-            const size_t neg_gap_before_index =
-                zero_before > 0 ? G_minus->rank(G_minus->select0(zero_before)) : 0;
-
-            current_high_signed += static_cast<long long>(pos_gap_before_index - pos_gap_before_run);
-            current_high_signed -= static_cast<long long>(neg_gap_before_index - neg_gap_before_run);
-
-            const size_t plus_bits = G_plus->size();
-            const size_t minus_bits = G_minus->size();
-            const size_t plus_start_bit =
-                zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
-            const size_t minus_start_bit =
-                zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
-            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
-
-            uint32_t pos_gap = 0;
-            uint32_t neg_gap = 0;
-            if (plus_decoder.next_batch(&pos_gap, 1) == 0) [[unlikely]] {
-                pos_gap = static_cast<uint32_t>(plus_decoder.next());
-            }
-            if (minus_decoder.next_batch(&neg_gap, 1) == 0) [[unlikely]] {
-                neg_gap = static_cast<uint32_t>(minus_decoder.next());
+                const size_t last_exc_pos = B->select(exception_rank);
+                gap_run_start = last_exc_pos - exception_rank + 1;
             }
 
-            current_high_signed += static_cast<long long>(pos_gap);
-            current_high_signed -= static_cast<long long>(neg_gap);
+            // Add cumulative gaps from gap_run_start to zero_before (inclusive)
+            // Using zero_before+1 includes the gap for the element at index
+            const size_t pos_gap_end = cumulative_gaps(G_plus, zero_before + 1);
+            const size_t pos_gap_start = cumulative_gaps(G_plus, gap_run_start);
+            const size_t neg_gap_end = cumulative_gaps(G_minus, zero_before + 1);
+            const size_t neg_gap_start = cumulative_gaps(G_minus, gap_run_start);
 
-            const U high_val = static_cast<U>(current_high_signed);
+            high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
+            high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
+
+            const U high_val = static_cast<U>(high_signed);
             const Wide high_shifted = static_cast<Wide>(high_val) << b;
             const Wide offset = low | high_shifted;
             const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);

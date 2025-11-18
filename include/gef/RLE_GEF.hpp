@@ -10,6 +10,7 @@
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
+#include <stdexcept>
 #include "IGEF.hpp"
 #include "FastBitWriter.hpp"
 #include "FastZeroTerminatedDecoder.hpp"
@@ -275,94 +276,106 @@ namespace gef {
             }
         }
 
-        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
-            std::vector<T> result;
-            result.reserve(count);
-            
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
             if (count == 0 || startIndex >= size()) {
-                return result;
+                return 0;
+            }
+            if (output.size() < count) {
+                throw std::invalid_argument("output buffer is smaller than requested count");
             }
             
             const size_t endIndex = std::min(startIndex + count, size());
+            size_t write_index = 0;
+            const T base_value = base;
             
             // Fast path: h == 0, all data in L
             if (h == 0) {
                 for (size_t i = startIndex; i < endIndex; ++i) {
-                    result.push_back(base + L[i]);
+                    output[write_index++] = base_value + L[i];
                 }
-                return result;
+                return write_index;
             }
-
-            const size_t total_runs = H.size();
-            size_t current_rank = B->rank(startIndex + 1);
-            if (current_rank == 0) {
-                current_rank = 1;
-            }
-            T current_high = H[current_rank - 1];
-
-            const size_t run_start_pos = B->select(current_rank);
-            const size_t offset_in_run = startIndex - run_start_pos;
-
-            FastZeroTerminatedDecoder run_decoder(
-                B->raw_data_ptr(),
-                B->size(),
-                std::min(run_start_pos + 1, B->size()));
-
-            constexpr size_t RUN_BATCH = 32;
-            uint32_t run_buffer[RUN_BATCH];
-            size_t run_buf_size = 0;
-            size_t run_buf_index = 0;
-
-            auto next_run_length = [&]() -> size_t {
-                if (run_buf_index >= run_buf_size) {
-                    run_buf_size = run_decoder.next_batch(run_buffer, RUN_BATCH);
-                    run_buf_index = 0;
-                    if (run_buf_size == 0) {
-                        run_buffer[0] = static_cast<uint32_t>(run_decoder.next());
-                        run_buf_size = 1;
+        
+            // --- Optimization Start ---
+        
+            // 1. Single Rank Call: Determine the High part index for the first element
+            // rank(i) returns the number of 1s in B[0...i-1].
+            size_t current_rank_idx = B->rank(startIndex + 1);
+            if (current_rank_idx == 0) current_rank_idx = 1; // Handle potentially empty prefix
+            
+            // Load the initial High part
+            T current_high = H[current_rank_idx - 1];
+        
+            // Access raw data for fast bit scanning
+            const uint64_t* b_data = B->raw_data_ptr();
+            size_t current_pos = startIndex;
+            const size_t b_size = B->size();
+        
+            while (current_pos < endIndex) {
+                // We need to find the end of the current run.
+                // The current run ends at the NEXT 1-bit (starting search from current_pos + 1).
+                size_t next_one_pos = b_size;
+        
+                // --- Fast Bit Scan Logic ---
+                // Calculate where to start searching in the raw 64-bit array
+                size_t search_start = current_pos + 1;
+                size_t word_idx = search_start / 64;
+                size_t bit_offset = search_start % 64;
+                size_t max_words = (b_size + 63) / 64;
+        
+                if (word_idx < max_words) {
+                    uint64_t word = b_data[word_idx];
+                    
+                    // Create a mask to ignore bits before 'bit_offset'.
+                    // (~0ULL << bit_offset) creates a mask like 11110000...
+                    uint64_t mask = (~0ULL) << bit_offset;
+                    uint64_t masked_word = word & mask;
+        
+                    if (masked_word != 0) {
+                        // Found a 1 in the current word
+                        next_one_pos = word_idx * 64 + __builtin_ctzll(masked_word);
+                    } else {
+                        // Scan subsequent words 64 bits at a time
+                        for (size_t w = word_idx + 1; w < max_words; ++w) {
+                            if (b_data[w] != 0) {
+                                next_one_pos = w * 64 + __builtin_ctzll(b_data[w]);
+                                break;
+                            }
+                        }
                     }
                 }
-                return static_cast<size_t>(run_buffer[run_buf_index++]) + 1;
-            };
-
-            size_t current_run_length = next_run_length();
-            size_t remaining_in_run = (offset_in_run < current_run_length)
-                                          ? current_run_length - offset_in_run
-                                          : 0;
-
-            if (remaining_in_run == 0) {
-                if (current_rank < total_runs) {
-                    ++current_rank;
-                    current_high = H[current_rank - 1];
-                    current_run_length = next_run_length();
-                    remaining_in_run = current_run_length;
+                // --- End Fast Bit Scan ---
+        
+                // Determine how many elements we can process in this batch
+                // It's limited by either the request count (endIndex) or the start of the next run (next_one_pos)
+                size_t run_limit = std::min(endIndex, next_one_pos);
+        
+                // Tight loop to fill output
+                // Pre-shift high part to avoid doing it inside the loop
+                const T high_shifted = current_high << b;
+                for (; current_pos < run_limit; ++current_pos) {
+                    output[write_index++] = base_value + (L[current_pos] | high_shifted);
                 }
-            }
-
-            size_t i = startIndex;
-            while (i < endIndex) {
-                const size_t chunk = std::min(remaining_in_run, endIndex - i);
-                for (size_t j = 0; j < chunk; ++j, ++i) {
-                    result.push_back(base + (L[i] | (current_high << b)));
-                }
-
-                remaining_in_run -= chunk;
-                if (remaining_in_run == 0 && i < endIndex) {
-                    if (current_rank >= total_runs) {
-                        break;
+        
+                // If we stopped because we hit the start of a new run (a 1-bit at next_one_pos)
+                if (current_pos == next_one_pos && current_pos < endIndex) {
+                    // Move to the next run
+                    current_rank_idx++;
+                    // Update High part
+                    if (current_rank_idx <= H.size()) {
+                        current_high = H[current_rank_idx - 1];
                     }
-                    ++current_rank;
-                    current_high = H[current_rank - 1];
-                    current_run_length = next_run_length();
-                    remaining_in_run = current_run_length;
+                    // Note: We do not increment current_pos here. 
+                    // The loop continues, and the element at `next_one_pos` (which is now `current_pos`)
+                    // will be processed in the next iteration using the NEW `current_high`.
                 }
             }
             
-            return result;
+            return write_index;
         }
 
         T operator[](size_t index) const override {
-            if (h == 0) [[likely]]
+            if (h == 0) [[unlikely]]
                 return base + L[index];
 
             const size_t rank = B->rank(index + 1);

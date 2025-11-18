@@ -15,6 +15,7 @@
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
+#include <stdexcept>
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
 #include "FastBitWriter.hpp"
@@ -379,71 +380,105 @@ namespace gef {
             G->enable_select0();
         }
 
-        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
-            std::vector<T> result;
-            result.reserve(count);
-            
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
             if (count == 0 || startIndex >= size()) {
-                return result;
+                return 0;
+            }
+            if (output.size() < count) {
+                throw std::invalid_argument("output buffer is smaller than requested count");
             }
             
             const size_t endIndex = std::min(startIndex + count, size());
+            size_t write_index = 0;
+            const T base_value = base;
             
             // Fast path: h == 0, all data in L
-            if (h == 0) {
+            if (h == 0) [[unlikely]] {
                 for (size_t i = startIndex; i < endIndex; ++i) {
-                    result.push_back(base + L[i]);
+                    output[write_index++] = base_value + L[i];
                 }
-                return result;
+                return write_index;
             }
             
             using U = std::make_unsigned_t<T>;
+            const uint64_t* b_data = B->raw_data_ptr();
+            auto read_bit = [b_data](size_t pos) -> bool {
+                return (b_data[pos >> 6] >> (pos & 63)) & 1;
+            };
 
-            const bool start_is_exception = (*B)[startIndex];
-            size_t exception_rank_before = B->rank(startIndex);
-            size_t exception_rank = exception_rank_before;
-            const size_t zero_before = startIndex - exception_rank_before;
+            // --- INITIALIZATION START ---
+            
+            // 1. Determine the state strictly BEFORE startIndex.
+            // Rank is exclusive: count of 1s in [0, startIndex - 1]
+            size_t exception_rank = B->rank(startIndex);
+            
+            // 2. Calculate the number of gaps (zeros) strictly BEFORE startIndex
+            // Total items before is startIndex. 
+            // Zeros = Total - Ones
+            const size_t zeros_before = startIndex - exception_rank;
 
-            U current_high = (exception_rank_before == 0)
-                                 ? U(0)
-                                 : static_cast<U>(H[exception_rank_before - 1]);
-
-            if (!start_is_exception) {
-                const size_t current_rank = B->rank(startIndex + 1); // equals exception_rank_before
-                size_t zeros_before_run = 0;
-                if (current_rank > 0) {
-                    const size_t run_start_pos = B->select(current_rank);
-                    zeros_before_run = (run_start_pos + 1) - current_rank;
-                }
-                const size_t gap_before_run =
-                    zeros_before_run > 0 ? G->rank(G->select0(zeros_before_run)) : 0;
-                const size_t gap_before_start =
-                    zero_before > 0 ? G->rank(G->select0(zero_before)) : 0;
-                current_high = static_cast<U>(
-                    current_high + static_cast<U>(gap_before_start - gap_before_run));
+            // 3. Position the decoder.
+            // If we have processed k zeros, the decoder should be positioned after the k-th zero definition.
+            // G->select0(k) gives the index of the k-th zero (1-based count logic usually, but SDSL select0(i) 
+            // is usually 1-based count mapping to 0-based index).
+            // If zeros_before > 0, we want to skip those gaps.
+            size_t decoder_bit_pos = 0;
+            if (zeros_before > 0) {
+                decoder_bit_pos = G->select0(zeros_before) + 1;
             }
+            if (decoder_bit_pos > G->size()) decoder_bit_pos = G->size();
+            
+            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), G->size(), decoder_bit_pos);
 
-            const size_t total_gap_bits = G->size();
-            const size_t start_bit =
-                zero_before > 0 ? std::min(G->select0(zero_before) + 1, total_gap_bits) : 0;
-            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), total_gap_bits, start_bit);
+            // 4. Reconstruct current_high for the element at (startIndex - 1).
+            // This acts as the baseline for the first iteration of the loop if B[startIndex] == 0.
+            U current_high = 0;
+            
+            if (startIndex > 0) {
+                // Since index 0 is always an exception, exception_rank >= 1 here.
+                current_high = static_cast<U>(H[exception_rank - 1]);
 
+                // If there are gaps between the last exception and startIndex, sum them up.
+                if (zeros_before > 0) {
+                    // Find the context of the last exception
+                    size_t last_exc_index = B->select(exception_rank);
+                    
+                    // Count zeros up to the last exception (inclusive of the exception index)
+                    size_t zeros_at_last_exc = (last_exc_index + 1) - exception_rank;
+
+                    // We need to sum gaps corresponding to zeros in range (zeros_at_last_exc, zeros_before]
+                    if (zeros_before > zeros_at_last_exc) {
+                        // Optimization for Unary Sum: (EndBitIndex - StartBitIndex) - CountOfZeros
+                        size_t range_start_bit = (zeros_at_last_exc == 0) ? 0 : (G->select0(zeros_at_last_exc) + 1);
+                        size_t range_end_bit = decoder_bit_pos; // Already calculated as select0(zeros_before) + 1
+                        
+                        size_t total_bits_in_range = range_end_bit - range_start_bit;
+                        size_t num_gaps = zeros_before - zeros_at_last_exc;
+                        
+                        current_high += static_cast<U>(total_bits_in_range - num_gaps);
+                    }
+                }
+            }
+            // --- INITIALIZATION END ---
+            
             constexpr size_t GAP_BATCH = 64;
             uint32_t gap_buffer[GAP_BATCH];
             size_t buffer_size = 0;
             size_t buffer_index = 0;
 
+            // Main loop
             for (size_t i = startIndex; i < endIndex; ++i) {
-                const bool is_exception = (*B)[i];
-                if (is_exception) [[unlikely]] {
+                if (read_bit(i)) [[unlikely]] {
+                    // It is an exception: reset current_high from H
                     ++exception_rank;
                     current_high = static_cast<U>(H[exception_rank - 1]);
                 } else [[likely]] {
-                    // Inline the gap fetch to reduce function call overhead
+                    // It is a gap: decode and add to current_high
                     if (buffer_index >= buffer_size) [[unlikely]] {
                         buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
                         buffer_index = 0;
                         if (buffer_size == 0) [[unlikely]] {
+                            // Fallback/Safety
                             gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next());
                             buffer_size = 1;
                         }
@@ -452,56 +487,53 @@ namespace gef {
                 }
 
                 const U low = static_cast<U>(L[i]);
-                result.push_back(base + static_cast<T>(low | (current_high << b)));
+                output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
             }
 
-            return result;
+            return write_index;
         }
 
         T operator[](size_t index) const override {
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
-            if (h == 0) [[likely]] {
+            if (h == 0) [[unlikely]] {
                 return base + L[index];
             }
 
             using U = std::make_unsigned_t<T>;
             const U low = static_cast<U>(L[index]);
 
-            const bool is_exception = (*B)[index];
-            if (is_exception) [[unlikely]] {
+            // Helper to compute cumulative gaps: sum of first 'count' gaps
+            const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
+                return (count == 0) ? 0 : bv->select0(count) - (count - 1);
+            };
+
+            // Check if this position is an exception
+            if ((*B)[index]) [[unlikely]] {
                 const size_t exception_rank = B->rank(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
                 return base + static_cast<T>(low | (high_val << b));
             }
 
-            // Compute exception_rank and zero_before together
+            // Non-exception case: reconstruct from gaps
             const size_t exception_rank = B->rank(index);
             const size_t zero_before = index - exception_rank;
             
+            // Start from last exception high (or 0 if no prior exceptions)
             U current_high = (exception_rank == 0) ? U(0) : static_cast<U>(H[exception_rank - 1]);
             
-            size_t zeros_before_run = 0;
+            // Find where the current gap run starts (after last exception)
+            size_t gap_run_start = 0;
             if (exception_rank > 0) {
-                const size_t run_start_pos = B->select(exception_rank);
-                zeros_before_run = (run_start_pos + 1) - exception_rank;
+                const size_t last_exc_pos = B->select(exception_rank);
+                gap_run_start = last_exc_pos - exception_rank + 1;
             }
-            const size_t gap_before_run =
-                zeros_before_run > 0 ? G->rank(G->select0(zeros_before_run)) : 0;
-            const size_t gap_before_index =
-                zero_before > 0 ? G->rank(G->select0(zero_before)) : 0;
-            current_high += static_cast<U>(gap_before_index - gap_before_run);
 
-            // Decode final gap
-            const size_t total_gap_bits = G->size();
-            const size_t start_bit =
-                zero_before > 0 ? std::min(G->select0(zero_before) + 1, total_gap_bits) : 0;
-            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), total_gap_bits, start_bit);
-            uint32_t gap_value = 0;
-            if (gap_decoder.next_batch(&gap_value, 1) == 0) [[unlikely]] {
-                gap_value = static_cast<uint32_t>(gap_decoder.next());
-            }
-            current_high += static_cast<U>(gap_value);
+            // Add cumulative gaps from gap_run_start to zero_before (inclusive)
+            // Using zero_before+1 includes the gap for the element at index
+            const size_t gap_end = cumulative_gaps(G, zero_before + 1);
+            const size_t gap_start = cumulative_gaps(G, gap_run_start);
+            current_high += static_cast<U>(gap_end - gap_start);
 
             return base + static_cast<T>(low | (current_high << b));
         }

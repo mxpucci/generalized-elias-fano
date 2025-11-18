@@ -35,13 +35,11 @@ protected:
     
     // Test get_elements against individual operator[] calls
     void testGetElements(const IGEF<int64_t>& gef, size_t start, size_t count) {
-        // Get elements using optimized method
-        auto range = gef.get_elements(start, count);
-        
-        // Verify each element matches operator[]
-        ASSERT_EQ(range.size(), count);
+        std::vector<int64_t> buffer(count);
+        const size_t written = gef.get_elements(start, count, buffer);
+        ASSERT_EQ(written, count);
         for (size_t i = 0; i < count; ++i) {
-            EXPECT_EQ(range[i], gef[start + i]) 
+            EXPECT_EQ(buffer[i], gef[start + i]) 
                 << "Mismatch at index " << (start + i);
         }
     }
@@ -82,11 +80,12 @@ TYPED_TEST(GetElementsTest, FullSequence) {
     TypeParam gef(this->factory, data);
     
     // Get entire sequence
-    auto all = gef.get_elements(0, data.size());
+    std::vector<int64_t> buffer(data.size());
+    const size_t written = gef.get_elements(0, data.size(), buffer);
     
-    ASSERT_EQ(all.size(), data.size());
+    ASSERT_EQ(written, data.size());
     for (size_t i = 0; i < data.size(); ++i) {
-        EXPECT_EQ(all[i], data[i]);
+        EXPECT_EQ(buffer[i], data[i]);
     }
 }
 
@@ -95,15 +94,20 @@ TYPED_TEST(GetElementsTest, EdgeCases) {
     TypeParam gef(this->factory, data);
     
     // Empty range
-    auto empty = gef.get_elements(0, 0);
-    EXPECT_EQ(empty.size(), 0);
+    std::vector<int64_t> empty_buffer;
+    auto empty_written = gef.get_elements(0, 0, empty_buffer);
+    EXPECT_EQ(empty_written, 0);
     
     // Single element
     this->testGetElements(gef, 50, 1);
     
     // Range extending past end should be clamped
-    auto clamped = gef.get_elements(90, 20);
-    EXPECT_EQ(clamped.size(), 10);
+    std::vector<int64_t> clamped_buffer(20);
+    auto clamped_written = gef.get_elements(90, 20, clamped_buffer);
+    EXPECT_EQ(clamped_written, 10);
+    for (size_t i = 0; i < clamped_written; ++i) {
+        EXPECT_EQ(clamped_buffer[i], gef[90 + i]);
+    }
 }
 
 TYPED_TEST(GetElementsTest, MonotonicData) {

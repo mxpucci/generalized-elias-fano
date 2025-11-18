@@ -14,6 +14,7 @@
 #include <vector>
 #include <type_traits>
 #include <chrono>
+#include <stdexcept>
 
 // SIMD intrinsics for optimized bit operations
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
@@ -248,11 +249,9 @@ namespace gef {
               base(other.base) {
             if (other.h > 0) {
                 G_plus = other.G_plus->clone();
-                G_plus->enable_rank();
                 G_plus->enable_select0();
 
                 G_minus = other.G_minus->clone();
-                G_minus->enable_rank();
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;
@@ -463,10 +462,8 @@ namespace gef {
             }
             // ===== END POPULATION PHASE =====
 
-            // Enable rank/select support
-            G_plus->enable_rank();
+            // Enable select0 support (rank not needed, operator[] only uses select0)
             G_plus->enable_select0();
-            G_minus->enable_rank();
             G_minus->enable_select0();
 
             if (metrics) {
@@ -480,35 +477,36 @@ namespace gef {
             }
         }
 
-        std::vector<T> get_elements(size_t startIndex, size_t count) const override {
-            std::vector<T> result;
-            result.reserve(count);
-            
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
             if (count == 0 || startIndex >= size()) {
-                return result;
+                return 0;
+            }
+            if (output.size() < count) {
+                throw std::invalid_argument("output buffer is smaller than requested count");
             }
             
             const size_t endIndex = std::min(startIndex + count, size());
+            size_t write_index = 0;
             
             // Fast path: h == 0, all data in L
-            if (h == 0) {
+            if (h == 0)[[unlikely]] {
                 for (size_t i = startIndex; i < endIndex; ++i) {
-                    result.push_back(base + L[i]);
+                    output[write_index++] = base + L[i];
                 }
-                return result;
+                return write_index;
             }
             
             using U = std::make_unsigned_t<T>;
 
             const size_t plus_bits = G_plus->size();
             const size_t minus_bits = G_minus->size();
+            
+            // Compute prefix sums using select0 only (no rank needed)
+            // select0(i) - (i-1) gives cumulative sum of first i gaps
             const size_t pos_prefix =
-                (startIndex > 0) ? G_plus->rank(G_plus->select0(startIndex)) : 0;
+                (startIndex > 0) ? G_plus->select0(startIndex) - (startIndex - 1) : 0;
             const size_t neg_prefix =
-                (startIndex > 0) ? G_minus->rank(G_minus->select0(startIndex)) : 0;
-
-            size_t current_pos_sum = pos_prefix;
-            size_t current_neg_sum = neg_prefix;
+                (startIndex > 0) ? G_minus->select0(startIndex) - (startIndex - 1) : 0;
 
             const size_t plus_start_bit =
                 startIndex > 0 ? std::min(G_plus->select0(startIndex) + 1, plus_bits) : 0;
@@ -550,44 +548,24 @@ namespace gef {
                 
                 const U high_u = static_cast<U>(high_signed);
                 const U combined = static_cast<U>(L[i]) | (high_u << b);
-                result.push_back(base + static_cast<T>(combined));
+                output[write_index++] = base + static_cast<T>(combined);
             }
             
-            return result;
+            return write_index;
         }
 
         T operator[](size_t index) const override {
-            if (h == 0) [[likely]]
+            if (h == 0) [[unlikely]]
                 return base + L[index];
             
             using U = std::make_unsigned_t<T>;
 
-            const size_t plus_bits = G_plus->size();
-            const size_t minus_bits = G_minus->size();
-            size_t pos_prefix = (index > 0) ? G_plus->rank(G_plus->select0(index)) : 0;
-            size_t neg_prefix = (index > 0) ? G_minus->rank(G_minus->select0(index)) : 0;
-
-            const size_t plus_start_bit =
-                index > 0 ? std::min(G_plus->select0(index) + 1, plus_bits) : 0;
-            const size_t minus_start_bit =
-                index > 0 ? std::min(G_minus->select0(index) + 1, minus_bits) : 0;
-            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
-
-            uint32_t pos_gap = 0;
-            uint32_t neg_gap = 0;
-            if (plus_decoder.next_batch(&pos_gap, 1) == 0) [[unlikely]] {
-                pos_gap = static_cast<uint32_t>(plus_decoder.next());
-            }
-            if (minus_decoder.next_batch(&neg_gap, 1) == 0) [[unlikely]] {
-                neg_gap = static_cast<uint32_t>(minus_decoder.next());
-            }
-
-            pos_prefix += pos_gap;
-            neg_prefix += neg_gap;
+            const size_t zero_rank = index + 1;
+            const size_t pos_gaps = G_plus->select0(zero_rank) - zero_rank;
+            const size_t neg_gaps = G_minus->select0(zero_rank) - zero_rank;
 
             const long long high_signed =
-                static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
+                static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps);
             const U high_u = static_cast<U>(high_signed);
             const U combined = static_cast<U>(L[index]) | (high_u << b);
             return base + static_cast<T>(combined);
@@ -614,11 +592,9 @@ namespace gef {
             L.load(ifs);
             if (h > 0) {
                 G_plus = bit_vector_factory->from_stream(ifs);
-                G_plus->enable_rank();
                 G_plus->enable_select0();
 
                 G_minus = bit_vector_factory->from_stream(ifs);
-                G_minus->enable_rank();
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;

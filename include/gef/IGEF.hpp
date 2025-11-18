@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <string>
 #include <stdexcept>
+#include <algorithm>
 #include "../datastructures/IBitVectorFactory.hpp"
 
 // C++20 concepts support
@@ -98,16 +99,24 @@ public:
 	 * @brief Get a range of elements
 	 * @param startIndex Starting index (inclusive)
 	 * @param count Number of elements to retrieve
-	 * @return Vector containing the requested elements
-	 * @throws std::out_of_range if range is invalid
+	 * @param output Buffer that must contain at least @p count slots. The first
+	 *               @p written elements will be populated with the output.
+	 * @return Number of elements effectively written to @p output
+	 * @throws std::invalid_argument if the provided buffer is too small
 	 */
-	virtual std::vector<T> get_elements(size_t startIndex, size_t count) const {
-		std::vector<T> result;
-		result.reserve(count);
-		for (size_t i = 0; i < count; i++) {
-			result.emplace_back(at(startIndex + i));
+	virtual size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const {
+		if (count == 0 || startIndex >= size()) {
+			return 0;
 		}
-		return result;
+		if (output.size() < count) {
+			throw std::invalid_argument("output buffer is smaller than requested count");
+		}
+		const size_t available = size() - startIndex;
+		const size_t write_count = std::min(count, available);
+		for (size_t i = 0; i < write_count; ++i) {
+			output[i] = at(startIndex + i);
+		}
+		return write_count;
 	}
 	
 	/**
@@ -121,7 +130,11 @@ public:
 		if (startIndex >= endIndex || endIndex > size()) {
 			throw std::out_of_range("Invalid range");
 		}
-		return get_elements(startIndex, endIndex - startIndex);
+		const size_t count = endIndex - startIndex;
+		std::vector<T> buffer(count);
+		const size_t written = get_elements(startIndex, count, buffer);
+		buffer.resize(written);
+		return buffer;
 	}
 
 	// ===== Serialization =====
