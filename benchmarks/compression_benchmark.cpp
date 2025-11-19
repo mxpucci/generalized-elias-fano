@@ -153,15 +153,27 @@ public:
 // Benchmark Definitions - Type 1: Compression Efficiency (Time & Space)
 // ============================================================================
 
+// Reduced set for faster execution
+// const std::vector<size_t> PARTITION_SIZES = {
+//     65536, 1048576, 8388608
+// };
+// Full set:
 const std::vector<size_t> PARTITION_SIZES = {
     8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304, 8388608
 };
+
 const size_t DEFAULT_PARTITION_SIZE = PARTITION_SIZES.back();
 const gef::SplitPointStrategy DEFAULT_LOOKUP_STRATEGY = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;
+
+// Reduced set for faster execution
 const std::vector<size_t> GET_ELEMENTS_RANGES = {
-    10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240,
-    20480, 40960, 81920, 163840, 327680, 655360, 1000000
+    10, 10240, 1000000
 };
+// Full set:
+// const std::vector<size_t> GET_ELEMENTS_RANGES = {
+//     10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240,
+//     20480, 40960, 81920, 163840, 327680, 655360, 1000000
+// };
 
 BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Compression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
@@ -564,19 +576,23 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     // Lookup
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
         ->ArgsProduct(throughput_strategy_lists)
-        ->ArgNames({"file_idx", "strategy", "partition_size"});
+        ->ArgNames({"file_idx", "strategy", "partition_size"})
+        ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Lookup)
         ->ArgsProduct(throughput_strategy_lists)
-        ->ArgNames({"file_idx", "strategy", "partition_size"});
+        ->ArgNames({"file_idx", "strategy", "partition_size"})
+        ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Lookup)
         ->ArgsProduct(throughput_strategy_lists)
-        ->ArgNames({"file_idx", "strategy", "partition_size"});
+        ->ArgNames({"file_idx", "strategy", "partition_size"})
+        ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Lookup)
         ->ArgsProduct(partition_arg_lists)
-        ->ArgNames({"file_idx", "partition_size"});
+        ->ArgNames({"file_idx", "partition_size"})
+        ->Iterations(1);
 
     // Size benchmarks (single iteration, both strategies)
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_SizeInBytes)
