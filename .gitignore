@@ -28,3 +28,9 @@ compile_commands.json
 benchmark_results/
 bench-output/
 plots/
+
+# Extra
+include/neats/
+include/learned_gef/
+tests/predictor_training_test.cpp
+tests/learned_gef_test.cpp

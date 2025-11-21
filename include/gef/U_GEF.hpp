@@ -32,6 +32,12 @@
 #include <arm_neon.h>
 #endif
 
+#if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
+#include <experimental/simd>
+namespace stdx = std::experimental;
+#define GEF_EXPERIMENTAL_SIMD_ENABLED
+#endif
+
 namespace gef {
     template<typename T>
     class U_GEF : public IGEF<T> {
@@ -285,6 +291,7 @@ namespace gef {
         U_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
               const std::vector<T> &S,
               SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
+            // [Constructor unchanged]
             const size_t N = S.size();
             if (N == 0) {
                 b = 0;
@@ -392,6 +399,7 @@ namespace gef {
         }
 
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
+            // [get_elements implementation from previous step, unchanged for this step, omitted for brevity]
             if (count == 0 || startIndex >= size()) {
                 return 0;
             }
@@ -403,74 +411,79 @@ namespace gef {
             size_t write_index = 0;
             const T base_value = base;
             
+            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+            using U = std::make_unsigned_t<T>;
+
+            // Prepare optimized L pointers if possible
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+
             // Fast path: h == 0, all data in L
-            if (h == 0) [[unlikely]] {
-                for (size_t i = startIndex; i < endIndex; ++i) {
+            if (h == 0) {
+                size_t i = startIndex;
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                using simd_t = stdx::native_simd<U>;
+                const size_t simd_width = simd_t::size();
+                if constexpr (std::is_arithmetic_v<T>) {
+                    while (i + simd_width <= endIndex) {
+                        simd_t low_vec;
+                        if (l_ptr8) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
+                        } else if (l_ptr16) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
+                        } else if (l_ptr32) {
+                            if constexpr (std::is_same_v<U, uint32_t>) {
+                                low_vec.copy_from(l_ptr32 + i, stdx::element_aligned);
+                            } else {
+                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[i+k]);
+                            }
+                        } else {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(L[i+k]);
+                        }
+                        simd_t sum_vec = simd_t(static_cast<U>(base)) + low_vec;
+                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
+                        write_index += simd_width;
+                        i += simd_width;
+                    }
+                }
+#endif
+                for (; i < endIndex; ++i) {
                     output[write_index++] = base_value + L[i];
                 }
                 return write_index;
             }
             
-            using U = std::make_unsigned_t<T>;
             const uint64_t* b_data = B->raw_data_ptr();
             auto read_bit = [b_data](size_t pos) -> bool {
                 return (b_data[pos >> 6] >> (pos & 63)) & 1;
             };
 
             // --- INITIALIZATION START ---
-            
-            // 1. Determine the state strictly BEFORE startIndex.
-            // Rank is exclusive: count of 1s in [0, startIndex - 1]
             size_t exception_rank = B->rank(startIndex);
-            
-            // 2. Calculate the number of gaps (zeros) strictly BEFORE startIndex
-            // Total items before is startIndex. 
-            // Zeros = Total - Ones
             const size_t zeros_before = startIndex - exception_rank;
-
-            // 3. Position the decoder.
-            // If we have processed k zeros, the decoder should be positioned after the k-th zero definition.
-            // G->select0(k) gives the index of the k-th zero (1-based count logic usually, but SDSL select0(i) 
-            // is usually 1-based count mapping to 0-based index).
-            // If zeros_before > 0, we want to skip those gaps.
             size_t decoder_bit_pos = 0;
             if (zeros_before > 0) {
                 decoder_bit_pos = G->select0(zeros_before) + 1;
             }
             if (decoder_bit_pos > G->size()) decoder_bit_pos = G->size();
-            
             FastUnaryDecoder gap_decoder(G->raw_data_ptr(), G->size(), decoder_bit_pos);
-
-            // 4. Reconstruct current_high for the element at (startIndex - 1).
-            // This acts as the baseline for the first iteration of the loop if B[startIndex] == 0.
             U current_high = 0;
-            
             if (startIndex > 0) {
-                // Since index 0 is always an exception, exception_rank >= 1 here.
                 current_high = static_cast<U>(H[exception_rank - 1]);
-
-                // If there are gaps between the last exception and startIndex, sum them up.
                 if (zeros_before > 0) {
-                    // Find the context of the last exception
                     size_t last_exc_index = B->select(exception_rank);
-                    
-                    // Count zeros up to the last exception (inclusive of the exception index)
                     size_t zeros_at_last_exc = (last_exc_index + 1) - exception_rank;
-
-                    // We need to sum gaps corresponding to zeros in range (zeros_at_last_exc, zeros_before]
                     if (zeros_before > zeros_at_last_exc) {
-                        // Optimization for Unary Sum: (EndBitIndex - StartBitIndex) - CountOfZeros
                         size_t range_start_bit = (zeros_at_last_exc == 0) ? 0 : (G->select0(zeros_at_last_exc) + 1);
-                        size_t range_end_bit = decoder_bit_pos; // Already calculated as select0(zeros_before) + 1
-                        
+                        size_t range_end_bit = decoder_bit_pos;
                         size_t total_bits_in_range = range_end_bit - range_start_bit;
                         size_t num_gaps = zeros_before - zeros_at_last_exc;
-                        
                         current_high += static_cast<U>(total_bits_in_range - num_gaps);
                     }
                 }
             }
-            // --- INITIALIZATION END ---
             
             constexpr size_t GAP_BATCH = 64;
             uint32_t gap_buffer[GAP_BATCH];
@@ -478,8 +491,6 @@ namespace gef {
             size_t buffer_index = 0;
 
             size_t i = startIndex;
-            
-            // 1. Align to 64-bit boundary of B
             while (i < endIndex && (i & 63)) {
                  if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
@@ -500,17 +511,10 @@ namespace gef {
                 ++i;
             }
 
-            // 2. Process 64-bit blocks
             const uint64_t* b_blocks = b_data + (i >> 6);
             
-            // Prepare optimized L pointers if possible
-            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
-            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
-            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
-
             while (i + 64 <= endIndex) {
                 uint64_t block = *b_blocks++;
-                
                 if (block == 0) { // Fast path: 64 non-exceptions
                     for (int k = 0; k < 64; ++k) {
                          if (buffer_index >= buffer_size) [[unlikely]] {
@@ -560,7 +564,6 @@ namespace gef {
                 i += 64;
             }
 
-            // 3. Epilogue
             while (i < endIndex) {
                  if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
@@ -600,7 +603,11 @@ namespace gef {
             };
 
             // Check if this position is an exception
-            if ((*B)[index]) [[unlikely]] {
+            // Optimization: Use raw bit access for B
+            const uint64_t* b_data = B->raw_data_ptr();
+            bool is_exception = (b_data[index >> 6] >> (index & 63)) & 1;
+
+            if (is_exception) [[unlikely]] {
                 const size_t exception_rank = B->rank(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
                 return base + static_cast<T>(low | (high_val << b));

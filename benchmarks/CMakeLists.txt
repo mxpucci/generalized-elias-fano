@@ -10,7 +10,13 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     endif()
     
     add_executable(${benchmark_name} ${benchmark_file})
-    target_link_libraries(${benchmark_name} PRIVATE gef::gef benchmark::benchmark)
+    
+    # Check if it's learned_gef_benchmark to NOT link benchmark::benchmark
+    if(benchmark_name STREQUAL "learned_gef_benchmark")
+        target_link_libraries(${benchmark_name} PRIVATE gef::gef)
+    else()
+        target_link_libraries(${benchmark_name} PRIVATE gef::gef benchmark::benchmark)
+    endif()
     
     # Ensure benchmarks are always compiled with maximum optimization
     target_compile_options(${benchmark_name} PRIVATE 

@@ -66,7 +66,7 @@ public:
         if (k == 0) throw std::invalid_argument("Block size k cannot be zero.");
 
         const size_t num_partitions = (data.size() + k - 1) / k;
-        m_partitions.resize(num_partitions);
+        m_partitions.reserve(num_partitions);
 
         using PartitionView = Span<const T>;
         constexpr bool accepts_view_value      = std::is_constructible_v<Compressor, PartitionView, CompressorArgs...>;
@@ -82,6 +82,9 @@ public:
         static_assert(can_use_view || can_use_vector,
                       "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
 
+        // Resize vector to allow parallel access (if Compressor is default constructible and movable)
+        m_partitions.resize(num_partitions);
+
     #ifdef _OPENMP
         // For uniform-sized partitions, use static scheduling without explicit chunk
         // This distributes work evenly with minimal overhead
@@ -93,13 +96,13 @@ public:
 
                 Span<const T> view(data.data() + start, len);
                 if constexpr (can_use_view) {
-                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+                    m_partitions[p] = Compressor(view, args...);
                 } else if constexpr (accepts_vector_value) {
                     std::vector<T> buffer(view.data(), view.data() + view.size());
-                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(std::move(buffer), args...));
+                    m_partitions[p] = Compressor(std::move(buffer), args...);
                 } else {
                     std::vector<T> buffer(view.data(), view.data() + view.size());
-                    m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(buffer, args...));
+                    m_partitions[p] = Compressor(buffer, args...);
                 }
         }
     #else
@@ -110,13 +113,13 @@ public:
 
             Span<const T> view(data.data() + start, len);
             if constexpr (can_use_view) {
-                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(view, args...));
+                m_partitions[p] = Compressor(view, args...);
             } else if constexpr (accepts_vector_value) {
                 std::vector<T> buffer(view.data(), view.data() + view.size());
-                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(std::move(buffer), args...));
+                m_partitions[p] = Compressor(std::move(buffer), args...);
             } else {
                 std::vector<T> buffer(view.data(), view.data() + view.size());
-                m_partitions[p] = std::unique_ptr<IGEF<T>>(new Compressor(buffer, args...));
+                m_partitions[p] = Compressor(buffer, args...);
             }
         }
     #endif
@@ -149,10 +152,11 @@ public:
         // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
-        total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
+        // Removed overhead of unique_ptr
+        // total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
 
         for (const auto& p : m_partitions) {
-            total_bytes += p->size_in_bytes();
+            total_bytes += p.size_in_bytes();
         }
         return total_bytes;
     }
@@ -161,10 +165,11 @@ public:
         size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
-        total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
+        // Removed overhead of unique_ptr
+        // total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
 
         for (const auto& p : m_partitions) {
-            total_bytes += p->theoretical_size_in_bytes();
+            total_bytes += p.theoretical_size_in_bytes();
         }
         return total_bytes;
     }
@@ -196,7 +201,7 @@ public:
                 return 0;
             }
             buffer.assign(count_in_partition, T{});
-            size_t written = m_partitions[partition_index]->get_elements(
+            size_t written = m_partitions[partition_index].get_elements(
                 offset_in_partition, count_in_partition, buffer);
             buffer.resize(written);
             return written;
@@ -205,7 +210,7 @@ public:
         // Fast path: all elements in same partition
         if (start_partition == end_partition) {
             std::vector<T> partition_buffer(total_requested);
-            const size_t written = m_partitions[start_partition]->get_elements(
+            const size_t written = m_partitions[start_partition].get_elements(
                 startIndex % m_block_size, total_requested, partition_buffer);
             std::copy_n(partition_buffer.begin(), written, output.begin());
             return written;
@@ -272,8 +277,8 @@ public:
         const size_t partition_index = index / m_block_size;
         const size_t index_in_partition = index % m_block_size;
         
-        // Direct pointer dereference faster than at() (no bounds check)
-        return (*m_partitions[partition_index])[index_in_partition];
+        // Direct object access - NO VIRTUAL CALL if Compressor type is final or compiler can devirtualize
+        return m_partitions[partition_index][index_in_partition];
     }
 
     uint8_t split_point() const override {
@@ -298,7 +303,7 @@ public:
         // Note: Serialization to a single stream must be sequential
         // Parallelizing would require writing to separate buffers then merging
         for (const auto& p : m_partitions) {
-            p->serialize(ofs);
+            p.serialize(ofs);
         }
     }
 
@@ -322,15 +327,14 @@ public:
         m_partitions.clear();
         m_partitions.reserve(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
-            // This requires Compressor to be default-constructible for loading.
-            auto partition = std::make_unique<Compressor>();
-            partition->load(ifs, bit_vector_factory);
+            Compressor partition;
+            partition.load(ifs, bit_vector_factory);
             m_partitions.push_back(std::move(partition));
         }
     }
 
 private:
-    std::vector<std::unique_ptr<IGEF<T>>> m_partitions;
+    std::vector<Compressor> m_partitions;
     size_t m_original_size;
     size_t m_block_size;
 };

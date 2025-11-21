@@ -286,9 +286,11 @@ void LookupBenchmark(benchmark::State& state, const std::vector<int64_t>& data, 
     }
 
     for (auto _ : state) {
+        int64_t accumulator = 0;
         for (size_t i = 0; i < NUM_LOOKUPS; ++i) {
-            benchmark::DoNotOptimize(compressor[random_indices[i]]);
+            accumulator += compressor[random_indices[i]];
         }
+        benchmark::DoNotOptimize(accumulator);
     }
 
     state.SetItemsProcessed(NUM_LOOKUPS * state.iterations());
@@ -372,17 +374,32 @@ void GetElementsRangeBenchmark(benchmark::State& state,
 
     gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
     std::vector<int64_t> buffer(range);
+    
+    // Precompute start indices to avoid RNG overhead during measurement
     std::mt19937_64 gen(1337);
     std::uniform_int_distribution<size_t> distrib(0, data.size() - range);
-
+    
+    // Use a buffer of random indices to cycle through
+    // Google Benchmark runs loop many times, so we need enough indices
+    // or just cycle through a moderate size buffer.
+    const size_t NUM_INDICES = 10000;
+    std::vector<size_t> start_indices(NUM_INDICES);
+    for(size_t i=0; i<NUM_INDICES; ++i) {
+        start_indices[i] = distrib(gen);
+    }
+    
+    size_t idx = 0;
     for (auto _ : state) {
-        const size_t start = distrib(gen);
+        const size_t start = start_indices[idx];
         const size_t written = compressor.get_elements(start, range, buffer);
         if (written != range) {
             state.SkipWithError("get_elements returned fewer elements than requested.");
             return;
         }
         benchmark::DoNotOptimize(buffer.data());
+        
+        idx++;
+        if (idx >= NUM_INDICES) idx = 0;
     }
 
     state.SetItemsProcessed(range * state.iterations());
@@ -391,6 +408,7 @@ void GetElementsRangeBenchmark(benchmark::State& state,
 }
 
 #pragma region Lookup Definitions and Registration
+// ... [Rest of registration code remains same] ...
 BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Lookup)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
@@ -473,6 +491,7 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_Decompression)(benchma
     DecompressionThroughputBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
 }
 
+// Partial get_elements throughput
 BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_GetElements)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);

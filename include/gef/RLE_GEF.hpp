@@ -18,6 +18,11 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 
+#if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
+#include <experimental/simd>
+namespace stdx = std::experimental;
+#define GEF_EXPERIMENTAL_SIMD_ENABLED
+#endif
 
 namespace gef {
     template<typename T>
@@ -197,6 +202,7 @@ namespace gef {
         // Constructor
         RLE_GEF(std::shared_ptr<IBitVectorFactory> bit_vector_factory,
                 const std::vector<T> &S) {
+            // [Constructor implementation unchanged]
             if (S.empty()) {
                 b = 0;
                 h = 0;
@@ -287,19 +293,59 @@ namespace gef {
             const size_t endIndex = std::min(startIndex + count, size());
             size_t write_index = 0;
             
+            using U = std::make_unsigned_t<T>;
+
             // Precompute constants for L reading
             const uint64_t* l_data = L.data();
             const uint64_t mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
             
-            // Initialize bit reader state for L
-            size_t l_bit_pos = startIndex * b;
-            size_t word_idx = l_bit_pos / 64;
-            size_t bit_off = l_bit_pos % 64;
-            
+            // Prepare optimized L pointers if possible
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+
             // Fast path: h == 0, all data in L
             if (h == 0) [[unlikely]] {
+                // [Fast path logic for h=0 omitted for brevity, same as previous step]
                 const T base_val = base;
-                for (size_t i = startIndex; i < endIndex; ++i) {
+                size_t i = startIndex;
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                using simd_t = stdx::native_simd<U>;
+                const size_t simd_width = simd_t::size();
+                if constexpr (std::is_arithmetic_v<T>) {
+                    while (i + simd_width <= endIndex) {
+                        simd_t low_vec;
+                        if (l_ptr8) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
+                        } else if (l_ptr16) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
+                        } else if (l_ptr32) {
+                            if constexpr (std::is_same_v<U, uint32_t>) {
+                                low_vec.copy_from(l_ptr32 + i, stdx::element_aligned);
+                            } else {
+                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[i+k]);
+                            }
+                        } else {
+                            // Fallback
+                            for(size_t k=0; k<simd_width; ++k) {
+                                uint64_t val = (l_data[(i+k)*b/64] >> ((i+k)*b%64));
+                                if (((i+k)*b%64) + b > 64) val |= (l_data[(i+k)*b/64 + 1] << (64 - ((i+k)*b%64)));
+                                low_vec[k] = static_cast<U>(val & mask);
+                            }
+                        }
+                        simd_t sum_vec = simd_t(static_cast<U>(base_val)) + low_vec;
+                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
+                        write_index += simd_width;
+                        i += simd_width;
+                    }
+                }
+#endif
+                // Initialize bit reader state for L for remaining
+                size_t l_bit_pos = i * b;
+                size_t word_idx = l_bit_pos / 64;
+                size_t bit_off = l_bit_pos % 64;
+
+                for (; i < endIndex; ++i) {
                     uint64_t val = (l_data[word_idx] >> bit_off);
                     if (bit_off + b > 64) {
                         val |= (l_data[word_idx + 1] << (64 - bit_off));
@@ -319,12 +365,10 @@ namespace gef {
         
             // --- Optimization Start ---
         
-            // 1. Single Rank Call: Determine the High part index for the first element
-            // rank(i) returns the number of 1s in B[0...i-1].
+            // 1. Single Rank Call
             size_t current_rank_idx = B->rank(startIndex + 1);
-            if (current_rank_idx == 0) current_rank_idx = 1; // Handle potentially empty prefix
+            if (current_rank_idx == 0) current_rank_idx = 1;
             
-            // Load the initial High part and precompute base + shifted high
             T current_high = H[current_rank_idx - 1];
             T current_base_plus_high = base + (current_high << b);
         
@@ -332,14 +376,16 @@ namespace gef {
             const uint64_t* b_data = B->raw_data_ptr();
             size_t current_pos = startIndex;
             const size_t b_size = B->size();
+            
+            // Initialize bit reader state for L
+            size_t l_bit_pos = startIndex * b;
+            size_t word_idx = l_bit_pos / 64;
+            size_t bit_off = l_bit_pos % 64;
         
             while (current_pos < endIndex) {
-                // We need to find the end of the current run.
-                // The current run ends at the NEXT 1-bit (starting search from current_pos + 1).
                 size_t next_one_pos = b_size;
         
                 // --- Fast Bit Scan Logic ---
-                // Calculate where to start searching in the raw 64-bit array
                 size_t search_start = current_pos + 1;
                 size_t b_word_idx = search_start / 64;
                 size_t b_bit_offset = search_start % 64;
@@ -347,17 +393,13 @@ namespace gef {
         
                 if (b_word_idx < max_words) {
                     uint64_t word = b_data[b_word_idx];
-                    
-                    // Create a mask to ignore bits before 'b_bit_offset'.
-                    // (~0ULL << b_bit_offset) creates a mask like 11110000...
                     uint64_t b_mask = (~0ULL) << b_bit_offset;
                     uint64_t masked_word = word & b_mask;
         
                     if (masked_word != 0) {
-                        // Found a 1 in the current word
                         next_one_pos = b_word_idx * 64 + __builtin_ctzll(masked_word);
                     } else {
-                        // Scan subsequent words 64 bits at a time
+                        // Scan subsequent words
                         for (size_t w = b_word_idx + 1; w < max_words; ++w) {
                             if (b_data[w] != 0) {
                                 next_one_pos = w * 64 + __builtin_ctzll(b_data[w]);
@@ -368,11 +410,62 @@ namespace gef {
                 }
                 // --- End Fast Bit Scan ---
         
-                // Determine how many elements we can process in this batch
-                // It's limited by either the request count (endIndex) or the start of the next run (next_one_pos)
                 size_t run_limit = std::min(endIndex, next_one_pos);
         
-                // Tight loop to fill output using manual L read
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                using simd_t = stdx::native_simd<U>;
+                const size_t simd_width = simd_t::size();
+                if constexpr (std::is_arithmetic_v<T>) {
+                    while (current_pos + simd_width <= run_limit) {
+                        simd_t low_vec;
+                        if (l_ptr8) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[current_pos+k]);
+                        } else if (l_ptr16) {
+                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[current_pos+k]);
+                        } else if (l_ptr32) {
+                            if constexpr (std::is_same_v<U, uint32_t>) {
+                                low_vec.copy_from(l_ptr32 + current_pos, stdx::element_aligned);
+                            } else {
+                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[current_pos+k]);
+                            }
+                        } else {
+                            // Fallback extraction for packed bits
+                            // Recalculate positions for current_pos
+                            size_t local_bit_pos = current_pos * b;
+                            size_t local_word_idx = local_bit_pos / 64;
+                            size_t local_bit_off = local_bit_pos % 64;
+                            
+                            for(size_t k=0; k<simd_width; ++k) {
+                                uint64_t val = (l_data[local_word_idx] >> local_bit_off);
+                                if (local_bit_off + b > 64) {
+                                    val |= (l_data[local_word_idx + 1] << (64 - local_bit_off));
+                                }
+                                low_vec[k] = static_cast<U>(val & mask);
+                                local_bit_off += b;
+                                if (local_bit_off >= 64) {
+                                    local_bit_off -= 64;
+                                    local_word_idx++;
+                                }
+                            }
+                        }
+                        // Vectorized combine: high part is CONSTANT for the run!
+                        simd_t sum_vec = simd_t(static_cast<U>(current_base_plus_high)) + low_vec;
+                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
+                        
+                        write_index += simd_width;
+                        current_pos += simd_width;
+                        
+                        // Sync scalar pointers
+                        if (b > 0) {
+                             l_bit_pos = current_pos * b;
+                             word_idx = l_bit_pos / 64;
+                             bit_off = l_bit_pos % 64;
+                        }
+                    }
+                }
+#endif
+
+                // Tight scalar loop
                 for (; current_pos < run_limit; ++current_pos) {
                     uint64_t val = (l_data[word_idx] >> bit_off);
                     if (bit_off + b > 64) {
@@ -389,18 +482,12 @@ namespace gef {
                     }
                 }
         
-                // If we stopped because we hit the start of a new run (a 1-bit at next_one_pos)
                 if (current_pos == next_one_pos && current_pos < endIndex) {
-                    // Move to the next run
                     current_rank_idx++;
-                    // Update High part
                     if (current_rank_idx <= H.size()) {
                         current_high = H[current_rank_idx - 1];
                         current_base_plus_high = base + (current_high << b);
                     }
-                    // Note: We do not increment current_pos here. 
-                    // The loop continues, and the element at `next_one_pos` (which is now `current_pos`)
-                    // will be processed in the next iteration using the NEW `current_high`.
                 }
             }
             

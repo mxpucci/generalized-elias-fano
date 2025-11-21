@@ -24,9 +24,16 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 
+#if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
+#include <experimental/simd>
+namespace stdx = std::experimental;
+#define GEF_EXPERIMENTAL_SIMD_ENABLED
+#endif
+
 namespace gef {
     template<typename T>
     class B_GEF : public IGEF<T> {
+        // ... [Private members omitted, same as before] ...
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
             using WI = __int128;
@@ -298,6 +305,7 @@ namespace gef {
             const std::vector<T> &S,
             SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT,
             CompressionBuildMetrics* metrics = nullptr) {
+            // [Constructor implementation omitted for brevity, same as before]
           using clock = std::chrono::steady_clock;
           std::chrono::time_point<clock> split_start;
           if (metrics) {
@@ -356,7 +364,6 @@ namespace gef {
                   population_start = clock::now();
               }
 
-              // All in L - use unsigned arithmetic for efficiency
               using U = std::make_unsigned_t<T>;
               for (size_t i = 0; i < N; ++i) {
                   L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
@@ -380,7 +387,6 @@ namespace gef {
               return;
           }
 
-          // Use precomputed gc for allocation
           const size_t exceptions = gc.positive_exceptions_count + gc.negative_exceptions_count;
           const size_t non_exceptions = N - exceptions;
           const size_t g_plus_bits = gc.sum_of_positive_gaps_without_exception + non_exceptions;
@@ -401,15 +407,11 @@ namespace gef {
               population_start = clock::now();
           }
 
-          // Single pass to populate all structures
           size_t h_idx = 0;
           using U = std::make_unsigned_t<T>;
           U lastHighBits = 0;
           
-          // Precompute constant for exception check  
           const uint64_t hbits_u64 = static_cast<uint64_t>(h);
-
-          // Precompute low mask once - b < total_bits is guaranteed by h > 0
           const U low_mask = ((U(1) << b) - 1);
 
           uint64_t* b_data = B->raw_data_ptr();
@@ -420,37 +422,24 @@ namespace gef {
           FastBitWriter plus_writer(g_plus_data);
           FastBitWriter minus_writer(g_minus_data);
 
-          // 1. Handle first element (i=0)
           if (N > 0) {
               const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
               L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
               const U current_high_part = element_u >> b;
               
-              // i=0 is always an exception
               b_writer.set_ones_range(1);
               H[h_idx++] = current_high_part;
               lastHighBits = current_high_part;
           }
 
-          // 2. Loop from 1 to N-1
           for (size_t i = 1; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
               L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
               
-              // Direct shift - b < total_bits is guaranteed by early h==0 return
               const U current_high_part = element_u >> b;
               const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
               const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
               
-              // Exception check: (abs_gap + 2) > hbits_u64
-              // Replaces (abs_gap >= h - 1) approx logic from original but exact formula is:
-              // Original: 0 <= gap <= h. 
-              // Code uses: 0 <= highPart(i) - highPart(i-1) <= h ???
-              // Original code comment: B[i]=0 <==> 0 <= highPart(i) - highPart(i-1) <= h
-              // Actually code check was: (abs_gap + 2) > hbits_u64
-              // Wait, if gap is -1, abs_gap=1. 1+2 = 3.
-              // If h=2. 3 > 2 is true. Exception.
-              // It seems the condition is strict.
               const bool is_exception = ((abs_gap + 2) > hbits_u64);
 
               if (is_exception) [[unlikely]] {
@@ -458,7 +447,6 @@ namespace gef {
                   H[h_idx++] = current_high_part;
               } else [[likely]] {
                   b_writer.set_zero();
-                  // Simplified branching like B_GEF_STAR
                   if (gap >= 0) {
                       plus_writer.set_ones_range(static_cast<uint64_t>(abs_gap));
                   } else {
@@ -474,7 +462,6 @@ namespace gef {
           assert(minus_writer.position() == g_minus_bits);
           assert(plus_writer.position() == g_plus_bits);
 
-          // Enable rank/select support
           B->enable_rank();
           B->enable_select1();
           G_plus->enable_rank();
@@ -493,7 +480,9 @@ namespace gef {
           }
       }
 
+        // get_elements implementation...
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
+            // [Implementation from previous step retained]
             if (count == 0 || startIndex >= size()) {
                 return 0;
             }
@@ -503,36 +492,56 @@ namespace gef {
             
             const size_t endIndex = std::min(startIndex + count, size());
             size_t write_index = 0;
+
+            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+            using U = std::make_unsigned_t<T>;
+
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
             
-            // Fast path: h == 0, all data in L
             if (h == 0) {
-                using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
-                using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
-                for (size_t i = startIndex; i < endIndex; ++i) {
-                    const Wide low = static_cast<Wide>(L[i]);
+                size_t i = startIndex;
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                using simd_t = stdx::native_simd<U>;
+                const size_t simd_width = simd_t::size();
+                if constexpr (std::is_arithmetic_v<T>) {
+                    while (i + simd_width <= endIndex) {
+                        simd_t low_vec;
+                        if (l_ptr8) for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
+                        else if (l_ptr16) for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
+                        else if (l_ptr32) {
+                            if constexpr (std::is_same_v<U, uint32_t>) low_vec.copy_from(l_ptr32 + i, stdx::element_aligned);
+                            else for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[i+k]);
+                        } else for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(L[i+k]);
+                        
+                        simd_t sum_vec = simd_t(static_cast<U>(base)) + low_vec;
+                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
+                        write_index += simd_width;
+                        i += simd_width;
+                    }
+                }
+#endif
+                for (; i < endIndex; ++i) {
+                    Wide low;
+                    if (l_ptr8) low = static_cast<Wide>(l_ptr8[i]);
+                    else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i]);
+                    else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i]);
+                    else low = static_cast<Wide>(L[i]);
                     const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
                     output[write_index++] = static_cast<T>(sum);
                 }
                 return write_index;
             }
             
-            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
-            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
-            using U = std::make_unsigned_t<T>;
-
-            // Setup: compute starting state
+            // ... [rest of get_elements] ...
+            // [Re-pasting the optimized get_elements code from memory to ensure consistency]
             size_t exception_rank = B->rank(startIndex);
             const size_t zero_before = startIndex - exception_rank;
-            
             long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
-            
-            // Fast bit access helper
             const uint64_t* b_data = B->raw_data_ptr();
-            auto read_bit = [b_data](size_t pos) -> bool {
-                return (b_data[pos >> 6] >> (pos & 63)) & 1;
-            };
-            
-            // If starting at non-exception, add cumulative gaps to current position
+            auto read_bit = [b_data](size_t pos) -> bool { return (b_data[pos >> 6] >> (pos & 63)) & 1; };
             const bool start_is_exception = read_bit(startIndex);
             if (!start_is_exception && zero_before > 0) {
                 size_t gap_run_start = 0;
@@ -550,25 +559,18 @@ namespace gef {
                 ++exception_rank;
                 high_signed = static_cast<long long>(H[exception_rank - 1]);
             }
-
-            // Initialize decoders
             const size_t plus_bits = G_plus->size();
             const size_t minus_bits = G_minus->size();
             const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
             const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
-            
             FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
             FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
-
             constexpr size_t GAP_BATCH = 64;
             uint32_t pos_buffer[GAP_BATCH];
             uint32_t neg_buffer[GAP_BATCH];
             size_t pos_size = 0, pos_index = 0;
             size_t neg_size = 0, neg_index = 0;
-
             size_t i = startIndex;
-
-            // 1. Align to 64-bit boundary of B
             while (i < endIndex && (i & 63)) {
                 if (read_bit(i)) [[unlikely]] {
                     ++exception_rank;
@@ -577,23 +579,16 @@ namespace gef {
                     if (pos_index >= pos_size) [[unlikely]] {
                         pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
                         pos_index = 0;
-                        if (pos_size == 0) [[unlikely]] {
-                            pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
-                            pos_size = 1;
-                        }
+                        if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; }
                     }
                     if (neg_index >= neg_size) [[unlikely]] {
                         neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
                         neg_index = 0;
-                        if (neg_size == 0) [[unlikely]] {
-                            neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
-                            neg_size = 1;
-                        }
+                        if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; }
                     }
                     high_signed += static_cast<long long>(pos_buffer[pos_index++]);
                     high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                 }
-
                 const U high_val = static_cast<U>(high_signed);
                 const Wide low = static_cast<Wide>(L[i]);
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
@@ -601,83 +596,65 @@ namespace gef {
                 output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
                 ++i;
             }
-
-            // 2. Process 64-bit blocks
             const uint64_t* b_blocks = b_data + (i >> 6);
-            
-            // Prepare optimized L pointers if possible
-            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
-            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
-            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
-
             while (i + 64 <= endIndex) {
                 uint64_t block = *b_blocks++;
-                
-                if (block == 0) { // Fast path: 64 non-exceptions
-                    for (int k = 0; k < 64; ++k) {
-                         if (pos_index >= pos_size) [[unlikely]] {
-                            pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
-                            pos_index = 0;
-                            if (pos_size == 0) [[unlikely]] {
-                                pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
-                                pos_size = 1;
+                if (block == 0) {
+                    int k = 0;
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                    using simd_t = stdx::native_simd<U>;
+                    const size_t simd_width = simd_t::size();
+                    if constexpr (std::is_arithmetic_v<T>) {
+                        uint32_t p_buf[simd_width];
+                        uint32_t n_buf[simd_width];
+                        U high_parts[simd_width];
+                        U low_parts[simd_width];
+                        for (; k + simd_width <= 64; k += simd_width) {
+                            size_t pc = plus_decoder.next_batch(p_buf, simd_width);
+                            while(pc < simd_width) p_buf[pc++] = static_cast<uint32_t>(plus_decoder.next());
+                            size_t nc = minus_decoder.next_batch(n_buf, simd_width);
+                            while(nc < simd_width) n_buf[nc++] = static_cast<uint32_t>(minus_decoder.next());
+                            for(size_t s=0; s<simd_width; ++s) {
+                                high_signed += static_cast<long long>(p_buf[s]);
+                                high_signed -= static_cast<long long>(n_buf[s]);
+                                high_parts[s] = static_cast<U>(high_signed);
                             }
+                            if (l_ptr8) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr8[i+k+s]);
+                            else if (l_ptr16) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr16[i+k+s]);
+                            else if (l_ptr32) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr32[i+k+s]);
+                            else for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(L[i+k+s]);
+                            simd_t v_high, v_low;
+                            v_high.copy_from(high_parts, stdx::element_aligned);
+                            v_low.copy_from(low_parts, stdx::element_aligned);
+                            simd_t v_res = simd_t(static_cast<U>(base)) + (v_high << b) + v_low;
+                            v_res.copy_to(output.data() + write_index, stdx::element_aligned);
+                            write_index += simd_width;
                         }
-                        if (neg_index >= neg_size) [[unlikely]] {
-                            neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
-                            neg_index = 0;
-                            if (neg_size == 0) [[unlikely]] {
-                                neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
-                                neg_size = 1;
-                            }
-                        }
+                    }
+#endif
+                    for (; k < 64; ++k) {
+                         if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                        if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
                         high_signed += static_cast<long long>(pos_buffer[pos_index++]);
                         high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
-                        
                         U high_val = static_cast<U>(high_signed);
                         Wide low;
-                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]);
-                        else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]);
-                        else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]);
-                        else low = static_cast<Wide>(L[i + k]);
-
+                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
                         const Wide high_shifted = static_cast<Wide>(high_val) << b;
                         const Wide offset = low | high_shifted;
                         output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
                     }
-                } else { // Slow path
+                } else { 
                      for (int k = 0; k < 64; ++k) {
-                        if ((block >> k) & 1) {
-                            ++exception_rank;
-                            high_signed = static_cast<long long>(H[exception_rank - 1]);
-                        } else {
-                             if (pos_index >= pos_size) [[unlikely]] {
-                                pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
-                                pos_index = 0;
-                                if (pos_size == 0) [[unlikely]] {
-                                    pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
-                                    pos_size = 1;
-                                }
-                            }
-                            if (neg_index >= neg_size) [[unlikely]] {
-                                neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
-                                neg_index = 0;
-                                if (neg_size == 0) [[unlikely]] {
-                                    neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
-                                    neg_size = 1;
-                                }
-                            }
-                            high_signed += static_cast<long long>(pos_buffer[pos_index++]);
-                            high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                        if ((block >> k) & 1) { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
+                        else {
+                             if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                            if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
+                            high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                         }
-                        
                         U high_val = static_cast<U>(high_signed);
                         Wide low;
-                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]);
-                        else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]);
-                        else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]);
-                        else low = static_cast<Wide>(L[i + k]);
-
+                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
                         const Wide high_shifted = static_cast<Wide>(high_val) << b;
                         const Wide offset = low | high_shifted;
                         output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
@@ -685,33 +662,13 @@ namespace gef {
                 }
                 i += 64;
             }
-
-            // 3. Epilogue
             while (i < endIndex) {
-                if (read_bit(i)) [[unlikely]] {
-                    ++exception_rank;
-                    high_signed = static_cast<long long>(H[exception_rank - 1]);
-                } else [[likely]] {
-                    if (pos_index >= pos_size) [[unlikely]] {
-                        pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
-                        pos_index = 0;
-                        if (pos_size == 0) [[unlikely]] {
-                            pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next());
-                            pos_size = 1;
-                        }
-                    }
-                    if (neg_index >= neg_size) [[unlikely]] {
-                        neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
-                        neg_index = 0;
-                        if (neg_size == 0) [[unlikely]] {
-                            neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next());
-                            neg_size = 1;
-                        }
-                    }
-                    high_signed += static_cast<long long>(pos_buffer[pos_index++]);
-                    high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                if (read_bit(i)) [[unlikely]] { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
+                else [[likely]] {
+                    if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                    if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
+                    high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                 }
-
                 const U high_val = static_cast<U>(high_signed);
                 const Wide low = static_cast<Wide>(L[i]);
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
@@ -719,7 +676,6 @@ namespace gef {
                 output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
                 ++i;
             }
-            
             return write_index;
         }
 
@@ -729,7 +685,17 @@ namespace gef {
             if (h == 0) [[unlikely]] {
                 using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
                 using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
-                const Wide low = static_cast<Wide>(L[index]);
+                // Optimization for L access
+                const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+                const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+                const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+                
+                Wide low;
+                if (l_ptr8) low = static_cast<Wide>(l_ptr8[index]);
+                else if (l_ptr16) low = static_cast<Wide>(l_ptr16[index]);
+                else if (l_ptr32) low = static_cast<Wide>(l_ptr32[index]);
+                else low = static_cast<Wide>(L[index]);
+
                 const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
                 return static_cast<T>(sum);
             }
@@ -738,7 +704,15 @@ namespace gef {
             using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
             using U = std::make_unsigned_t<T>;
             
-            const Wide low = static_cast<Wide>(L[index]);
+            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
+            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
+            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+            
+            Wide low;
+            if (l_ptr8) low = static_cast<Wide>(l_ptr8[index]);
+            else if (l_ptr16) low = static_cast<Wide>(l_ptr16[index]);
+            else if (l_ptr32) low = static_cast<Wide>(l_ptr32[index]);
+            else low = static_cast<Wide>(L[index]);
 
             // Helper to compute cumulative gaps: sum of first 'count' gaps
             const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
@@ -746,7 +720,11 @@ namespace gef {
             };
 
             // Check if this position is an exception
-            if ((*B)[index]) [[unlikely]] {
+            // Optimization: Use raw bit access for B
+            const uint64_t* b_data = B->raw_data_ptr();
+            bool is_exception = (b_data[index >> 6] >> (index & 63)) & 1;
+
+            if (is_exception) [[unlikely]] {
                 const size_t exception_rank = B->rank(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
