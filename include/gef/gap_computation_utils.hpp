@@ -22,7 +22,7 @@ using namespace gef;
 enum class ExceptionRule : uint8_t {
     None  = 0,  // Rule #0  (B_GEF_STAR): never an exception
     BGEF  = 1,  // Rule #1  (B_GEF):      i==0 || abs(gap)+2 > total_bits - b
-    UGEF  = 2   // Rule #2  (U_GEF):      i==0 || gap<0 || gap+1 > total_bits - b
+    UGEF  = 2   // Rule #2  (U_GEF):      i==0 || abs(gap)+1 > total_bits - b (Symmetric magnitude check)
 };
 
 
@@ -90,7 +90,7 @@ GapComputation variation_of_shifted_vec(
     const uint8_t b,
     ExceptionRule rule = ExceptionRule::None
 ) {
-    GapComputation result{0, 0, 0, 0, 0, 0, 0, 0};
+    GapComputation result{};
     const size_t n = v.size();
     if (n == 0) return result;
 
@@ -110,9 +110,9 @@ GapComputation variation_of_shifted_vec(
             }
             case ExceptionRule::UGEF: {
                 if (index == 0) return true;
-                if (gap < 0) return true;
-                const WU g = static_cast<WU>(gap);
-                return (g + static_cast<WU>(1)) > static_cast<WU>(hbits);
+                // Symmetric check for U_GEF as well to allow inferring reversed stats
+                const WU mag = gap < 0 ? static_cast<WU>(-gap) : static_cast<WU>(gap);
+                return (mag + static_cast<WU>(1)) > static_cast<WU>(hbits);
             }
         }
         return false;
@@ -148,7 +148,7 @@ GapComputation variation_of_shifted_vec(
         result.positive_exceptions_count++;
     else
         result.sum_of_positive_gaps_without_exception += static_cast<size_t>(first_gap);
-
+    
     for (size_t i = 1; i < n; ++i) {
         const WI gap = get_gap(v[i], v[i - 1], b);
         const bool exception = is_exception(i, gap, total_bits);
@@ -166,13 +166,6 @@ GapComputation variation_of_shifted_vec(
             if (exception)  result.negative_exceptions_count += 1;
         }
     }
-
-
-
-
-
-
-
 
     return result;
 }
@@ -271,7 +264,7 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
         pos_exc = _mm256_add_epi64(pos_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, pos_mask), 63));
         neg_exc = _mm256_add_epi64(neg_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, neg_mask), 63));
-
+        
         // Main loop over pairs
         for (size_t i = 1; i < n; ++i) {
             prev_high = curr_high;
@@ -287,19 +280,21 @@ total_variation_of_shifted_vec_with_multiple_shifts(
             neg_diff = _mm256_sub_epi64(prev_high, curr_high);
             mag = _mm256_blendv_epi8(pos_diff, neg_diff, is_neg);
             is_exc = zero_vec;
+            
             if (rule != ExceptionRule::None) {
                 __m256i hbits = _mm256_sub_epi64(total_bits_vec, b_vec);
                 __m256i gt_zero = _mm256_cmpgt_epi64(hbits, zero_vec);
                 hbits = _mm256_blendv_epi8(zero_vec, hbits, gt_zero);
+                
                 if (rule == ExceptionRule::BGEF) {
                     __m256i threshold = _mm256_add_epi64(mag, _mm256_set1_epi64x(2));
                     is_exc = ugt(threshold, hbits);
                 } else if (rule == ExceptionRule::UGEF) {
                     __m256i threshold = _mm256_add_epi64(mag, one_vec);
-                    __m256i is_large = ugt(threshold, hbits);
-                    is_exc = _mm256_or_si256(is_neg, is_large);
+                    is_exc = ugt(threshold, hbits);
                 }
             }
+            
             pos_mask = is_pos;
             neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
             sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));

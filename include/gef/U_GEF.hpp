@@ -16,6 +16,7 @@
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
 #include <stdexcept>
+#include <tuple>
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
 #include "FastBitWriter.hpp"
@@ -73,6 +74,7 @@ namespace gef {
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
         uint8_t h;
+        bool reversed;
 
         /**
         * The minimum of the encoded sequence, so that we store the shifted sequence
@@ -84,22 +86,53 @@ namespace gef {
         static size_t evaluate_space(const size_t N,
                                      const size_t total_bits,
                                      const uint8_t b,
-                                     const GapComputation &gc) {
+                                     const GapComputation &gc,
+                                     bool reversed) {
             if (N == 0)
-                return sizeof(T) + 2;  // Just metadata
+                return sizeof(T) + 3;  // Just metadata (added reversed)
 
             if (b >= total_bits) {
                 // All in L, no high bits
                 size_t l_bytes = ((N * static_cast<size_t>(total_bits) + 7) / 8);
-                return l_bytes + sizeof(T) + 2;
+                return l_bytes + sizeof(T) + 3;
             }
 
-            // Exceptions
-            const auto exceptions = gc.positive_exceptions_count + gc.negative_exceptions_count;
+            // Exceptions calculation based on tracking mode
+            // In Normal U_GEF, all negative gaps are exceptions.
+            // In Reversed U_GEF, all positive gaps are exceptions (as they become negative).
+            // 'positive_exceptions_count' and 'negative_exceptions_count' in gc now track MAGNITUDE exceptions only.
+            
+            size_t exceptions;
+            size_t g_bits_sum;
+            
+            if (reversed) {
+                // Reversed Mode:
+                // - All positive gaps are exceptions (they become negative).
+                // - Negative gaps are encoded as positive. Exception if magnitude too large.
+                // - i=0 is usually handled as positive gap (exception) or special case.
+                //   In gc, pos_gaps includes i=0.
+                
+                // Exceptions = All Positive Gaps + Large Negative Gaps
+                exceptions = gc.positive_gaps + gc.negative_exceptions_count;
+                
+                // Gap Sum = Sum of Small Negative Gaps (magnitudes)
+                g_bits_sum = gc.sum_of_negative_gaps_without_exception;
+            } else {
+                // Normal Mode:
+                // - All negative gaps are exceptions.
+                // - Positive gaps encoded. Exception if too large.
+                
+                // Exceptions = Large Positive Gaps + All Negative Gaps
+                exceptions = gc.positive_exceptions_count + gc.negative_gaps;
+                
+                // Gap Sum = Sum of Small Positive Gaps
+                g_bits_sum = gc.sum_of_positive_gaps_without_exception;
+            }
+
             if (exceptions == 0 || exceptions > N) {
                 // Invalid - fallback
                 size_t fallback_bits = N * static_cast<size_t>(total_bits);
-                return ((fallback_bits + 7) / 8) + sizeof(T) + 2;
+                return ((fallback_bits + 7) / 8) + sizeof(T) + 3;
             }
             const size_t non_exc = N - exceptions;
 
@@ -117,12 +150,14 @@ namespace gef {
             size_t h_bytes = bits_to_bytes(exceptions * static_cast<size_t>(total_bits - b));
             size_t b_bits = N;
             size_t b_bytes = bits_to_bytes(b_bits);
-            size_t g_bits = gc.sum_of_positive_gaps_without_exception + non_exc;
+            
+            size_t g_bits = g_bits_sum + non_exc;
+            
             size_t g_bytes = bits_to_bytes(g_bits);
 
             // Metadata: sdsl vectors have overhead, bitvectors have overhead.
             // Let's assume minimal overhead for estimation.
-            size_t metadata = sizeof(T) + sizeof(uint8_t) + sizeof(uint8_t);
+            size_t metadata = sizeof(T) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(bool);
             
             // Add sdsl::int_vector overhead estimate (usually 8-16 bytes per vector)
             // and bitvector overhead. 
@@ -134,7 +169,7 @@ namespace gef {
             return l_bytes + h_bytes + b_bytes + g_bytes + metadata + struct_overhead;
         }
 
-        static std::pair<uint8_t, GapComputation> approximate_optimal_split_point
+        static std::tuple<uint8_t, GapComputation, bool> approximate_optimal_split_point
         (const std::vector<T> &S,
             const T min,
                                                        const T max) {
@@ -164,35 +199,50 @@ namespace gef {
                 S, min, max, min_b, max_b, ExceptionRule::UGEF);
 
             size_t best_index = 0;
-            size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0]);
+            bool best_rev = false;
+            // Evaluate normal and reversed
+            size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0], false);
+            size_t rev_space = evaluate_space(S.size(), total_bits, min_b, gcs[0], true);
+            if (rev_space < best_space) {
+                best_space = rev_space;
+                best_rev = true;
+            }
             
             // Also consider h=0 (b=total_bits) as a baseline candidate
-            size_t h0_space = evaluate_space(S.size(), total_bits, total_bits, GapComputation{});
+            size_t h0_space = evaluate_space(S.size(), total_bits, total_bits, GapComputation{}, false); // reversed doesn't matter for h=0
 
             if (h0_space < best_space) {
-                 return {static_cast<uint8_t>(total_bits), GapComputation{}};
+                 return {static_cast<uint8_t>(total_bits), GapComputation{}, false};
             }
 
-            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1]);
+            // Check max_b
+            const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1], false);
             if (tmpSpace < best_space) {
                 best_index = gcs.size() - 1;
                 best_space = tmpSpace;
+                best_rev = false;
+            }
+            const auto tmpSpaceRev = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1], true);
+            if (tmpSpaceRev < best_space) {
+                best_index = gcs.size() - 1;
+                best_space = tmpSpaceRev;
+                best_rev = true;
             }
             
             // Explicitly check against h=0 case if not covered
             if (h0_space < best_space) {
-                 return {static_cast<uint8_t>(total_bits), GapComputation{}};
+                 return {static_cast<uint8_t>(total_bits), GapComputation{}, false};
             }
 
-            return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
+            return {static_cast<uint8_t>(min_b + best_index), gcs[best_index], best_rev};
         }
 
-        static std::pair<uint8_t, GapComputation> brute_force_optima_split_point(
+        static std::tuple<uint8_t, GapComputation, bool> brute_force_optima_split_point(
             const std::vector<T> &S,
             const T min_val,
             const T max_val) {
             const size_t N = S.size();
-            if (N == 0) return {0u, GapComputation{}};
+            if (N == 0) return {0u, GapComputation{}, false};
 
             const uint8_t total_bits = bits_for_range(min_val, max_val);
 
@@ -200,22 +250,30 @@ namespace gef {
             const auto gcs = compute_all_gap_computations(S, min_val, max_val, ExceptionRule::UGEF, total_bits);
 
             uint8_t best_b = total_bits;
-            size_t best_space = evaluate_space(N, total_bits, total_bits, GapComputation{});
+            bool best_rev = false;
+            size_t best_space = evaluate_space(N, total_bits, total_bits, GapComputation{}, false);
 
             // Check all b values for true optimality
             for (uint8_t b = 1; b < total_bits; ++b) {
-                const size_t space = evaluate_space(N, total_bits, b, gcs[b]);
+                const size_t space = evaluate_space(N, total_bits, b, gcs[b], false);
                 if (space < best_space) {
                     best_b = b;
                     best_space = space;
+                    best_rev = false;
+                }
+                const size_t space_rev = evaluate_space(N, total_bits, b, gcs[b], true);
+                if (space_rev < best_space) {
+                    best_b = b;
+                    best_space = space_rev;
+                    best_rev = true;
                 }
             }
             
             // Return the gap computation for the selected split point
             if (best_b < total_bits) {
-                return {best_b, gcs[best_b]};
+                return {best_b, gcs[best_b], best_rev};
             } else {
-                return {total_bits, GapComputation{}};
+                return {total_bits, GapComputation{}, false};
             }
         }
 
@@ -240,7 +298,7 @@ namespace gef {
         ~U_GEF() override = default;
 
         // Default constructor
-        U_GEF() : h(0), b(0), base(0) {
+        U_GEF() : h(0), b(0), reversed(false), base(0) {
         }
 
         // 2. Copy Constructor
@@ -250,6 +308,7 @@ namespace gef {
               L(other.L),
               h(other.h),
               b(other.b),
+              reversed(other.reversed),
               base(other.base) {
             if (other.h > 0) {
                 B = other.B->clone();
@@ -273,6 +332,7 @@ namespace gef {
             swap(first.L, second.L);
             swap(first.h, second.h);
             swap(first.b, second.b);
+            swap(first.reversed, second.reversed);
             swap(first.base, second.base);
             swap(first.G, second.G);
         }
@@ -295,6 +355,7 @@ namespace gef {
               L(std::move(other.L)),
               h(other.h),
               b(other.b),
+              reversed(other.reversed),
               base(other.base) {
             // Leave the moved-from object in a valid, empty state
             other.h = 0;
@@ -310,6 +371,7 @@ namespace gef {
                 L = std::move(other.L);
                 h = other.h;
                 b = other.b;
+                reversed = other.reversed;
                 base = other.base;
             }
             return *this;
@@ -324,6 +386,7 @@ namespace gef {
             if (N == 0) {
                 b = 0;
                 h = 0;
+                reversed = false;
                 base = T{};
                 B = nullptr;
                 return;
@@ -336,9 +399,9 @@ namespace gef {
             const uint8_t total_bits = bits_for_range(base, max_val);
             GapComputation gc{};
             if (strategy == OPTIMAL_SPLIT_POINT) {
-                std::tie(b, gc) = brute_force_optima_split_point(S, base, max_val);
+                std::tie(b, gc, reversed) = brute_force_optima_split_point(S, base, max_val);
             } else {
-                std::tie(b, gc) = approximate_optimal_split_point(S, base, max_val);
+                std::tie(b, gc, reversed) = approximate_optimal_split_point(S, base, max_val);
             }
             h = (b >= total_bits) ? 0 : static_cast<uint8_t>(total_bits - b);
 
@@ -359,9 +422,17 @@ namespace gef {
             }
 
             // Use precomputed gc for allocation
-            const size_t exceptions = gc.positive_exceptions_count + gc.negative_exceptions_count;
+            size_t exceptions;
+            size_t g_bits_sum;
+            if (reversed) {
+                exceptions = gc.positive_gaps + gc.negative_exceptions_count;
+                g_bits_sum = gc.sum_of_negative_gaps_without_exception;
+            } else {
+                exceptions = gc.positive_exceptions_count + gc.negative_gaps;
+                g_bits_sum = gc.sum_of_positive_gaps_without_exception; 
+            }
             const size_t non_exceptions = N - exceptions;
-            const size_t g_bits = gc.sum_of_positive_gaps_without_exception + non_exceptions;
+            const size_t g_bits = g_bits_sum + non_exceptions;
 
             B = bit_vector_factory->create(N);
             H = sdsl::int_vector<>(exceptions, 0, h);
@@ -371,7 +442,6 @@ namespace gef {
             size_t h_idx = 0;
             using U = std::make_unsigned_t<T>;
             U lastHighBits = 0;
-            const uint64_t h_u64 = static_cast<uint64_t>(h);
             
             // Precompute low mask once - b < total_bits is guaranteed by h > 0
             const U low_mask = ((U(1) << b) - 1);
@@ -400,9 +470,13 @@ namespace gef {
                 
                 const U current_high_part = element_u >> b;
                 using WI = __int128;
-                const WI gap = static_cast<WI>(current_high_part) - static_cast<WI>(lastHighBits);
+                WI gap = static_cast<WI>(current_high_part) - static_cast<WI>(lastHighBits);
+                if (reversed) gap = -gap;
                 
                 // Exception check: gap<0 or gap>=h
+                // Even if reversed, gap is now the "effective gap" we want to encode.
+                // If gap < 0, we can't encode in G (unary requires >= 0). Exception.
+                // If gap >= h, too large. Exception.
                 const bool is_exception = (gap < 0) || (static_cast<unsigned __int128>(gap) >= static_cast<unsigned __int128>(h));
 
                 if (is_exception) [[unlikely]] {
@@ -427,7 +501,6 @@ namespace gef {
         }
 
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            // [get_elements implementation from previous step, unchanged for this step, omitted for brevity]
             if (count == 0 || startIndex >= size()) {
                 return 0;
             }
@@ -501,6 +574,14 @@ namespace gef {
             if (startIndex > 0) {
                 current_high = static_cast<U>(H[exception_rank - 1]);
                 if (zeros_before > 0) {
+                    // This complex init logic needs to handle reversed...
+                    // It tries to fast-forward sum of gaps.
+                    // G stores effective gaps (either gap or -gap).
+                    // If reversed, current = prev - gap.
+                    // If !reversed, current = prev + gap.
+                    // The gap in G is always positive.
+                    
+                    // Calculate sum of gaps in range
                     size_t last_exc_index = B->select(exception_rank);
                     size_t zeros_at_last_exc = (last_exc_index + 1) - exception_rank;
                     if (zeros_before > zeros_at_last_exc) {
@@ -508,7 +589,10 @@ namespace gef {
                         size_t range_end_bit = decoder_bit_pos;
                         size_t total_bits_in_range = range_end_bit - range_start_bit;
                         size_t num_gaps = zeros_before - zeros_at_last_exc;
-                        current_high += static_cast<U>(total_bits_in_range - num_gaps);
+                        
+                        U sum_gaps = static_cast<U>(total_bits_in_range - num_gaps);
+                        if (reversed) current_high -= sum_gaps;
+                        else current_high += sum_gaps;
                     }
                 }
             }
@@ -532,7 +616,8 @@ namespace gef {
                             buffer_size = 1;
                         }
                     }
-                    current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                    if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
+                    else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
                 const U low = static_cast<U>(L[i]);
                 output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
@@ -560,7 +645,8 @@ namespace gef {
                             for (; k + simd_width <= 64; k += simd_width) {
                                 U local_highs[simd_width];
                                 for(size_t j=0; j<simd_width; ++j) {
-                                    current_high += static_cast<U>(gap_buffer[k+j]);
+                                    if (reversed) current_high -= static_cast<U>(gap_buffer[k+j]);
+                                    else current_high += static_cast<U>(gap_buffer[k+j]);
                                     local_highs[j] = current_high;
                                 }
                                 simd_t high_vec;
@@ -589,7 +675,8 @@ namespace gef {
                                 buffer_size = 1;
                             }
                         }
-                        current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                        if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
+                        else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         
                         U low;
                         if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
@@ -613,7 +700,8 @@ namespace gef {
                                     buffer_size = 1;
                                 }
                             }
-                            current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                            if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
+                            else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         }
                         
                         U low;
@@ -641,7 +729,8 @@ namespace gef {
                              buffer_size = 1;
                         }
                     }
-                    current_high += static_cast<U>(gap_buffer[buffer_index++]);
+                    if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
+                    else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
                 const U low = static_cast<U>(L[i]);
                 output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
@@ -695,7 +784,9 @@ namespace gef {
             // Using zero_before+1 includes the gap for the element at index
             const size_t gap_end = cumulative_gaps(G, zero_before + 1);
             const size_t gap_start = cumulative_gaps(G, gap_run_start);
-            current_high += static_cast<U>(gap_end - gap_start);
+            
+            if (reversed) current_high -= static_cast<U>(gap_end - gap_start);
+            else current_high += static_cast<U>(gap_end - gap_start);
 
             return base + static_cast<T>(low | (current_high << b));
         }
@@ -706,6 +797,7 @@ namespace gef {
             }
             ofs.write(reinterpret_cast<const char *>(&h), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&b), sizeof(uint8_t));
+            ofs.write(reinterpret_cast<const char *>(&reversed), sizeof(bool));
             ofs.write(reinterpret_cast<const char *>(&base), sizeof(T));
             L.serialize(ofs);
             H.serialize(ofs);
@@ -718,6 +810,7 @@ namespace gef {
         void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
+            ifs.read(reinterpret_cast<char *>(&reversed), sizeof(bool));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));
             L.load(ifs);
             H.load(ifs);
@@ -749,6 +842,7 @@ namespace gef {
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);
+            total_bytes += sizeof(reversed);
             return total_bytes;
         }
 
@@ -768,6 +862,7 @@ namespace gef {
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);
+            total_bytes += sizeof(reversed);
             return total_bytes;
         }
 
@@ -793,6 +888,7 @@ namespace gef {
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);
+            total_bytes += sizeof(reversed);
             
             return total_bytes;
         }

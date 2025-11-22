@@ -111,6 +111,10 @@ def parse_gef_data(directory, target_partition_size=None):
                 # We divide by 1e6 to get MB/s.
                 data['comp_throughput'][dataset_name][compressor_base][strategy] = bench['compression_throughput_MBs'] / 1e6
             if 'items_per_second' in bench:
+                # Calculate MB/s: items_per_second * 8 bytes / 1e6 (for MB)
+                # If the input is already in MB/s, we need to check.
+                # The benchmark code outputs items_per_second. 
+                # Assuming each item is 64-bit (8 bytes).
                 data['random_access_speed'][dataset_name][compressor_base][strategy] = (bench['items_per_second'] * 8) / 1e6
 
     # --- Create DataFrames for each metric using pivot_table for robustness ---
@@ -196,7 +200,7 @@ def generate_gef_table(df, caption, label, unit_name, highlight_best=None, compr
 def generate_combined_table_section(df, title, highlight_mode):
     """Generates a section of the combined LaTeX table, escaping dataset names."""
     general_purpose_cols = ['Xz', 'Brotli', 'Zstd', 'Lz4', 'Snappy']
-    special_purpose_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'Best GEF']
+    special_purpose_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'NeaTS', 'Best GEF']
     gp_cols_present = [c for c in general_purpose_cols if c in df.columns]
     sp_cols_present = [c for c in special_purpose_cols if c in df.columns]
 
@@ -262,7 +266,20 @@ if __name__ == "__main__":
     print(f"Filtering partition size: {args.partition_size}")
 
     # --- PART 1: Generate GEF-only tables ---
+    # IMPORTANT: The user requested random access speed to be filtered for partition_size: 1048576 (2^20)
+    # We will parse data twice: once generically (using command line arg) and once specifically for random access if needed.
+    # However, the current parse_gef_data filters by the passed partition_size.
+    # So we should ensure we pass the correct partition size for the general tables or handle it.
+    # The user query implies we should specifically use 2^20 for random access in the "Best GEF" calculation.
+    
+    # Let's parse generally first (using CLI arg, default 1MB)
     gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir, args.partition_size)
+    
+    # For "Best GEF" random access consistency, we might need to ensure we have the 2^20 data available.
+    # If args.partition_size is NOT 1048576, we might be missing the data the user requested for the combined table.
+    # Let's re-parse specifically for 2^20 to get the random access data for the combined table.
+    _, _, gef_access_df_2_20 = parse_gef_data(benchmark_dir, 1048576)
+    
     gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", r"$\mathrm{B^*-GEF}$"]
 
     print("Generating GEF-only tables with compact formatting...")
@@ -278,9 +295,37 @@ if __name__ == "__main__":
     if COMPETITOR_DATA_AVAILABLE:
         print("\nGenerating combined competitors.tex file using landscape and rotated headers...")
 
-        best_gef_ratio = gef_ratio_df.min(axis=1)
-        best_gef_access = gef_access_df.max(axis=1)
-        best_gef_decomp = pd.Series(np.nan, index=best_gef_ratio.index)
+        # Find the GEF variant that yields the best compression ratio for each dataset.
+        # We will use this variant for ALL metrics (decompression, random access) to ensure consistency.
+        best_gef_variants = gef_ratio_df.idxmin(axis=1)
+        
+        best_gef_ratio = []
+        best_gef_access = []
+        
+        for dataset in gef_ratio_df.index:
+            if dataset in best_gef_variants.index:
+                variant = best_gef_variants[dataset]
+                # variant is a tuple: (CompressorName, Strategy)
+                
+                # Get Ratio
+                val_ratio = gef_ratio_df.loc[dataset, variant]
+                best_gef_ratio.append(val_ratio)
+                
+                # Get Access Speed
+                # Ensure we look up the exact same variant in the access dataframe
+                # Use the specific 2^20 partition size dataframe for access speed
+                if variant in gef_access_df_2_20.columns and dataset in gef_access_df_2_20.index:
+                     val_access = gef_access_df_2_20.loc[dataset, variant]
+                else:
+                     val_access = np.nan
+                best_gef_access.append(val_access)
+            else:
+                best_gef_ratio.append(np.nan)
+                best_gef_access.append(np.nan)
+
+        best_gef_ratio = pd.Series(best_gef_ratio, index=gef_ratio_df.index)
+        best_gef_access = pd.Series(best_gef_access, index=gef_ratio_df.index)
+        best_gef_decomp = pd.Series(np.nan, index=gef_ratio_df.index) # Decompression not available yet
 
         comp_ratio_df = pd.DataFrame(competitor_benchmarks['compression_ratio'])
         comp_decomp_df = pd.DataFrame(competitor_benchmarks['decompression_speed'])
@@ -292,7 +337,7 @@ if __name__ == "__main__":
 
         dataset_order = ["IT", "US", "ECG", "WD", "AP", "UK", "GE", "LON", "LAT", "DP", "CT", "DU", "BT", "BW", "BM", "BP"]
         gp_cols = ['Xz', 'Brotli', 'Zstd', 'Lz4', 'Snappy']
-        sp_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'Best GEF']
+        sp_cols = ['Chimp128', 'Chimp', 'TSXor', 'DAC', 'Gorilla', 'LeCo', 'ALP', 'NeaTS', 'Best GEF']
 
         final_ratio_df = comp_ratio_df.reindex(index=dataset_order, columns=gp_cols + sp_cols)
         final_decomp_df = comp_decomp_df.reindex(index=dataset_order, columns=gp_cols + sp_cols)
@@ -301,15 +346,15 @@ if __name__ == "__main__":
         # Helper for rotating column headers
         rotated_headers = " & ".join([f"\\adjustbox{{angle=45,lap=\\width-1em}}{{{col}}}" for col in gp_cols + sp_cols])
 
-        # Assemble the final LaTeX file string using sidewaystable and rotated headers
+        # Assemble the final LaTeX file string using table* and rotated headers with resizebox
         header = (
-                "% NOTE: Use \\usepackage{rotating} and \\usepackage{adjustbox} in your LaTeX preamble.\n"
-                "\\begin{sidewaystable}\n"
+                "% NOTE: Use \\usepackage{adjustbox} and \\usepackage{graphicx} in your LaTeX preamble.\n"
+                "\\begin{table*}[htbp]\n"
                 "\\caption{Compression ratio (top), decompression speed (middle), and random access speed (bottom) achieved by general-purpose and special-purpose compressors. Best in family is bold, best overall is underlined.}\n"
                 "\\label{tab:combined_benchmarks}\n"
                 "\\centering\n"
-                "\\footnotesize\n" # Use even smaller font for this very wide table
-                "\\setlength{\\tabcolsep}{3pt}\n" # Tighter column spacing
+                "\\resizebox{\\textwidth}{!}{%\n"
+                "\\setlength{\\tabcolsep}{2pt}\n"
                 f"\\begin{{tabular}}{{@{{}}l *{{{len(gp_cols) + len(sp_cols)}}}{{c}}@{{}}}}\n\\toprule\n"
                 f"\\textbf{{Dataset}} & \\multicolumn{{{len(gp_cols)}}}{{c}}{{\\textbf{{General-purpose}}}} & \\multicolumn{{{len(sp_cols)}}}{{c}}{{\\textbf{{Special-purpose}}}} \\\\\n"
                 f"\\cmidrule(lr){{2-{1+len(gp_cols)}}} \\cmidrule(l){{{2+len(gp_cols)}-{1+len(gp_cols)+len(sp_cols)}}}\n"
@@ -320,7 +365,7 @@ if __name__ == "__main__":
         decomp_tex = generate_combined_table_section(final_decomp_df, "Decompression speed (MB/s)", "max")
         access_tex = generate_combined_table_section(final_access_df, "Random access speed (MB/s)", "max")
 
-        footer = "\\bottomrule\n\\end{tabular}\n\\end{sidewaystable}\n"
+        footer = "\\bottomrule\n\\end{tabular}\n}\n\\end{table*}\n"
 
         full_tex_file = header + ratio_tex + "\\midrule\n" + decomp_tex + "\\midrule\n" + access_tex + footer
 
