@@ -51,3 +51,86 @@ competitor_benchmarks = {
         "ALP": {"IT": 5.43, "US": 6.36, "ECG": 3.78, "WD": 5.19, "AP": 5.31, "UK": 6.26, "GE": 4.23, "LON": 5.12, "LAT": 5.19, "DP": 5.56, "CT": 6.04, "DU": 7.87, "BT": 4.49, "BW": 4.38, "BM": 4.61, "BP": 4.55},
     }
 }
+
+# Placeholder trade-off points used by the scatter-plot utility.
+# Updated to include compression_throughput (estimated/placeholder values).
+competitor_tradeoff_placeholders = {
+    "Xz": {
+        "compression_ratio": 19.0,
+        "decompression_speed": 100.0,
+        "compression_throughput": 2.987327
+    },
+    "Brotli": {
+        "compression_ratio": 20.0,
+        "decompression_speed": 300.0,
+        "compression_throughput": 0.557936
+    },
+    "Zstd": {
+        "compression_ratio": 30.0,
+        "decompression_speed": 500.0,
+        "compression_throughput": 238.106500
+    },
+    "Lz4": {
+        "compression_ratio": 43.0,
+        "decompression_speed": 1500.0,
+        "compression_throughput": 629.889375
+    },
+    "Snappy": {
+        "compression_ratio": 41.0,
+        "decompression_speed": 1400.0,
+        "compression_throughput": 639.157500
+    },
+    "DAC": {
+        "compression_ratio": 33.0,
+        "decompression_speed": 950.0,
+        "compression_throughput": 207.694504
+    },
+    "ALP": {
+        "compression_ratio": 24.0,
+        "decompression_speed": 2700.0,
+        "compression_throughput": 777.834313
+    },
+    "Chimp": {
+        "compression_ratio": 64.0,
+        "decompression_speed": 700.0,
+        "compression_throughput": 520.805687
+    },
+    "Chimp128": {
+        "compression_ratio": 42.0,
+        "decompression_speed": 750.0,
+        "compression_throughput": 551.034625
+    },
+    "Gorilla": {
+        "compression_ratio": 71.0,
+        "decompression_speed": 800.0,
+        "compression_throughput": 974.464313
+    },
+    "TSXor": {
+        "compression_ratio": 45.0,
+        "decompression_speed": 780.0,
+        "compression_throughput": 48.608513
+    },
+    "LeCo": {
+        "compression_ratio": 26.0,
+        "decompression_speed": 1050.0,
+        "compression_throughput": 12.311733
+    },
+    "NeaTS": {
+        "compression_ratio": 21.2,
+        "decompression_speed": 3050.0,
+        "random_access_speed": 100.0,
+        "compression_throughput": 1.467362
+    },
+    "SNeaTS": {
+        "compression_ratio": 20.4,
+        "decompression_speed": 2900.0,
+        "random_access_speed": 90.0,
+        "compression_throughput": 0
+    },
+    "LeaTS": {
+        "compression_ratio": 22.8,
+        "decompression_speed": 1100.0,
+        "random_access_speed": 60.0,
+        "compression_throughput": 7.198840
+    },
+}

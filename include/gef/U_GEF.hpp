@@ -107,6 +107,12 @@ namespace gef {
             auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
 
             // Calculate components in bytes (theoretical)
+            // In U_GEF, if h > 0, we have B and G bitvectors.
+            // B has size N bits.
+            // G stores gaps for non-exceptions.
+            // H stores exceptions.
+            // L stores N * b bits.
+            
             size_t l_bytes = bits_to_bytes(N * b);
             size_t h_bytes = bits_to_bytes(exceptions * static_cast<size_t>(total_bits - b));
             size_t b_bits = N;
@@ -114,10 +120,18 @@ namespace gef {
             size_t g_bits = gc.sum_of_positive_gaps_without_exception + non_exc;
             size_t g_bytes = bits_to_bytes(g_bits);
 
-            // Metadata
+            // Metadata: sdsl vectors have overhead, bitvectors have overhead.
+            // Let's assume minimal overhead for estimation.
             size_t metadata = sizeof(T) + sizeof(uint8_t) + sizeof(uint8_t);
+            
+            // Add sdsl::int_vector overhead estimate (usually 8-16 bytes per vector)
+            // and bitvector overhead. 
+            // SDSL bit_vectors with rank/select support have non-trivial constant overhead (tables, pointers).
+            // For small blocks (e.g. 8192 elements), this overhead can dominate.
+            // We estimate ~2KB per bitvector (B and G) to penalize splitting when h=0 is competitive.
+            size_t struct_overhead = 2048 * 2 + 64; 
 
-            return l_bytes + h_bytes + b_bytes + g_bytes + metadata;
+            return l_bytes + h_bytes + b_bytes + g_bytes + metadata + struct_overhead;
         }
 
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point
@@ -151,9 +165,23 @@ namespace gef {
 
             size_t best_index = 0;
             size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0]);
+            
+            // Also consider h=0 (b=total_bits) as a baseline candidate
+            size_t h0_space = evaluate_space(S.size(), total_bits, total_bits, GapComputation{});
+
+            if (h0_space < best_space) {
+                 return {static_cast<uint8_t>(total_bits), GapComputation{}};
+            }
+
             const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1]);
             if (tmpSpace < best_space) {
                 best_index = gcs.size() - 1;
+                best_space = tmpSpace;
+            }
+            
+            // Explicitly check against h=0 case if not covered
+            if (h0_space < best_space) {
+                 return {static_cast<uint8_t>(total_bits), GapComputation{}};
             }
 
             return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
@@ -371,11 +399,11 @@ namespace gef {
                 L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
                 
                 const U current_high_part = element_u >> b;
-                const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
+                using WI = __int128;
+                const WI gap = static_cast<WI>(current_high_part) - static_cast<WI>(lastHighBits);
                 
                 // Exception check: gap<0 or gap>=h
-                // Optimized: cast to uint64_t handles negative check automatically
-                const bool is_exception = (static_cast<uint64_t>(gap) >= h_u64);
+                const bool is_exception = (gap < 0) || (static_cast<unsigned __int128>(gap) >= static_cast<unsigned __int128>(h));
 
                 if (is_exception) [[unlikely]] {
                     b_writer.set_ones_range(1);
@@ -516,7 +544,43 @@ namespace gef {
             while (i + 64 <= endIndex) {
                 uint64_t block = *b_blocks++;
                 if (block == 0) { // Fast path: 64 non-exceptions
-                    for (int k = 0; k < 64; ++k) {
+                    int k = 0;
+#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
+                    // Conservative SIMD
+                    if (buffer_index == 0) {
+                        if (buffer_size < GAP_BATCH) {
+                             buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
+                             buffer_index = 0;
+                             if (buffer_size == 0 && GAP_BATCH > 0) { gap_buffer[0] = static_cast<uint32_t>(gap_decoder.next()); buffer_size = 1; }
+                        }
+                        
+                        if (buffer_size == GAP_BATCH) {
+                            using simd_t = stdx::native_simd<U>;
+                            constexpr size_t simd_width = simd_t::size();
+                            for (; k + simd_width <= 64; k += simd_width) {
+                                U local_highs[simd_width];
+                                for(size_t j=0; j<simd_width; ++j) {
+                                    current_high += static_cast<U>(gap_buffer[k+j]);
+                                    local_highs[j] = current_high;
+                                }
+                                simd_t high_vec;
+                                high_vec.copy_from(local_highs, stdx::element_aligned);
+                                
+                                simd_t low_vec;
+                                if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
+                                else if (l_ptr16) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr16[i+k+j]); }
+                                else if (l_ptr32) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr32[i+k+j]); }
+                                else { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(L[i+k+j]); }
+                                
+                                simd_t res = simd_t(static_cast<U>(base)) + (low_vec | (high_vec << b));
+                                res.copy_to(output.data() + write_index + k, stdx::element_aligned);
+                            }
+                            buffer_index = k;
+                            write_index += k;
+                        }
+                    }
+#endif
+                    for (; k < 64; ++k) {
                          if (buffer_index >= buffer_size) [[unlikely]] {
                             buffer_size = gap_decoder.next_batch(gap_buffer, GAP_BATCH);
                             buffer_index = 0;

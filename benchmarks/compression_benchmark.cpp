@@ -162,7 +162,10 @@ const std::vector<size_t> PARTITION_SIZES = {
     8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304, 8388608
 };
 
-const size_t DEFAULT_PARTITION_SIZE = PARTITION_SIZES.back();
+// Partition size for restricted benchmarks
+const size_t FIXED_PARTITION_SIZE = 1048576;
+
+const size_t DEFAULT_PARTITION_SIZE = FIXED_PARTITION_SIZE; // Updated to match the restriction
 const gef::SplitPointStrategy DEFAULT_LOOKUP_STRATEGY = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;
 
 // Reduced set for faster execution
@@ -533,17 +536,24 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
         static_cast<int64_t>(gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT)
     };
+    
+    // Args for all partition sizes (Compression benchmarks)
     std::vector<int64_t> partition_args;
     partition_args.reserve(PARTITION_SIZES.size());
     for (auto partition_size : PARTITION_SIZES) {
         partition_args.push_back(static_cast<int64_t>(partition_size));
     }
+    
+    // Args for fixed partition size (Lookup, Decompression, GetElements, SizeInBytes)
+    const std::vector<int64_t> fixed_partition_args = {static_cast<int64_t>(FIXED_PARTITION_SIZE)};
+
     std::vector<int64_t> range_args;
     range_args.reserve(GET_ELEMENTS_RANGES.size());
     for (auto range : GET_ELEMENTS_RANGES) {
         range_args.push_back(static_cast<int64_t>(range));
     }
 
+    // Argument lists for all partitions (Compression)
     const std::vector<std::vector<int64_t>> throughput_strategy_lists = {
         file_idx_args,
         strategy_args,
@@ -553,15 +563,26 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         file_idx_args,
         partition_args
     };
-    const std::vector<std::vector<int64_t>> get_elements_strategy_lists = {
+
+    // Argument lists for fixed partition (Decompression, GetElements, Lookup)
+    const std::vector<std::vector<int64_t>> fixed_throughput_strategy_lists = {
         file_idx_args,
         strategy_args,
-        partition_args,
+        fixed_partition_args
+    };
+    const std::vector<std::vector<int64_t>> fixed_partition_arg_lists = {
+        file_idx_args,
+        fixed_partition_args
+    };
+    const std::vector<std::vector<int64_t>> fixed_get_elements_strategy_lists = {
+        file_idx_args,
+        strategy_args,
+        fixed_partition_args,
         range_args
     };
-    const std::vector<std::vector<int64_t>> get_elements_partition_lists = {
+    const std::vector<std::vector<int64_t>> fixed_get_elements_partition_lists = {
         file_idx_args,
-        partition_args,
+        fixed_partition_args,
         range_args
     };
 
@@ -575,7 +596,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         static_cast<int64_t>(DEFAULT_PARTITION_SIZE)
     };
 
-    // Compression
+    // Compression - Run on ALL partition sizes
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Compression)
         ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
@@ -592,34 +613,36 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgsProduct(partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
-    // Lookup
+    // Lookup - Run only on FIXED partition size (2^20) and only if NOT OpenMP
+    #ifndef _OPENMP
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Lookup)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Lookup)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Lookup)
-        ->ArgsProduct(partition_arg_lists)
+        ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
+    #endif
 
-    // Size benchmarks (single iteration, both strategies)
+    // Size benchmarks - Run only on FIXED partition size (DEFAULT_PARTITION_SIZE is updated)
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_SizeInBytes)
         ->ArgsProduct({
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
              static_cast<int64_t>(gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT)},
-            {static_cast<int64_t>(DEFAULT_PARTITION_SIZE)}
+            fixed_partition_args
         })
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
@@ -629,7 +652,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
              static_cast<int64_t>(gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT)},
-            {static_cast<int64_t>(DEFAULT_PARTITION_SIZE)}
+            fixed_partition_args
         })
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
@@ -639,48 +662,48 @@ void RegisterBenchmarksForFile(size_t file_idx) {
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
              static_cast<int64_t>(gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT)},
-            {static_cast<int64_t>(DEFAULT_PARTITION_SIZE)}
+            fixed_partition_args
         })
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_SizeInBytes)
-        ->Args(default_partition_args)
+        ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
 
-    // Decompression Throughput
+    // Decompression Throughput - Run only on FIXED partition size (2^20)
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Decompression)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Decompression)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Decompression)
-        ->ArgsProduct(throughput_strategy_lists)
+        ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Decompression)
-        ->ArgsProduct(partition_arg_lists)
+        ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
-    // Partial get_elements throughput
+    // Partial get_elements throughput - Run only on FIXED partition size (2^20)
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_GetElements)
-        ->ArgsProduct(get_elements_strategy_lists)
+        ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_GetElements)
-        ->ArgsProduct(get_elements_strategy_lists)
+        ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_GetElements)
-        ->ArgsProduct(get_elements_strategy_lists)
+        ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_GetElements)
-        ->ArgsProduct(get_elements_partition_lists)
+        ->ArgsProduct(fixed_get_elements_partition_lists)
         ->ArgNames({"file_idx", "partition_size", "range"});
 }
 #pragma endregion

@@ -111,6 +111,13 @@ namespace gef {
             auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
 
             // Calculate components in bytes (theoretical)
+            // B_GEF components: L, H, B, G+, G-
+            // L size: N * b bits
+            // H size: exceptions * (total_bits - b) bits
+            // B size: N bits
+            // G+ size: g_plus_bits
+            // G- size: g_minus_bits
+            
             size_t l_bytes = bits_to_bytes(N * b);
             size_t h_bytes = bits_to_bytes(exceptions * static_cast<size_t>(total_bits - b));
             size_t b_bits = N;
@@ -122,8 +129,12 @@ namespace gef {
 
             // Metadata
             size_t metadata = sizeof(T) + sizeof(h) + sizeof(b);
+            
+            // Add structural overhead for vectors (sdsl::int_vector has overhead, and 3 bit vectors)
+            // SDSL support structures are heavy. ~2KB per vector (3 vectors) -> ~6KB.
+            size_t struct_overhead = 6144 + 64;
 
-            return l_bytes + h_bytes + b_bytes + g_plus_bytes + g_minus_bytes + metadata;
+            return l_bytes + h_bytes + b_bytes + g_plus_bytes + g_minus_bytes + metadata + struct_overhead;
         }
 
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point
@@ -157,9 +168,18 @@ namespace gef {
 
             size_t best_index = 0;
             size_t best_space = evaluate_space(S.size(), total_bits, min_b, gcs[0]);
+            
+            // Also consider h=0 (b=total_bits) as a baseline candidate
+            size_t h0_space = evaluate_space(S.size(), total_bits, total_bits, GapComputation{});
+            
             const auto tmpSpace = evaluate_space(S.size(), total_bits, max_b, gcs[gcs.size() - 1]);
             if (tmpSpace < best_space) {
                 best_index = gcs.size() - 1;
+                best_space = tmpSpace;
+            }
+            
+            if (h0_space < best_space) {
+                 return {static_cast<uint8_t>(total_bits), GapComputation{}};
             }
 
             return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
@@ -437,10 +457,11 @@ namespace gef {
               L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
               
               const U current_high_part = element_u >> b;
-              const int64_t gap = static_cast<int64_t>(current_high_part) - static_cast<int64_t>(lastHighBits);
+              using WI = __int128;
+              const WI gap = static_cast<WI>(current_high_part) - static_cast<WI>(lastHighBits);
               const uint64_t abs_gap = (gap >= 0) ? static_cast<uint64_t>(gap) : static_cast<uint64_t>(-gap);
               
-              const bool is_exception = ((abs_gap + 2) > hbits_u64);
+              const bool is_exception = ((static_cast<unsigned __int128>(abs_gap) + 2) > static_cast<unsigned __int128>(hbits_u64));
 
               if (is_exception) [[unlikely]] {
                   b_writer.set_ones_range(1);
@@ -600,35 +621,52 @@ namespace gef {
             while (i + 64 <= endIndex) {
                 uint64_t block = *b_blocks++;
                 if (block == 0) {
+                    // Fast path: 64 non-exceptions
                     int k = 0;
 #ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
-                    using simd_t = stdx::native_simd<U>;
-                    const size_t simd_width = simd_t::size();
-                    if constexpr (std::is_arithmetic_v<T>) {
-                        uint32_t p_buf[simd_width];
-                        uint32_t n_buf[simd_width];
-                        U high_parts[simd_width];
-                        U low_parts[simd_width];
-                        for (; k + simd_width <= 64; k += simd_width) {
-                            size_t pc = plus_decoder.next_batch(p_buf, simd_width);
-                            while(pc < simd_width) p_buf[pc++] = static_cast<uint32_t>(plus_decoder.next());
-                            size_t nc = minus_decoder.next_batch(n_buf, simd_width);
-                            while(nc < simd_width) n_buf[nc++] = static_cast<uint32_t>(minus_decoder.next());
-                            for(size_t s=0; s<simd_width; ++s) {
-                                high_signed += static_cast<long long>(p_buf[s]);
-                                high_signed -= static_cast<long long>(n_buf[s]);
-                                high_parts[s] = static_cast<U>(high_signed);
+                    // Conservative SIMD: only if aligned and full buffers available
+                    // This ensures we don't read past valid data or handle complex partial buffer cases
+                    if (pos_index == 0 && neg_index == 0) {
+                         // Try to ensure we have full buffers
+                        if (pos_size < GAP_BATCH) {
+                            pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
+                            pos_index = 0;
+                            if (pos_size == 0 && GAP_BATCH > 0) { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; }
+                        }
+                        if (neg_size < GAP_BATCH) {
+                            neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
+                            neg_index = 0;
+                            if (neg_size == 0 && GAP_BATCH > 0) { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; }
+                        }
+
+                        if (pos_size == GAP_BATCH && neg_size == GAP_BATCH) {
+                            using simd_t = stdx::native_simd<U>;
+                            constexpr size_t simd_width = simd_t::size();
+                            for (; k + simd_width <= 64; k += simd_width) {
+                                // Compute high values (prefix sum dependency)
+                                U local_highs[simd_width];
+                                for(size_t j=0; j<simd_width; ++j) {
+                                    high_signed += static_cast<long long>(pos_buffer[k+j]);
+                                    high_signed -= static_cast<long long>(neg_buffer[k+j]);
+                                    local_highs[j] = static_cast<U>(high_signed);
+                                }
+                                simd_t high_vec;
+                                high_vec.copy_from(local_highs, stdx::element_aligned);
+
+                                simd_t low_vec;
+                                if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
+                                else if (l_ptr16) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr16[i+k+j]); }
+                                else if (l_ptr32) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr32[i+k+j]); }
+                                else { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(L[i+k+j]); }
+
+                                simd_t res = simd_t(static_cast<U>(base)) + (low_vec | (high_vec << b));
+                                res.copy_to(output.data() + write_index + k, stdx::element_aligned);
                             }
-                            if (l_ptr8) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr8[i+k+s]);
-                            else if (l_ptr16) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr16[i+k+s]);
-                            else if (l_ptr32) for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(l_ptr32[i+k+s]);
-                            else for(size_t s=0; s<simd_width; ++s) low_parts[s] = static_cast<U>(L[i+k+s]);
-                            simd_t v_high, v_low;
-                            v_high.copy_from(high_parts, stdx::element_aligned);
-                            v_low.copy_from(low_parts, stdx::element_aligned);
-                            simd_t v_res = simd_t(static_cast<U>(base)) + (v_high << b) + v_low;
-                            v_res.copy_to(output.data() + write_index, stdx::element_aligned);
-                            write_index += simd_width;
+                            // Update state
+                            pos_index = k; 
+                            neg_index = k;
+                            write_index += k;
+                            // If we processed the whole block (k=64), the loop below will not run.
                         }
                     }
 #endif

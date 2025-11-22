@@ -2,6 +2,7 @@
 import json
 import os
 import glob
+import argparse
 from collections import defaultdict
 import pandas as pd
 import numpy as np
@@ -15,7 +16,16 @@ except ImportError:
     print("Warning: 'competitor_data.py' not found. Skipping generation of combined table.")
 
 
-def parse_gef_data(directory):
+def parse_partition_size(benchmark_name):
+    """Extract partition size from benchmark name."""
+    parts = benchmark_name.split('/')
+    for part in parts:
+        if part.startswith('partition_size:'):
+            return int(part.split(':')[1])
+    return None
+
+
+def parse_gef_data(directory, target_partition_size=None):
     """
     Parses the GEF-specific benchmark data from JSON files.
     This function is for the GEF-only tables.
@@ -24,7 +34,7 @@ def parse_gef_data(directory):
         "RLE_GEF_Compression": "RLE-GEF", "RLE_GEF_Lookup": "RLE-GEF",
         "U_GEF_Compression": "U-GEF", "U_GEF_Lookup": "U-GEF",
         "B_GEF_Compression": "B-GEF", "B_GEF_Lookup": "B-GEF",
-        "B_GEF_NO_RLE_Compression": "B'-GEF", "B_GEF_NO_RLE_Lookup": "B'-GEF",
+        "B_GEF_NO_RLE_Compression": r"$\mathrm{B^*-GEF}$", "B_GEF_NO_RLE_Lookup": r"$\mathrm{B^*-GEF}$",
     }
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     json_files = glob.glob(os.path.join(directory, '*.json'))
@@ -34,16 +44,71 @@ def parse_gef_data(directory):
 
     for file_path in json_files:
         dataset_name = os.path.basename(file_path).split('.')[0]
+        
+        # Skip multi-threaded (OpenMP) results. Tables should use single-threaded data.
+        if dataset_name.endswith('_with_omp'):
+            continue
+
+        # Handle _no_omp suffix in dataset name
+        if dataset_name.endswith('_no_omp'):
+            dataset_name = dataset_name.replace('_no_omp', '')
+
         with open(file_path, 'r') as f:
-            content = json.load(f)
+            try:
+                # Some benchmark files have a preamble line before the JSON object.
+                # We need to find the start of the JSON object.
+                file_content = f.read()
+                json_start_idx = file_content.find('{')
+                if json_start_idx != -1:
+                    content = json.loads(file_content[json_start_idx:])
+                else:
+                    print(f"Warning: No JSON object found in {file_path}")
+                    continue
+            except json.JSONDecodeError as e:
+                print(f"Warning: Could not parse {file_path}: {e}")
+                continue
+
         for bench in content.get('benchmarks', []):
+            # Filter by partition size if specified
+            if target_partition_size is not None:
+                p_size = parse_partition_size(bench['name'])
+                # If we can't find a partition size in the name, it might be one of the aggregate runs or differently named.
+                # However, for standard compression/lookup benchmarks in this suite, partition size is in the name.
+                if p_size is not None and p_size != target_partition_size:
+                    continue
+
             compressor_raw = bench['name'].split('/')[1]
+            # Map raw compressor name to the base name (e.g. "B_GEF_Compression" -> "B-GEF")
             compressor_base = compressor_name_map.get(compressor_raw, compressor_raw)
-            strategy = bench.get('label', '').split('/')[1] if len(bench.get('label', '').split('/')) > 1 else 'Standard'
+            
+            # Strategy extraction needs to be robust.
+            # Example label: "AP.bin/SDSL/APPROXIMATE/8192" -> strategy is "APPROXIMATE"
+            # Example label: "AP.bin/SDSL/8192" -> no strategy (RLE) -> default to "Standard" or handle appropriately.
+            label_parts = bench.get('label', '').split('/')
+            strategy = 'Standard'
+            if len(label_parts) > 2:
+                # Check if the 3rd part is a known strategy or a number (partition size)
+                potential_strategy = label_parts[2]
+                if potential_strategy == "BRUTE_FORCE":
+                    strategy = "Optimal"
+                elif potential_strategy in ["APPROXIMATE", "OPTIMAL", "Standard"]:
+                     strategy = potential_strategy if potential_strategy != "OPTIMAL" else "Optimal"
+                else:
+                     # Likely RLE or similar where strategy is not explicit in the same position
+                     strategy = 'Standard'
+            
+            # Force RLE-GEF to have 'Optimal' strategy label as requested
+            if compressor_base == "RLE-GEF":
+                strategy = "Optimal"
+
+            # Debugging print (can be removed later)
+            # print(f"Found: {dataset_name}, {compressor_base}, {strategy}")
 
             if 'bpi' in bench:
                 data['compression_ratio'][dataset_name][compressor_base][strategy] = (bench['bpi'] / 64) * 100
             if 'compression_throughput_MBs' in bench:
+                # Note: The JSON key says _MBs, but in these files (see values like 1.24e+08), it is actually Bytes/s.
+                # We divide by 1e6 to get MB/s.
                 data['comp_throughput'][dataset_name][compressor_base][strategy] = bench['compression_throughput_MBs'] / 1e6
             if 'items_per_second' in bench:
                 data['random_access_speed'][dataset_name][compressor_base][strategy] = (bench['items_per_second'] * 8) / 1e6
@@ -65,7 +130,7 @@ def generate_gef_table(df, caption, label, unit_name, highlight_best=None, compr
     if df.empty: return f"% No data for {caption}\n"
     compressors_from_data = df.columns.get_level_values(0).unique()
     compressors = [c for c in compressor_order if c in compressors_from_data] if compressor_order else compressors_from_data
-    strategy_order = ['APPROXIMATE', 'BINARY_SEARCH', 'BRUTE_FORCE', 'Standard']
+    strategy_order = ['APPROXIMATE', 'Optimal']
 
     latex_string = (
         f"\\begin{{table*}}[htbp]\n"
@@ -101,6 +166,7 @@ def generate_gef_table(df, caption, label, unit_name, highlight_best=None, compr
         if num_strategies == 0: continue
         for strat in present_strategies:
             strat_display = strat.replace('_', ' ').title() if strat != 'Standard' else ' '
+            # If strat is 'Optimal', title() keeps it 'Optimal'.
             latex_string += f" & {strat_display}"
         if num_strategies > 1:
             cmidrules += f"\\cmidrule(lr){{{col_idx+1}-{col_idx+num_strategies}}} "
@@ -175,19 +241,29 @@ def generate_combined_table_section(df, title, highlight_mode):
     return latex_string
 
 if __name__ == "__main__":
-    benchmark_dir = 'benchmark_results'
-    gef_output_dir = 'latex_tables'
-    combined_output_dir = 'latex_tables'
+    parser = argparse.ArgumentParser(description='Generate benchmark tables.')
+    parser.add_argument('benchmark_dir', nargs='?', default='benchmark_results', help='Directory containing benchmark JSON files')
+    parser.add_argument('output_dir', nargs='?', default='latex_tables', help='Directory to save LaTeX tables')
+    parser.add_argument('--partition_size', type=int, default=1048576, help='Partition size to filter (default: 1048576)')
+    
+    args = parser.parse_args()
+    
+    benchmark_dir = args.benchmark_dir
+    gef_output_dir = args.output_dir
+    combined_output_dir = args.output_dir
 
     if not os.path.exists(gef_output_dir):
         os.makedirs(gef_output_dir)
         print(f"Created output directory: {gef_output_dir}")
-    if not os.path.exists(combined_output_dir):
-        os.makedirs(combined_output_dir)
+    # combined_output_dir is same as gef_output_dir
+
+    print(f"Processing benchmarks from: {benchmark_dir}")
+    print(f"Outputting tables to:     {gef_output_dir}")
+    print(f"Filtering partition size: {args.partition_size}")
 
     # --- PART 1: Generate GEF-only tables ---
-    gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir)
-    gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", "B'-GEF"]
+    gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir, args.partition_size)
+    gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", r"$\mathrm{B^*-GEF}$"]
 
     print("Generating GEF-only tables with compact formatting...")
     with open(os.path.join(gef_output_dir, "table_compression_ratio.tex"), 'w') as f:

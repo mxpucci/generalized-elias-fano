@@ -57,7 +57,10 @@ GapComputation variation_of_original_vec(
     // Manual SIMD adds complexity without much benefit for modern compilers
     for (size_t i = 1; i < n; ++i) {
         // Use signed arithmetic for correct handling of negative values
-        const int64_t diff = static_cast<int64_t>(vec[i]) - static_cast<int64_t>(vec[i - 1]);
+        // Using __int128 to prevent overflow when calculating diff of uint64_t values that are far apart
+        // (e.g. 0 and 2^64-1) which would wrap in int64_t.
+        using WI = __int128;
+        const WI diff = static_cast<WI>(vec[i]) - static_cast<WI>(vec[i - 1]);
 
         // Branchless computation - compiler can vectorize this
         const bool is_positive = diff >= 0;
