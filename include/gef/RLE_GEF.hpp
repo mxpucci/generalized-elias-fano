@@ -40,6 +40,7 @@ namespace gef {
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
         uint8_t h;
+        size_t m_num_elements;
 
         /**
          * The minimum of the encoded sequence, so that we store the shifted sequence
@@ -130,7 +131,7 @@ namespace gef {
         ~RLE_GEF() override = default;
 
         // Default constructor
-        RLE_GEF() : h(0), b(0), base(0) {
+        RLE_GEF() : h(0), b(0), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
@@ -140,6 +141,7 @@ namespace gef {
               L(other.L),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
                 B = other.B->clone();
@@ -158,6 +160,7 @@ namespace gef {
             swap(first.L, second.L);
             swap(first.h, second.h);
             swap(first.b, second.b);
+            swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
         }
 
@@ -178,9 +181,11 @@ namespace gef {
               L(std::move(other.L)),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             // Leave the moved-from object in a valid, empty state
             other.h = 0;
+            other.m_num_elements = 0;
             other.base = T{};
         }
 
@@ -193,6 +198,7 @@ namespace gef {
                 L = std::move(other.L);
                 h = other.h;
                 b = other.b;
+                m_num_elements = other.m_num_elements;
                 base = other.base;
             }
             return *this;
@@ -203,6 +209,8 @@ namespace gef {
         RLE_GEF(std::shared_ptr<IBitVectorFactory> bit_vector_factory,
                 const std::vector<T> &S) {
             // [Constructor implementation unchanged]
+            const size_t N = S.size();
+            m_num_elements = N;
             if (S.empty()) {
                 b = 0;
                 h = 0;
@@ -224,14 +232,26 @@ namespace gef {
                                     /* min= */ base);
             h = total_bits - b;
 
-            L = sdsl::int_vector<>(S.size(), 0, b);
+            if (b > 0) {
+                L = sdsl::int_vector<>(S.size(), 0, b);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+
             if (h == 0) {
                 // All in L - use unsigned arithmetic for efficiency
                 using U = std::make_unsigned_t<T>;
-                for (size_t i = 0; i < S.size(); i++) {
-                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
-                        static_cast<U>(S[i]) - static_cast<U>(base)
-                    );
+                
+                if (b > 0 && L.size() != S.size()) {
+                    L = sdsl::int_vector<>(S.size(), 0, b);
+                }
+
+                if (b > 0) {
+                    for (size_t i = 0; i < S.size(); i++) {
+                        L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
+                            static_cast<U>(S[i]) - static_cast<U>(base)
+                        );
+                    }
                 }
                 B = nullptr;
                 H.resize(0);
@@ -247,13 +267,15 @@ namespace gef {
             
             // Precompute low mask once - b < total_bits is guaranteed by h > 0
             using U = std::make_unsigned_t<T>;
-            const U low_mask = ((U(1) << b) - 1);
+            const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
             
             for (size_t i = 0; i < S.size(); ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
                 // Direct shift - b < total_bits is guaranteed by early h==0 return
                 const T highBits = static_cast<T>(element_u >> b);
-                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                if (b > 0) {
+                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                }
                 const bool is_new_run = (i == 0) | (highBits != lastHighBits);
                 if (is_new_run) {
                     b_writer.set_ones_range(1);
@@ -315,7 +337,9 @@ namespace gef {
                 if constexpr (std::is_arithmetic_v<T>) {
                     while (i + simd_width <= endIndex) {
                         simd_t low_vec;
-                        if (l_ptr8) {
+                        if (b == 0) {
+                            low_vec = 0;
+                        } else if (l_ptr8) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
                         } else if (l_ptr16) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
@@ -340,29 +364,35 @@ namespace gef {
                     }
                 }
 #endif
-                // Initialize bit reader state for L for remaining
-                size_t l_bit_pos = i * b;
-                size_t word_idx = l_bit_pos / 64;
-                size_t bit_off = l_bit_pos % 64;
+                if (b > 0) {
+                    // Initialize bit reader state for L for remaining
+                    size_t l_bit_pos = i * b;
+                    size_t word_idx = l_bit_pos / 64;
+                    size_t bit_off = l_bit_pos % 64;
 
-                for (; i < endIndex; ++i) {
-                    uint64_t val = (l_data[word_idx] >> bit_off);
-                    if (bit_off + b > 64) {
-                        val |= (l_data[word_idx + 1] << (64 - bit_off));
+                    for (; i < endIndex; ++i) {
+                        uint64_t val = (l_data[word_idx] >> bit_off);
+                        if (bit_off + b > 64) {
+                            val |= (l_data[word_idx + 1] << (64 - bit_off));
+                        }
+                        val &= mask;
+                        
+                        output[write_index++] = base_val + static_cast<T>(val);
+                        
+                        bit_off += b;
+                        if (bit_off >= 64) {
+                            bit_off -= 64;
+                            word_idx++;
+                        }
                     }
-                    val &= mask;
-                    
-                    output[write_index++] = base_val + static_cast<T>(val);
-                    
-                    bit_off += b;
-                    if (bit_off >= 64) {
-                        bit_off -= 64;
-                        word_idx++;
+                } else {
+                    for (; i < endIndex; ++i) {
+                        output[write_index++] = base_val;
                     }
                 }
                 return write_index;
             }
-        
+            
             // --- Optimization Start ---
         
             // 1. Single Rank Call
@@ -418,7 +448,9 @@ namespace gef {
                 if constexpr (std::is_arithmetic_v<T>) {
                     while (current_pos + simd_width <= run_limit) {
                         simd_t low_vec;
-                        if (l_ptr8) {
+                        if (b == 0) {
+                            low_vec = 0;
+                        } else if (l_ptr8) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[current_pos+k]);
                         } else if (l_ptr16) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[current_pos+k]);
@@ -467,19 +499,21 @@ namespace gef {
 
                 // Tight scalar loop
                 for (; current_pos < run_limit; ++current_pos) {
-                    uint64_t val = (l_data[word_idx] >> bit_off);
-                    if (bit_off + b > 64) {
-                        val |= (l_data[word_idx + 1] << (64 - bit_off));
+                    uint64_t val = 0;
+                    if (b > 0) {
+                        val = (l_data[word_idx] >> bit_off);
+                        if (bit_off + b > 64) {
+                            val |= (l_data[word_idx + 1] << (64 - bit_off));
+                        }
+                        val &= mask;
+                        bit_off += b;
+                        if (bit_off >= 64) {
+                            bit_off -= 64;
+                            word_idx++;
+                        }
                     }
-                    val &= mask;
 
                     output[write_index++] = current_base_plus_high + static_cast<T>(val);
-
-                    bit_off += b;
-                    if (bit_off >= 64) {
-                        bit_off -= 64;
-                        word_idx++;
-                    }
                 }
         
                 if (current_pos == next_one_pos && current_pos < endIndex) {
@@ -495,11 +529,33 @@ namespace gef {
         }
 
         T operator[](size_t index) const override {
-            if (h == 0) [[unlikely]]
+            // Case 1: No high bits are used (h=0).
+            // All information is stored in the L vector. Reconstruction is trivial.
+            if (h == 0) [[unlikely]] {
+                if (b == 0) return base;
                 return base + L[index];
+            }
+
+            using U = std::make_unsigned_t<T>;
+            const U low = (b > 0) ? static_cast<U>(L[index]) : 0;
+
+            // Helper to compute cumulative gaps: sum of first 'count' gaps
+            const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
+                return (count == 0) ? 0 : bv->select0(count) - (count - 1);
+            };
+
+            // Check if this position is an exception
+            // Optimization: Use raw bit access for B
+            const uint64_t* b_data = B->raw_data_ptr();
+            bool is_exception = (b_data[index >> 6] >> (index & 63)) & 1;
+
+            if (is_exception) [[unlikely]] {
+                const size_t exception_rank = B->rank(index + 1);
+                const U high_val = static_cast<U>(H[exception_rank - 1]);
+                return base + static_cast<T>(low | (high_val << b));
+            }
 
             const size_t rank = B->rank(index + 1);
-            const T low = L[index];
             const T high_shifted = H[rank - 1] << b;
             return base + (low | high_shifted);
         }
@@ -510,8 +566,13 @@ namespace gef {
             }
             ofs.write(reinterpret_cast<const char *>(&h), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&b), sizeof(uint8_t));
+            ofs.write(reinterpret_cast<const char *>(&m_num_elements), sizeof(m_num_elements));
             ofs.write(reinterpret_cast<const char *>(&base), sizeof(T));
-            L.serialize(ofs);
+            
+            if (b > 0) {
+                L.serialize(ofs);
+            }
+            
             H.serialize(ofs);
             if (h > 0)
                 B->serialize(ofs);
@@ -520,8 +581,15 @@ namespace gef {
         void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
+            ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));
-            L.load(ifs);
+            
+            if (b > 0) {
+                L.load(ifs);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+            
             H.load(ifs);
             if (h > 0) {
                 B = bit_vector_factory->from_stream(ifs);
@@ -533,7 +601,7 @@ namespace gef {
         }
 
         [[nodiscard]] size_t size() const override {
-            return L.size();
+            return m_num_elements;
         }
 
         [[nodiscard]] size_t size_in_bytes_without_supports() const override {

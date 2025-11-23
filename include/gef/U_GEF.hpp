@@ -75,6 +75,7 @@ namespace gef {
         uint8_t b;
         uint8_t h;
         bool reversed;
+        size_t m_num_elements; // Explicitly store size since L might be empty if b=0
 
         /**
         * The minimum of the encoded sequence, so that we store the shifted sequence
@@ -298,7 +299,7 @@ namespace gef {
         ~U_GEF() override = default;
 
         // Default constructor
-        U_GEF() : h(0), b(0), reversed(false), base(0) {
+        U_GEF() : h(0), b(0), reversed(false), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
@@ -309,6 +310,7 @@ namespace gef {
               h(other.h),
               b(other.b),
               reversed(other.reversed),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
                 B = other.B->clone();
@@ -333,6 +335,7 @@ namespace gef {
             swap(first.h, second.h);
             swap(first.b, second.b);
             swap(first.reversed, second.reversed);
+            swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
             swap(first.G, second.G);
         }
@@ -356,9 +359,11 @@ namespace gef {
               h(other.h),
               b(other.b),
               reversed(other.reversed),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             // Leave the moved-from object in a valid, empty state
             other.h = 0;
+            other.m_num_elements = 0;
             other.base = T{};
         }
 
@@ -372,6 +377,7 @@ namespace gef {
                 h = other.h;
                 b = other.b;
                 reversed = other.reversed;
+                m_num_elements = other.m_num_elements;
                 base = other.base;
             }
             return *this;
@@ -383,6 +389,7 @@ namespace gef {
               SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
             // [Constructor unchanged]
             const size_t N = S.size();
+            m_num_elements = N;
             if (N == 0) {
                 b = 0;
                 h = 0;
@@ -405,15 +412,28 @@ namespace gef {
             }
             h = (b >= total_bits) ? 0 : static_cast<uint8_t>(total_bits - b);
 
-            L = sdsl::int_vector<>(N, 0, b);
+            if (b > 0) {
+                L = sdsl::int_vector<>(N, 0, b);
+            } else {
+                // Leave L empty if b=0 to avoid 64-bit width default
+                L = sdsl::int_vector<>(0);
+            }
 
             if (h == 0) {
                 // All in L - use unsigned arithmetic for efficiency
                 using U = std::make_unsigned_t<T>;
-                for (size_t i = 0; i < N; ++i) {
-                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
-                        static_cast<U>(S[i]) - static_cast<U>(base)
-                    );
+                // Re-allocate L if it was skipped above (though b >= total_bits > 0 usually)
+                // If total_bits=0 (all elements same), b=0, h=0. L empty is correct.
+                if (b > 0 && L.size() != N) {
+                     L = sdsl::int_vector<>(N, 0, b);
+                }
+                
+                if (b > 0) {
+                    for (size_t i = 0; i < N; ++i) {
+                        L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
+                            static_cast<U>(S[i]) - static_cast<U>(base)
+                        );
+                    }
                 }
                 B = nullptr;
                 G = nullptr;
@@ -444,7 +464,7 @@ namespace gef {
             U lastHighBits = 0;
             
             // Precompute low mask once - b < total_bits is guaranteed by h > 0
-            const U low_mask = ((U(1) << b) - 1);
+            const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
 
             uint64_t* b_data = B->raw_data_ptr();
             FastBitWriter b_writer(b_data);
@@ -455,7 +475,9 @@ namespace gef {
             // Handle first element separately to avoid i==0 check in loop
             if (N > 0) {
                 const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
-                L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                if (b > 0) {
+                    L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                }
                 const U current_high_part = element_u >> b;
                 
                 // i=0 is always an exception
@@ -466,7 +488,9 @@ namespace gef {
 
             for (size_t i = 1; i < N; ++i) {
                 const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-                L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                if (b > 0) {
+                    L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+                }
                 
                 const U current_high_part = element_u >> b;
                 using WI = __int128;
@@ -530,7 +554,10 @@ namespace gef {
                 if constexpr (std::is_arithmetic_v<T>) {
                     while (i + simd_width <= endIndex) {
                         simd_t low_vec;
-                        if (l_ptr8) {
+                        // If b=0, low_vec is 0. (Though h=0 b=0 implies total_bits=0, trivial case)
+                        if (b == 0) {
+                            low_vec = 0;
+                        } else if (l_ptr8) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
                         } else if (l_ptr16) {
                             for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
@@ -551,7 +578,9 @@ namespace gef {
                 }
 #endif
                 for (; i < endIndex; ++i) {
-                    output[write_index++] = base_value + L[i];
+                    U low = 0;
+                    if (b > 0) low = static_cast<U>(L[i]);
+                    output[write_index++] = base_value + low;
                 }
                 return write_index;
             }
@@ -619,7 +648,7 @@ namespace gef {
                     if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                     else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
-                const U low = static_cast<U>(L[i]);
+                const U low = (b > 0) ? static_cast<U>(L[i]) : 0;
                 output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
                 ++i;
             }
@@ -653,7 +682,8 @@ namespace gef {
                                 high_vec.copy_from(local_highs, stdx::element_aligned);
                                 
                                 simd_t low_vec;
-                                if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
+                                if (b == 0) { low_vec = 0; }
+                                else if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
                                 else if (l_ptr16) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr16[i+k+j]); }
                                 else if (l_ptr32) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr32[i+k+j]); }
                                 else { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(L[i+k+j]); }
@@ -678,11 +708,13 @@ namespace gef {
                         if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                         else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         
-                        U low;
-                        if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
-                        else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
-                        else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
-                        else low = static_cast<U>(L[i + k]);
+                        U low = 0;
+                        if (b > 0) {
+                            if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
+                            else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
+                            else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
+                            else low = static_cast<U>(L[i + k]);
+                        }
                         
                         output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
                     }
@@ -704,11 +736,13 @@ namespace gef {
                             else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         }
                         
-                        U low;
-                        if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
-                        else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
-                        else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
-                        else low = static_cast<U>(L[i + k]);
+                        U low = 0;
+                        if (b > 0) {
+                            if (l_ptr8) low = static_cast<U>(l_ptr8[i + k]);
+                            else if (l_ptr16) low = static_cast<U>(l_ptr16[i + k]);
+                            else if (l_ptr32) low = static_cast<U>(l_ptr32[i + k]);
+                            else low = static_cast<U>(L[i + k]);
+                        }
 
                         output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
                      }
@@ -732,7 +766,7 @@ namespace gef {
                     if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                     else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
-                const U low = static_cast<U>(L[i]);
+                const U low = (b > 0) ? static_cast<U>(L[i]) : 0;
                 output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
                 ++i;
             }
@@ -744,11 +778,12 @@ namespace gef {
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
             if (h == 0) [[unlikely]] {
+                if (b == 0) return base;
                 return base + L[index];
             }
 
             using U = std::make_unsigned_t<T>;
-            const U low = static_cast<U>(L[index]);
+            const U low = (b > 0) ? static_cast<U>(L[index]) : 0;
 
             // Helper to compute cumulative gaps: sum of first 'count' gaps
             const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
@@ -798,8 +833,12 @@ namespace gef {
             ofs.write(reinterpret_cast<const char *>(&h), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&b), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&reversed), sizeof(bool));
+            ofs.write(reinterpret_cast<const char *>(&m_num_elements), sizeof(m_num_elements));
             ofs.write(reinterpret_cast<const char *>(&base), sizeof(T));
-            L.serialize(ofs);
+            
+            if (b > 0) {
+                L.serialize(ofs);
+            }
             H.serialize(ofs);
             if (h > 0) {
                 B->serialize(ofs);
@@ -811,8 +850,15 @@ namespace gef {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&reversed), sizeof(bool));
+            ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));
-            L.load(ifs);
+            
+            if (b > 0) {
+                L.load(ifs);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+            
             H.load(ifs);
             if (h > 0) {
                 B = bit_vector_factory->from_stream(ifs);
@@ -828,7 +874,7 @@ namespace gef {
         }
 
         [[nodiscard]] size_t size() const override {
-            return L.size();
+            return m_num_elements;
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
@@ -871,25 +917,37 @@ namespace gef {
             size_t total_bytes = 0;
             
             // L vector: use width * size formula (theoretical)
-            total_bytes += bits_to_bytes(L.size() * L.width());
+            size_t l_sz = bits_to_bytes(L.size() * L.width());
+            total_bytes += l_sz;
             
             // H vector: use width * size formula (theoretical)
-            total_bytes += bits_to_bytes(H.size() * H.width());
+            size_t h_sz = bits_to_bytes(H.size() * H.width());
+            total_bytes += h_sz;
             
             // B, G bit vectors (if they exist)
+            size_t b_sz = 0;
+            size_t g_sz = 0;
             if (B) {
-                total_bytes += bits_to_bytes(B->size());
+                b_sz = bits_to_bytes(B->size());
+                total_bytes += b_sz;
             }
             if (G) {
-                total_bytes += bits_to_bytes(G->size());
+                g_sz = bits_to_bytes(G->size());
+                total_bytes += g_sz;
             }
             
             // Fixed metadata
-            total_bytes += sizeof(base);
-            total_bytes += sizeof(h);
-            total_bytes += sizeof(b);
-            total_bytes += sizeof(reversed);
+            size_t meta = sizeof(base) + sizeof(h) + sizeof(b) + sizeof(reversed);
+            total_bytes += meta;
             
+            static int print_counter = 0;
+            if (print_counter++ < 5) {
+                std::cout << "TheoSize: b=" << (int)b << " h=" << (int)h 
+                          << " L=" << l_sz << " H=" << h_sz 
+                          << " B=" << b_sz << " G=" << g_sz 
+                          << " Meta=" << meta << " Total=" << total_bytes << std::endl;
+            }
+
             return total_bytes;
         }
 

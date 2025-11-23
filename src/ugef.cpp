@@ -18,8 +18,12 @@
 template<typename T>
 struct B_GEF_Wrapper : public gef::U_GEF<T> {
     // Constructor for compression
-    B_GEF_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::U_GEF<T>(factory, std::vector<T>(data.data(), data.data() + data.size())) {}
+    B_GEF_Wrapper(gef::Span<const T> data,
+                  std::shared_ptr<IBitVectorFactory> factory,
+                  gef::SplitPointStrategy strategy = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT)
+            : gef::U_GEF<T>(factory,
+                            std::vector<T>(data.data(), data.data() + data.size()),
+                            strategy) {}
 
     // Default constructor for loading from stream
     B_GEF_Wrapper() : gef::U_GEF<T>() {}
@@ -44,12 +48,19 @@ int main(const int argc, char* argv[]) {
         auto factory = std::make_shared<SDSLBitVectorFactory>();
         double input_size_mb = static_cast<double>(input_data.size() * sizeof(int64_t)) / (1024.0 * 1024.0);
 
-        std::vector<size_t> k_values = {8192};
+        constexpr size_t partition_size = static_cast<size_t>(1ULL << 20);
+        const auto split_strategy = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;
+        std::vector<size_t> k_values = {partition_size};
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
-            gef::UniformedPartitioner<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> partitioned_gef(input_data, k, factory);
-            double partitioned_size_mb = partitioned_gef.size_in_megabytes();
+            gef::UniformedPartitioner<int64_t,
+                                      B_GEF_Wrapper<int64_t>,
+                                      std::shared_ptr<IBitVectorFactory>,
+                                      gef::SplitPointStrategy>
+                partitioned_gef(input_data, k, factory, split_strategy);
+            // double partitioned_size_mb = partitioned_gef.size_in_megabytes();
+            double partitioned_size_mb = static_cast<double>(partitioned_gef.theoretical_size_in_bytes()) / (1024.0 * 1024.0);
             best_compression = std::min(best_compression, (100 * partitioned_size_mb) / input_size_mb);
         }
 

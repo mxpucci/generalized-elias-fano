@@ -33,7 +33,6 @@ namespace stdx = std::experimental;
 namespace gef {
     template<typename T>
     class B_GEF : public IGEF<T> {
-        // ... [Private members omitted, same as before] ...
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
             using WI = __int128;
@@ -73,6 +72,7 @@ namespace gef {
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
         uint8_t h;
+        size_t m_num_elements; // Explicitly store size since L might be empty if b=0
 
         /**
          * The minimum of the encoded sequence, so that we store the shifted sequence
@@ -238,7 +238,7 @@ namespace gef {
         ~B_GEF() override = default;
 
         // Default constructor
-        B_GEF() : h(0), b(0), base(0) {
+        B_GEF() : h(0), b(0), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
@@ -248,6 +248,7 @@ namespace gef {
               L(other.L),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
                 B = other.B->clone();
@@ -276,6 +277,7 @@ namespace gef {
             swap(first.L, second.L);
             swap(first.h, second.h);
             swap(first.b, second.b);
+            swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
             swap(first.G_plus, second.G_plus);
             swap(first.G_minus, second.G_minus);
@@ -300,8 +302,10 @@ namespace gef {
               L(std::move(other.L)),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             other.h = 0;
+            other.m_num_elements = 0;
             other.base = T{};
         }
 
@@ -315,6 +319,7 @@ namespace gef {
                 L = std::move(other.L);
                 h = other.h;
                 b = other.b;
+                m_num_elements = other.m_num_elements;
                 base = other.base;
             }
             return *this;
@@ -333,6 +338,7 @@ namespace gef {
           }
 
           const size_t N = S.size();
+          m_num_elements = N;
           if (N == 0) {
               b = 0;
               h = 0;
@@ -371,7 +377,11 @@ namespace gef {
               allocation_start = clock::now();
           }
 
-          L = sdsl::int_vector<>(N, 0, b);
+          if (b > 0) {
+              L = sdsl::int_vector<>(N, 0, b);
+          } else {
+              L = sdsl::int_vector<>(0);
+          }
 
           if (h == 0) {
               double allocation_seconds = 0.0;
@@ -385,10 +395,16 @@ namespace gef {
               }
 
               using U = std::make_unsigned_t<T>;
-              for (size_t i = 0; i < N; ++i) {
-                  L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
-                      static_cast<U>(S[i]) - static_cast<U>(base)
-                  );
+              if (b > 0 && L.size() != N) {
+                  L = sdsl::int_vector<>(N, 0, b);
+              }
+              
+              if (b > 0) {
+                  for (size_t i = 0; i < N; ++i) {
+                      L[i] = static_cast<typename sdsl::int_vector<>::value_type>(
+                          static_cast<U>(S[i]) - static_cast<U>(base)
+                      );
+                  }
               }
               B = nullptr;
               G_plus = nullptr;
@@ -432,7 +448,7 @@ namespace gef {
           U lastHighBits = 0;
           
           const uint64_t hbits_u64 = static_cast<uint64_t>(h);
-          const U low_mask = ((U(1) << b) - 1);
+          const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
 
           uint64_t* b_data = B->raw_data_ptr();
           FastBitWriter b_writer(b_data);
@@ -444,7 +460,9 @@ namespace gef {
 
           if (N > 0) {
               const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
-              L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              if (b > 0) {
+                  L[0] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              }
               const U current_high_part = element_u >> b;
               
               b_writer.set_ones_range(1);
@@ -454,7 +472,9 @@ namespace gef {
 
           for (size_t i = 1; i < N; ++i) {
               const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-              L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              if (b > 0) {
+                  L[i] = static_cast<typename sdsl::int_vector<>::value_type>(element_u & low_mask);
+              }
               
               const U current_high_part = element_u >> b;
               using WI = __int128;
@@ -501,9 +521,7 @@ namespace gef {
           }
       }
 
-        // get_elements implementation...
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            // [Implementation from previous step retained]
             if (count == 0 || startIndex >= size()) {
                 return 0;
             }
@@ -556,8 +574,6 @@ namespace gef {
                 return write_index;
             }
             
-            // ... [rest of get_elements] ...
-            // [Re-pasting the optimized get_elements code from memory to ensure consistency]
             size_t exception_rank = B->rank(startIndex);
             const size_t zero_before = startIndex - exception_rank;
             long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
@@ -611,7 +627,7 @@ namespace gef {
                     high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                 }
                 const U high_val = static_cast<U>(high_signed);
-                const Wide low = static_cast<Wide>(L[i]);
+                const Wide low = (b > 0) ? static_cast<Wide>(L[i]) : 0;
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
                 const Wide offset = low | high_shifted;
                 output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
@@ -654,7 +670,8 @@ namespace gef {
                                 high_vec.copy_from(local_highs, stdx::element_aligned);
 
                                 simd_t low_vec;
-                                if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
+                                if (b == 0) low_vec = 0;
+                                else if (l_ptr8) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr8[i+k+j]); }
                                 else if (l_ptr16) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr16[i+k+j]); }
                                 else if (l_ptr32) { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(l_ptr32[i+k+j]); }
                                 else { for(size_t j=0; j<simd_width; ++j) low_vec[j] = static_cast<U>(L[i+k+j]); }
@@ -677,7 +694,8 @@ namespace gef {
                         high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                         U high_val = static_cast<U>(high_signed);
                         Wide low;
-                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
+                        if (b == 0) low = 0;
+                        else if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
                         const Wide high_shifted = static_cast<Wide>(high_val) << b;
                         const Wide offset = low | high_shifted;
                         output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
@@ -692,7 +710,8 @@ namespace gef {
                         }
                         U high_val = static_cast<U>(high_signed);
                         Wide low;
-                        if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
+                        if (b == 0) low = 0;
+                        else if (l_ptr8) low = static_cast<Wide>(l_ptr8[i + k]); else if (l_ptr16) low = static_cast<Wide>(l_ptr16[i + k]); else if (l_ptr32) low = static_cast<Wide>(l_ptr32[i + k]); else low = static_cast<Wide>(L[i + k]);
                         const Wide high_shifted = static_cast<Wide>(high_val) << b;
                         const Wide offset = low | high_shifted;
                         output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
@@ -708,7 +727,7 @@ namespace gef {
                     high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
                 }
                 const U high_val = static_cast<U>(high_signed);
-                const Wide low = static_cast<Wide>(L[i]);
+                const Wide low = (b > 0) ? static_cast<Wide>(L[i]) : 0;
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
                 const Wide offset = low | high_shifted;
                 output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
@@ -747,7 +766,8 @@ namespace gef {
             const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
             
             Wide low;
-            if (l_ptr8) low = static_cast<Wide>(l_ptr8[index]);
+            if (b == 0) low = 0;
+            else if (l_ptr8) low = static_cast<Wide>(l_ptr8[index]);
             else if (l_ptr16) low = static_cast<Wide>(l_ptr16[index]);
             else if (l_ptr32) low = static_cast<Wide>(l_ptr32[index]);
             else low = static_cast<Wide>(L[index]);
@@ -808,8 +828,11 @@ namespace gef {
             }
             ofs.write(reinterpret_cast<const char *>(&h), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&b), sizeof(uint8_t));
+            ofs.write(reinterpret_cast<const char *>(&m_num_elements), sizeof(m_num_elements));
             ofs.write(reinterpret_cast<const char *>(&base), sizeof(T));
-            L.serialize(ofs);
+            if (b > 0) {
+                L.serialize(ofs);
+            }
             H.serialize(ofs);
             if (h > 0) {
                 B->serialize(ofs);
@@ -821,8 +844,15 @@ namespace gef {
         void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
+            ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));
-            L.load(ifs);
+            
+            if (b > 0) {
+                L.load(ifs);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+            
             H.load(ifs);
             if (h > 0) {
                 B = bit_vector_factory->from_stream(ifs);
@@ -843,7 +873,7 @@ namespace gef {
         }
 
         [[nodiscard]] size_t size() const override {
-            return L.size();
+            return m_num_elements;
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {

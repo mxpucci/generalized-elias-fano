@@ -64,6 +64,7 @@ namespace gef {
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
         uint8_t h;
+        size_t m_num_elements;
 
         /**
          * The minimum of the encoded sequence, so that we store the shifted sequence
@@ -244,7 +245,7 @@ namespace gef {
         ~B_GEF_STAR() override = default;
 
         // Default constructor
-        B_GEF_STAR() : h(0), b(0), base(0) {
+        B_GEF_STAR() : h(0), b(0), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
@@ -253,6 +254,7 @@ namespace gef {
               L(other.L),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
                 G_plus = other.G_plus->clone();
@@ -272,6 +274,7 @@ namespace gef {
             swap(first.L, second.L);
             swap(first.h, second.h);
             swap(first.b, second.b);
+            swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
             swap(first.G_plus, second.G_plus);
             swap(first.G_minus, second.G_minus);
@@ -294,9 +297,11 @@ namespace gef {
               L(std::move(other.L)),
               h(other.h),
               b(other.b),
+              m_num_elements(other.m_num_elements),
               base(other.base) {
             // Leave the moved-from object in a valid, empty state
             other.h = 0;
+            other.m_num_elements = 0;
             other.base = T{};
             other.G_plus = nullptr;
             other.G_minus = nullptr;
@@ -311,6 +316,7 @@ namespace gef {
                 L = std::move(other.L);
                 h = other.h;
                 b = other.b;
+                m_num_elements = other.m_num_elements;
                 base = other.base;
             }
             return *this;
@@ -328,6 +334,7 @@ namespace gef {
                 split_start = clock::now();
             }
             const size_t N = S.size();
+            m_num_elements = N;
             if (N == 0) {
                 b = 0;
                 h = 0;
@@ -385,7 +392,12 @@ namespace gef {
                 allocation_start = clock::now();
             }
 
-            L = sdsl::int_vector<>(N, 0, b);
+            if (b > 0) {
+                L = sdsl::int_vector<>(N, 0, b);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+
             if (h == 0) {
                 double allocation_seconds = 0.0;
                 if (metrics) {
@@ -396,9 +408,17 @@ namespace gef {
                 if (metrics) {
                     population_start = clock::now();
                 }
+                
+                // Recheck L size if b > 0
+                if (b > 0 && L.size() != N) {
+                    L = sdsl::int_vector<>(N, 0, b);
+                }
+
                 // Special case: no high bits, only L is needed.
-                for (size_t i = 0; i < N; ++i) {
-                    L[i] = S[i] - base;
+                if (b > 0) {
+                    for (size_t i = 0; i < N; ++i) {
+                        L[i] = S[i] - base;
+                    }
                 }
                 G_plus = nullptr;
                 G_minus = nullptr;
@@ -629,7 +649,9 @@ namespace gef {
                         high_parts[k] = static_cast<U>(high_signed);
                     }
 
-                    if (l_ptr8) {
+                    if (b == 0) {
+                         for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = 0;
+                    } else if (l_ptr8) {
                         for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = static_cast<U>(l_ptr8[i+k]);
                     } else if (l_ptr16) {
                         for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = static_cast<U>(l_ptr16[i+k]);
@@ -738,7 +760,8 @@ namespace gef {
             const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
             
             U low;
-            if (l_ptr8) low = static_cast<U>(l_ptr8[index]);
+            if (b == 0) low = 0;
+            else if (l_ptr8) low = static_cast<U>(l_ptr8[index]);
             else if (l_ptr16) low = static_cast<U>(l_ptr16[index]);
             else if (l_ptr32) low = static_cast<U>(l_ptr32[index]);
             else low = static_cast<U>(L[index]);
@@ -753,8 +776,13 @@ namespace gef {
             }
             ofs.write(reinterpret_cast<const char *>(&h), sizeof(uint8_t));
             ofs.write(reinterpret_cast<const char *>(&b), sizeof(uint8_t));
+            ofs.write(reinterpret_cast<const char *>(&m_num_elements), sizeof(m_num_elements));
             ofs.write(reinterpret_cast<const char *>(&base), sizeof(T));
-            L.serialize(ofs);
+            
+            if (b > 0) {
+                L.serialize(ofs);
+            }
+            
             if (h > 0) {
                 G_plus->serialize(ofs);
                 G_minus->serialize(ofs);
@@ -764,8 +792,15 @@ namespace gef {
         void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
+            ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));
-            L.load(ifs);
+            
+            if (b > 0) {
+                L.load(ifs);
+            } else {
+                L = sdsl::int_vector<>(0);
+            }
+            
             if (h > 0) {
                 G_plus = bit_vector_factory->from_stream(ifs);
                 G_plus->enable_select0();
@@ -779,7 +814,7 @@ namespace gef {
         }
 
         [[nodiscard]] size_t size() const override {
-            return L.size();
+            return m_num_elements;
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
