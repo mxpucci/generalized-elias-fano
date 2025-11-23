@@ -62,17 +62,23 @@ TYPED_TEST(GEF_Overhead_TypedTest, SDSLOverheadIsReasonable) {
     });
 
     // Medium compressibility
+    value_type mid_max;
+    if constexpr (sizeof(value_type) == 1) mid_max = 100;
+    else mid_max = 1000;
     test_cases.push_back({
         "Medium Compressibility",
         gef::test::generate_random_sequence<value_type>(2000, 
-            std::is_signed_v<value_type> ? -1000 : 0, 1000, 0.3, 3)
+            std::is_signed_v<value_type> ? static_cast<value_type>(-mid_max) : static_cast<value_type>(0), mid_max, 0.3, 3)
     });
 
     // Poorly compressible
+    value_type poor_max;
+    if constexpr (sizeof(value_type) == 1) poor_max = 100;
+    else poor_max = 10000;
     test_cases.push_back({
         "Poorly Compressible",
         gef::test::generate_random_sequence<value_type>(2000, 
-            std::is_signed_v<value_type> ? -10000 : 0, 10000, 0.0, 1)
+            std::is_signed_v<value_type> ? static_cast<value_type>(-poor_max) : static_cast<value_type>(0), poor_max, 0.0, 1)
     });
 
     // All elements identical
@@ -81,11 +87,14 @@ TYPED_TEST(GEF_Overhead_TypedTest, SDSLOverheadIsReasonable) {
         std::vector<value_type>(1000, 42)
     });
 
-    // Long sequence
+    // Long Sequence
+    value_type long_max;
+    if constexpr (sizeof(value_type) == 1) long_max = 100;
+    else long_max = 500;
     test_cases.push_back({
         "Long Sequence",
         gef::test::generate_random_sequence<value_type>(10000, 
-            std::is_signed_v<value_type> ? -500 : 0, 500, 0.5, 4)
+            std::is_signed_v<value_type> ? static_cast<value_type>(-long_max) : static_cast<value_type>(0), long_max, 0.5, 4)
     });
 
     for (const auto& test : test_cases) {

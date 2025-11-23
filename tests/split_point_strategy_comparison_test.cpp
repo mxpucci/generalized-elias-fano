@@ -76,7 +76,7 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
     // Poorly compressible sequence: large gaps, random data
     test_cases.push_back({
         "Poorly Compressible",
-        gef::test::generate_random_sequence<value_type>(2000, 0, 50000, 0.0, 1)
+        gef::test::generate_random_sequence<value_type>(2000, 0, 30000, 0.0, 1)
     });
 
     // All elements are the same
@@ -167,7 +167,7 @@ void run_full_sweep_assertions(const std::shared_ptr<IBitVectorFactory>& factory
     });
     test_cases.push_back({
         "Poorly Compressible",
-        gef::test::generate_random_sequence<T>(2000, 0, 50000, 0.0, 1)
+        gef::test::generate_random_sequence<T>(2000, 0, 30000, 0.0, 1)
     });
     test_cases.push_back({
         "All Elements Identical",

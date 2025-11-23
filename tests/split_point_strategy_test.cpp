@@ -54,7 +54,11 @@ TYPED_TEST(GEF_SplitPointStrategy_TypedTest, ApproximateSplitPoint) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, 1000);
+    value_type max_val = 100;
+    if constexpr (sizeof(value_type) > 1) {
+        max_val = 1000;
+    }
+    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, max_val);
 
     GEF_Class gef_impl(this->factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
 
@@ -67,7 +71,11 @@ TYPED_TEST(GEF_SplitPointStrategy_TypedTest, BruteForceSplitPoint) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
 
-    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, 1000);
+    value_type max_val = 100;
+    if constexpr (sizeof(value_type) > 1) {
+        max_val = 1000;
+    }
+    const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, max_val);
 
     GEF_Class gef_impl(this->factory, sequence, gef::OPTIMAL_SPLIT_POINT);
 

@@ -217,10 +217,18 @@ TYPED_TEST(GEF_Implementation_TypedTest, GeneralPurposeSequence) {
     using value_type = typename get_value_type<GEF_Class>::type;
 
     for (int k = 0; k < 5; ++k) {
+        value_type min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        if constexpr (sizeof(value_type) > 1) {
+             min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-500) : static_cast<value_type>(0);
+        }
+        value_type max_val = static_cast<value_type>(100);
+        if constexpr (sizeof(value_type) > 1) {
+             max_val = static_cast<value_type>(500);
+        }
         const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(
             1000,
-            std::is_signed_v<value_type> ? -500 : 0,
-            500,
+            min_val,
+            max_val,
             0.3, // 30% chance of duplicates
             3    // Allow up to 3 consecutive duplicates
         );
@@ -239,7 +247,9 @@ TYPED_TEST(GEF_Implementation_TypedTest, EncodeLongSequence) {
     using GEF_Class = TypeParam;
     using value_type = typename get_value_type<GEF_Class>::type;
     for (int k = 0; k < 5; ++k) {
-        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(10000, 0, 1000);
+        value_type max_val = 100;
+        if constexpr (sizeof(value_type) > 1) max_val = 1000;
+        const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(10000, 0, max_val);
         auto gef_impl = std::make_unique<GEF_Class>(this->factory, sequence);
         for(size_t i = 0; i < sequence.size(); ++i) {
             ASSERT_EQ(gef_impl->at(i), sequence[i]) << "Mismatch in iteration " << k << " at index " << i;
@@ -278,8 +288,15 @@ TYPED_TEST(GEF_Implementation_TypedTest, SerializationDeserialization) {
     using value_type = typename get_value_type<GEF_Class>::type;
 
     for (int k = 0; k < 5; ++k) {
+        value_type min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-100) : static_cast<value_type>(0);
+        value_type max_val = static_cast<value_type>(100);
+        if constexpr (sizeof(value_type) > 1) {
+             min_val = std::is_signed_v<value_type> ? static_cast<value_type>(-500) : static_cast<value_type>(0);
+             max_val = static_cast<value_type>(500);
+        }
+
         const std::vector<value_type> original_sequence = gef::test::generate_random_sequence<value_type>(
-            1500, std::is_signed_v<value_type> ? -500 : 0, 500, 0.5, 4
+            1500, min_val, max_val, 0.5, 4
         );
 
         GEF_Class original_gef(this->factory, original_sequence);
