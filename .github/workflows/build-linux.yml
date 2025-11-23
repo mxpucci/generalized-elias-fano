@@ -47,19 +47,15 @@ jobs:
           ls -lh build/benchmarks/single_thread_compression_throughput_simd
           echo "✓ All benchmark and single-thread executables built successfully"
 
-      # Upload the compiled benchmark executables as a workflow artifact.
-      # Use v4 of the upload‑artifact action because earlier versions are
-      # deprecated. The v4 action improves performance and ensures compatibility.
-      # We upload both the OpenMP-enabled and OpenMP-disabled variants.
+      # Upload the entire build directory so artifacts include every generated
+      # binary (benchmarks, helper tools, etc.). Keep the run scripts alongside
+      # the build output for convenience. Use v4 of the upload-artifact action
+      # because earlier versions are deprecated.
       - name: Upload benchmarks
         uses: actions/upload-artifact@v4
         with:
           name: gef-linux-benchmarks
           path: |
-            build/benchmarks/compression_benchmark
-            build/benchmarks/compression_benchmark_no_omp
-            build/benchmarks/single_thread_compression_throughput
-            build/benchmarks/single_thread_compression_throughput_simd
-            build/benchmarks/simple_benchmark
+            build
             run_benchmarks.sh
             validate_benchmark_json.sh
