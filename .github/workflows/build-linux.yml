@@ -14,14 +14,13 @@ jobs:
       # when using a CentOS 7 job‑level container with Node 20【693600283039977†L30-L38】.
       - uses: actions/checkout@v4
 
-      # Build the project inside an Alpine container using Docker. Alpine uses musl libc,
-      # which allows us to produce a fully static binary (-static) that runs on CentOS 7
-      # without depending on its outdated glibc. We mount the workspace into the container
-      # and install build tools via apk. The compilation uses aggressive optimisation
-      # flags and targets the user’s Xeon Gold 6140M CPU. The resulting binary is
-      # statically linked (`-static`) so it should run on the CentOS VM regardless of
-      # the glibc version.
-      - name: Build benchmarks in Alpine container
+      # Build and test the project inside an Alpine container using Docker. Alpine uses
+      # musl libc, which allows us to produce a fully static binary (-static) that runs
+      # on CentOS 7 without depending on its outdated glibc. We mount the workspace into
+      # the container and install build tools via apk. After compiling every target
+      # (including tests) we run the full CTest suite so the workflow fails if any test
+      # fails.
+      - name: Build and test in Alpine container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
             # Install build tools, git, and OpenMP runtime for parallel processing
@@ -32,10 +31,10 @@ jobs:
             cmake .. -DCMAKE_BUILD_TYPE=Release \
                      -DGEF_TARGET_ARCH=skylake-avx512 \
                      -DGEF_STATIC_LINK=ON \
-                     -DGEF_BUILD_BENCHMARKS=ON && \
-            make compression_benchmark compression_benchmark_no_omp \
-                 single_thread_compression_throughput \
-                 single_thread_compression_throughput_simd -j\$(nproc)
+                     -DGEF_BUILD_BENCHMARKS=ON \
+                     -DGEF_BUILD_TESTS=ON && \
+            cmake --build . -- -j\$(nproc) && \
+            ctest --output-on-failure
           "
 
       # Verify both benchmark variants were built successfully
