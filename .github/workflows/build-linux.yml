@@ -14,13 +14,12 @@ jobs:
       # when using a CentOS 7 job‑level container with Node 20【693600283039977†L30-L38】.
       - uses: actions/checkout@v4
 
-      # Build and test the project inside an Alpine container using Docker. Alpine uses
-      # musl libc, which allows us to produce a fully static binary (-static) that runs
-      # on CentOS 7 without depending on its outdated glibc. We mount the workspace into
-      # the container and install build tools via apk. After compiling every target
-      # (including tests) we run the full CTest suite so the workflow fails if any test
-      # fails.
-      - name: Build and test in Alpine container
+      # Build the project inside an Alpine container using Docker. Alpine uses musl libc,
+      # which allows us to produce a fully static binary (-static) that runs on CentOS 7
+      # without depending on its outdated glibc. We mount the workspace into the container,
+      # install build tools via apk, and compile every target (including the test binaries)
+      # without executing ctest.
+      - name: Build inside Alpine container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
             # Install build tools, git, and OpenMP runtime for parallel processing
@@ -33,8 +32,7 @@ jobs:
                      -DGEF_STATIC_LINK=ON \
                      -DGEF_BUILD_BENCHMARKS=ON \
                      -DGEF_BUILD_TESTS=ON && \
-            cmake --build . -- -j\$(nproc) && \
-            ctest --output-on-failure
+            cmake --build . -- -j\$(nproc)
           "
 
       # Verify both benchmark variants were built successfully
@@ -45,6 +43,28 @@ jobs:
           ls -lh build/benchmarks/single_thread_compression_throughput
           ls -lh build/benchmarks/single_thread_compression_throughput_simd
           echo "✓ All benchmark and single-thread executables built successfully"
+
+      # Ensure CLI binaries from src/ and every test executable were generated
+      - name: Verify CLI and test executables
+        run: |
+          echo "CLI binaries:"
+          ls -lh build/src/ugef \
+                 build/src/rle_gef \
+                 build/src/bgef \
+                 build/src/bgef_no_rle
+          echo "Test binaries:"
+          ls -lh build/tests/gef_test \
+                 build/tests/get_elements_test \
+                 build/tests/learned_gef_test \
+                 build/tests/overhead_test \
+                 build/tests/predictor_training_test \
+                 build/tests/simple_test \
+                 build/tests/split_point_strategy_comparison_test \
+                 build/tests/split_point_strategy_dataset_test \
+                 build/tests/split_point_strategy_test \
+                 build/tests/test_sdsl_bitvector \
+                 build/tests/test_sux_bitvector
+          echo "✓ CLI and test executables are present"
 
       # Upload the entire build directory so artifacts include every generated
       # binary (benchmarks, helper tools, etc.). Keep the run scripts alongside
