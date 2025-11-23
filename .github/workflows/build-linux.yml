@@ -44,27 +44,46 @@ jobs:
           ls -lh build/benchmarks/single_thread_compression_throughput_simd
           echo "✓ All benchmark and single-thread executables built successfully"
 
-      # Ensure CLI binaries from src/ and every test executable were generated
+      # Ensure CLI binaries from src/ and every tracked test executable were generated.
+      # Test sources that are gitignored (e.g., learned_gef_test) will not be listed by
+      # `git ls-files` and therefore are skipped automatically.
       - name: Verify CLI and test executables
         run: |
+          set -euo pipefail
           echo "CLI binaries:"
-          ls -lh build/src/ugef \
-                 build/src/rle_gef \
-                 build/src/bgef \
-                 build/src/bgef_no_rle
-          echo "Test binaries:"
-          ls -lh build/tests/gef_test \
-                 build/tests/get_elements_test \
-                 build/tests/learned_gef_test \
-                 build/tests/overhead_test \
-                 build/tests/predictor_training_test \
-                 build/tests/simple_test \
-                 build/tests/split_point_strategy_comparison_test \
-                 build/tests/split_point_strategy_dataset_test \
-                 build/tests/split_point_strategy_test \
-                 build/tests/test_sdsl_bitvector \
-                 build/tests/test_sux_bitvector
-          echo "✓ CLI and test executables are present"
+          for bin in build/src/ugef \
+                     build/src/rle_gef \
+                     build/src/bgef \
+                     build/src/bgef_no_rle
+          do
+            if [ -x "$bin" ]; then
+              ls -lh "$bin"
+            else
+              echo "❌ Missing CLI binary: $bin"
+              exit 1
+            fi
+          done
+
+          echo "Test binaries (tracked sources only):"
+          had_tests=0
+          while IFS= read -r test_src; do
+            had_tests=1
+            test_name=$(basename "$test_src" .cpp)
+            bin="build/tests/${test_name}"
+            if [ -x "$bin" ]; then
+              ls -lh "$bin"
+            else
+              echo "❌ Missing test binary: $bin (source: $test_src)"
+              exit 1
+            fi
+          done < <(git ls-files 'tests/*.cpp')
+
+          if [ "$had_tests" -eq 0 ]; then
+            echo "❌ No tracked test sources were found (git ls-files returned empty)."
+            exit 1
+          fi
+
+          echo "✓ CLI and tracked test executables are present"
 
       # Upload the entire build directory so artifacts include every generated
       # binary (benchmarks, helper tools, etc.). Keep the run scripts alongside
