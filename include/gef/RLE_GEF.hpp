@@ -17,6 +17,7 @@
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
+#include "../datastructures/SDSLBitVector.hpp"
 
 #if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
 #include <experimental/simd>
@@ -25,11 +26,11 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T>
+    template<typename T, typename BitVectorType = SDSLBitVector>
     class RLE_GEF : public IGEF<T> {
     public:
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
-        std::unique_ptr<IBitVector> B;
+        std::unique_ptr<BitVectorType> B;
 
         // high parts
         sdsl::int_vector<> H;
@@ -144,7 +145,7 @@ namespace gef {
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
-                B = other.B->clone();
+                B = std::make_unique<BitVectorType>(*other.B);
                 B->enable_rank();
                 B->enable_select1();
             } else {
@@ -259,7 +260,7 @@ namespace gef {
             }
 
             // Pass 1: Count unique high parts and populate L & B
-            B = bit_vector_factory->create(S.size());
+            B = std::make_unique<BitVectorType>(S.size());
             T lastHighBits = 0;
             size_t h_count = 0;
             uint64_t* b_data = B->raw_data_ptr();
@@ -322,9 +323,7 @@ namespace gef {
             const uint64_t mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
             
             // Prepare optimized L pointers if possible
-            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
-            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
-            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
+            // (Removed specialized pointers based on user request)
 
             // Fast path: h == 0, all data in L
             if (h == 0) [[unlikely]] {
@@ -339,16 +338,6 @@ namespace gef {
                         simd_t low_vec;
                         if (b == 0) {
                             low_vec = 0;
-                        } else if (l_ptr8) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
-                        } else if (l_ptr16) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
-                        } else if (l_ptr32) {
-                            if constexpr (std::is_same_v<U, uint32_t>) {
-                                low_vec.copy_from(l_ptr32 + i, stdx::element_aligned);
-                            } else {
-                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[i+k]);
-                            }
                         } else {
                             // Fallback
                             for(size_t k=0; k<simd_width; ++k) {
@@ -450,16 +439,6 @@ namespace gef {
                         simd_t low_vec;
                         if (b == 0) {
                             low_vec = 0;
-                        } else if (l_ptr8) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[current_pos+k]);
-                        } else if (l_ptr16) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[current_pos+k]);
-                        } else if (l_ptr32) {
-                            if constexpr (std::is_same_v<U, uint32_t>) {
-                                low_vec.copy_from(l_ptr32 + current_pos, stdx::element_aligned);
-                            } else {
-                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[current_pos+k]);
-                            }
                         } else {
                             // Fallback extraction for packed bits
                             // Recalculate positions for current_pos
@@ -540,7 +519,7 @@ namespace gef {
             const U low = (b > 0) ? static_cast<U>(L[index]) : 0;
 
             // Helper to compute cumulative gaps: sum of first 'count' gaps
-            const auto cumulative_gaps = [](const std::unique_ptr<IBitVector> &bv, size_t count) -> size_t {
+            const auto cumulative_gaps = [](const std::unique_ptr<BitVectorType> &bv, size_t count) -> size_t {
                 return (count == 0) ? 0 : bv->select0(count) - (count - 1);
             };
 
@@ -592,7 +571,7 @@ namespace gef {
             
             H.load(ifs);
             if (h > 0) {
-                B = bit_vector_factory->from_stream(ifs);
+                B = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
                 B->enable_rank();
                 B->enable_select1();
             } else {

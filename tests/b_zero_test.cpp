@@ -28,6 +28,7 @@ void check_b_zero_behavior(const std::string& name) {
     std::cout << name << " chosen b: " << (int)b << std::endl;
     
     if (b == 0) {
+        // The critical check: L width must be 0
         size_t theo_size = compressor.theoretical_size_in_bytes();
         std::cout << name << " theoretical size: " << theo_size << std::endl;
         // If buggy, L is 1000 * 64 bits = 64000 bits = 8000 bytes.
@@ -82,6 +83,7 @@ TEST(BZeroTest, B_GEF_STAR_Linear) {
 }
 
 TEST(BZeroTest, RLE_GEF_Linear) {
+    // RLE might not choose b=0 for linear data (no runs), but let's see
     check_b_zero_behavior<RLE_GEF<uint64_t>>("RLE_GEF");
 }
 

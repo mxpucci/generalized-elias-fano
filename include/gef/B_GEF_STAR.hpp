@@ -37,12 +37,13 @@ namespace stdx = std::experimental;
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
+#include "../datastructures/SDSLBitVector.hpp"
 #include "FastBitWriter.hpp"
 
 
 namespace gef {
 
-    template<typename T>
+    template<typename T, typename BitVectorType = SDSLBitVector>
     class B_GEF_STAR : public IGEF<T> {
         // ... [Private members omitted, same as before] ...
     private:
@@ -50,13 +51,13 @@ namespace gef {
          * Bit-vector that store the gaps between consecutive high-parts
          * such that highPart(i) >= highPart(i - 1)
          */
-        std::unique_ptr<IBitVector> G_plus;
+        std::unique_ptr<BitVectorType> G_plus;
 
         /*
          * Bit-vector that store the gaps between consecutive high-parts
          * such that highPart(i - 1) >= highPart(i)
          */
-        std::unique_ptr<IBitVector> G_minus;
+        std::unique_ptr<BitVectorType> G_minus;
 
         // low parts
         sdsl::int_vector<> L;
@@ -257,10 +258,10 @@ namespace gef {
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
-                G_plus = other.G_plus->clone();
+                G_plus = std::make_unique<BitVectorType>(*other.G_plus);
                 G_plus->enable_select0();
 
-                G_minus = other.G_minus->clone();
+                G_minus = std::make_unique<BitVectorType>(*other.G_minus);
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;
@@ -437,8 +438,8 @@ namespace gef {
             const size_t g_plus_bits = gap_computation.sum_of_positive_gaps + N;
             const size_t g_minus_bits = gap_computation.sum_of_negative_gaps + N;
 
-            G_plus = bit_vector_factory->create(g_plus_bits);
-            G_minus = bit_vector_factory->create(g_minus_bits);
+            G_plus = std::make_unique<BitVectorType>(g_plus_bits);
+            G_minus = std::make_unique<BitVectorType>(g_minus_bits);
 
             double allocation_seconds = 0.0;
             if (metrics) {
@@ -544,10 +545,7 @@ namespace gef {
             
             // Prepare optimized L pointers if possible
             using U = std::make_unsigned_t<T>;
-            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
-            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
-            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
-
+            
             // Fast path: h == 0, all data in L
             if (h == 0)[[unlikely]] {
                 size_t i = startIndex;
@@ -557,19 +555,7 @@ namespace gef {
                 if constexpr (std::is_arithmetic_v<T>) {
                     while (i + simd_width <= endIndex) {
                         simd_t low_vec;
-                        if (l_ptr8) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr8[i+k]);
-                        } else if (l_ptr16) {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr16[i+k]);
-                        } else if (l_ptr32) {
-                            if constexpr (std::is_same_v<U, uint32_t>) {
-                                low_vec.copy_from(l_ptr32 + i, stdx::element_aligned);
-                            } else {
-                                for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(l_ptr32[i+k]);
-                            }
-                        } else {
-                            for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(L[i+k]);
-                        }
+                        for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(L[i+k]);
                         simd_t sum_vec = simd_t(static_cast<U>(base)) + low_vec;
                         sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
                         write_index += simd_width;
@@ -578,12 +564,7 @@ namespace gef {
                 }
 #endif
                 for (; i < endIndex; ++i) {
-                    U low;
-                    if (l_ptr8) low = static_cast<U>(l_ptr8[i]);
-                    else if (l_ptr16) low = static_cast<U>(l_ptr16[i]);
-                    else if (l_ptr32) low = static_cast<U>(l_ptr32[i]);
-                    else low = static_cast<U>(L[i]);
-                    
+                    U low = static_cast<U>(L[i]);
                     output[write_index++] = base + static_cast<T>(low);
                 }
                 return write_index;
@@ -651,12 +632,6 @@ namespace gef {
 
                     if (b == 0) {
                          for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = 0;
-                    } else if (l_ptr8) {
-                        for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = static_cast<U>(l_ptr8[i+k]);
-                    } else if (l_ptr16) {
-                        for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = static_cast<U>(l_ptr16[i+k]);
-                    } else if (l_ptr32) {
-                        for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = static_cast<U>(l_ptr32[i+k]);
                     } else {
                         size_t local_l_bit_pos = i * b;
                         size_t local_l_word_idx = local_l_bit_pos / 64;
@@ -744,9 +719,6 @@ namespace gef {
             using U = std::make_unsigned_t<T>;
 
             const size_t zero_rank = index + 1;
-            // Virtual calls here - kept as G_plus/G_minus are likely IBitVector wrappers
-            // If we could access raw pointers, we could optimize select0 here too, 
-            // but select0 usually requires complex support structure traversal.
             const size_t pos_gaps = G_plus->select0(zero_rank) - zero_rank;
             const size_t neg_gaps = G_minus->select0(zero_rank) - zero_rank;
 
@@ -754,16 +726,8 @@ namespace gef {
                 static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps);
             const U high_u = static_cast<U>(high_signed);
             
-            // Optimization for L access
-            const uint8_t* l_ptr8 = (b == 8) ? reinterpret_cast<const uint8_t*>(L.data()) : nullptr;
-            const uint16_t* l_ptr16 = (b == 16) ? reinterpret_cast<const uint16_t*>(L.data()) : nullptr;
-            const uint32_t* l_ptr32 = (b == 32) ? reinterpret_cast<const uint32_t*>(L.data()) : nullptr;
-            
             U low;
             if (b == 0) low = 0;
-            else if (l_ptr8) low = static_cast<U>(l_ptr8[index]);
-            else if (l_ptr16) low = static_cast<U>(l_ptr16[index]);
-            else if (l_ptr32) low = static_cast<U>(l_ptr32[index]);
             else low = static_cast<U>(L[index]);
 
             const U combined = low | (high_u << b);
@@ -802,10 +766,10 @@ namespace gef {
             }
             
             if (h > 0) {
-                G_plus = bit_vector_factory->from_stream(ifs);
+                G_plus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
                 G_plus->enable_select0();
 
-                G_minus = bit_vector_factory->from_stream(ifs);
+                G_minus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;
