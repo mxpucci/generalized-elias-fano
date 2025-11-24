@@ -25,6 +25,7 @@ namespace gef {
 typedef struct {
 	size_t positive_gaps;
 	size_t negative_gaps;
+	size_t zero_gaps;
 	size_t positive_exceptions_count;
 	size_t negative_exceptions_count;
 	size_t sum_of_positive_gaps;

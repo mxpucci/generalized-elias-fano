@@ -44,6 +44,8 @@ GapComputation variation_of_original_vec(
     if (n < 2) return result;
 
     size_t pos_gaps = 0;
+    size_t neg_gaps = 0;
+    size_t zero_gaps = 0;
     size_t sum_pos = 0;
     size_t sum_neg = 0;
 
@@ -66,13 +68,21 @@ GapComputation variation_of_original_vec(
         const bool is_positive = diff >= 0;
         const uint64_t mag = is_positive ? static_cast<uint64_t>(diff) : static_cast<uint64_t>(-diff);
 
-        pos_gaps += is_positive;
+        if (is_positive) {
+            ++pos_gaps;
+            if (diff == 0) {
+                ++zero_gaps;
+            }
+        } else {
+            ++neg_gaps;
+        }
         sum_pos += is_positive ? mag : 0;
         sum_neg += is_positive ? 0 : mag;
     }
 
     result.positive_gaps = pos_gaps;
-    result.negative_gaps = (n - 1) - pos_gaps;
+    result.negative_gaps = neg_gaps;
+    result.zero_gaps = zero_gaps;
     result.positive_exceptions_count = 0;
     result.negative_exceptions_count = 0;
     result.sum_of_positive_gaps = sum_pos;
@@ -93,6 +103,8 @@ GapComputation variation_of_shifted_vec(
     GapComputation result{};
     const size_t n = v.size();
     if (n == 0) return result;
+
+    size_t zero_gap_count = 0;
 
     using U = std::make_unsigned_t<T>;
     using WU = unsigned __int128;    // wide unsigned for safe arithmetic
@@ -155,6 +167,9 @@ GapComputation variation_of_shifted_vec(
         if (gap >= 0) {
             const size_t g = static_cast<size_t>(gap);
             result.positive_gaps++;
+            if (gap == 0) {
+                ++zero_gap_count;
+            }
             result.sum_of_positive_gaps += g;
             if (!exception) result.sum_of_positive_gaps_without_exception += g;
             if (exception)  result.positive_exceptions_count += 1;
@@ -167,6 +182,7 @@ GapComputation variation_of_shifted_vec(
         }
     }
 
+    result.zero_gaps = zero_gap_count;
     return result;
 }
 
@@ -236,6 +252,7 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         __m256i sum_neg_no_exc = zero_vec;
         __m256i pos_gaps = zero_vec;
         __m256i neg_gaps = zero_vec;
+        __m256i zero_gaps = zero_vec;
         __m256i pos_exc = zero_vec;
         __m256i neg_exc = zero_vec;
 
@@ -270,6 +287,8 @@ total_variation_of_shifted_vec_with_multiple_shifts(
             prev_high = curr_high;
             WI val_i = static_cast<WI>(vec[i]) - static_cast<WI>(min_val);
             curr_high = _mm256_srlv_epi64(_mm256_set1_epi64x(static_cast<long long>(static_cast<uint64_t>(val_i))), b_vec);
+            __m256i eq_mask = _mm256_cmpeq_epi64(curr_high, prev_high);
+            zero_gaps = _mm256_add_epi64(zero_gaps, _mm256_srli_epi64(eq_mask, 63));
             signed_less = _mm256_cmpgt_epi64(prev_high, curr_high);
             curr_neg = _mm256_cmpgt_epi64(zero_vec, curr_high);
             prev_neg = _mm256_cmpgt_epi64(zero_vec, prev_high);
@@ -339,6 +358,11 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         _mm256_storeu_si256((__m256i*)temp_results, neg_gaps);
         for (size_t j = 0; j < group_size; ++j) {
             results[b_group + j - min_b].negative_gaps = temp_results[j];
+        }
+        // zero_gaps
+        _mm256_storeu_si256((__m256i*)temp_results, zero_gaps);
+        for (size_t j = 0; j < group_size; ++j) {
+            results[b_group + j - min_b].zero_gaps = temp_results[j];
         }
         // positive_exceptions_count
         _mm256_storeu_si256((__m256i*)temp_results, pos_exc);

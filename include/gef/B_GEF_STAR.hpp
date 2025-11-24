@@ -45,7 +45,6 @@ namespace gef {
 
     template<typename T, typename BitVectorType = SDSLBitVector>
     class B_GEF_STAR : public IGEF<T> {
-        // ... [Private members omitted, same as before] ...
     private:
         /*
          * Bit-vector that store the gaps between consecutive high-parts

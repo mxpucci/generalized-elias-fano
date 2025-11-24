@@ -109,13 +109,11 @@ namespace gef {
             
             if (reversed) {
                 // Reversed Mode:
-                // - All positive gaps are exceptions (they become negative).
-                // - Negative gaps are encoded as positive. Exception if magnitude too large.
-                // - i=0 is usually handled as positive gap (exception) or special case.
-                //   In gc, pos_gaps includes i=0.
-                
-                // Exceptions = All Positive Gaps + Large Negative Gaps
-                exceptions = gc.positive_gaps + gc.negative_exceptions_count;
+                // - All strictly positive gaps are exceptions (they become negative after reversal).
+                // - Zero gaps remain non-exceptions.
+                const size_t strictly_positive_gaps =
+                    (gc.positive_gaps > gc.zero_gaps) ? (gc.positive_gaps - gc.zero_gaps) : 0;
+                exceptions = strictly_positive_gaps + gc.negative_exceptions_count;
                 
                 // Gap Sum = Sum of Small Negative Gaps (magnitudes)
                 g_bits_sum = gc.sum_of_negative_gaps_without_exception;
@@ -446,7 +444,9 @@ namespace gef {
             size_t exceptions;
             size_t g_bits_sum;
             if (reversed) {
-                exceptions = gc.positive_gaps + gc.negative_exceptions_count;
+                const size_t strictly_positive_gaps =
+                    (gc.positive_gaps > gc.zero_gaps) ? (gc.positive_gaps - gc.zero_gaps) : 0;
+                exceptions = strictly_positive_gaps + gc.negative_exceptions_count;
                 g_bits_sum = gc.sum_of_negative_gaps_without_exception;
             } else {
                 exceptions = gc.positive_exceptions_count + gc.negative_gaps;
@@ -519,10 +519,10 @@ namespace gef {
             assert(g_writer.position() == g_bits);
 
             // Enable rank/select support
-            B->enable_rank();
-            B->enable_select1();
-            G->enable_rank();
-            G->enable_select0();
+                B->enable_rank();
+                B->enable_select1();
+                G->enable_rank();
+                G->enable_select0();
         }
 
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
