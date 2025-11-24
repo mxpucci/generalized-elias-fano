@@ -171,9 +171,6 @@ public:
         // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
-        // Removed overhead of unique_ptr
-        // total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
-
         for (const auto& p : m_partitions) {
             total_bytes += p.size_in_bytes();
         }
@@ -319,8 +316,6 @@ public:
         const size_t num_partitions = m_partitions.size();
         ofs.write(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
 
-        // Note: Serialization to a single stream must be sequential
-        // Parallelizing would require writing to separate buffers then merging
         for (const auto& p : m_partitions) {
             p.serialize(ofs);
         }

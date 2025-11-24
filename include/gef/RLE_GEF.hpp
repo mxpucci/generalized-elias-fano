@@ -214,7 +214,7 @@ namespace gef {
             // [Constructor implementation unchanged]
             const size_t N = S.size();
             m_num_elements = N;
-            if (S.empty()) {
+            if (S.size() == 0) {
                 b = 0;
                 h = 0;
                 base = T{};

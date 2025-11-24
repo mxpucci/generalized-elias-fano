@@ -42,7 +42,7 @@ struct BGEFStarWrapper : public gef::B_GEF_STAR<T> {
                     const std::shared_ptr<IBitVectorFactory>& factory,
                     gef::SplitPointStrategy strategy,
                     gef::CompressionBuildMetrics* metrics = nullptr)
-        : BGEFStarWrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy, metrics) {}
+        : gef::B_GEF_STAR<T>(factory, data, strategy, metrics) {}
 
     BGEFStarWrapper(const std::vector<T>& data,
                     const std::shared_ptr<IBitVectorFactory>& factory,

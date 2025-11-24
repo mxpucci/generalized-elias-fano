@@ -32,7 +32,7 @@ struct U_GEF_Wrapper : public gef::U_GEF<T> {
     U_GEF_Wrapper(gef::Span<const T> data,
                   const std::shared_ptr<IBitVectorFactory>& factory,
                   gef::SplitPointStrategy strategy)
-        : U_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+        : gef::U_GEF<T>(factory, data, strategy) {}
 
     U_GEF_Wrapper() : gef::U_GEF<T>() {}
 };
@@ -45,7 +45,7 @@ struct RLE_GEF_Wrapper : public gef::RLE_GEF<T> {
 
     RLE_GEF_Wrapper(gef::Span<const T> data,
                     const std::shared_ptr<IBitVectorFactory>& factory)
-        : RLE_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory) {}
+        : gef::RLE_GEF<T>(factory, data) {}
 
     RLE_GEF_Wrapper() : gef::RLE_GEF<T>() {}
 };
@@ -56,7 +56,7 @@ struct B_GEF_Wrapper : public gef::B_GEF<T> {
                   const std::shared_ptr<IBitVectorFactory>& factory,
                   gef::SplitPointStrategy strategy,
                   CompressionBuildMetrics* metrics = nullptr)
-        : B_GEF_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy, metrics) {}
+        : gef::B_GEF<T>(factory, data, strategy, metrics) {}
 
     B_GEF_Wrapper(const std::vector<T>& data,
                   const std::shared_ptr<IBitVectorFactory>& factory,
@@ -77,7 +77,7 @@ struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
     B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
                          const std::shared_ptr<IBitVectorFactory>& factory,
                          gef::SplitPointStrategy strategy)
-        : B_GEF_NO_RLE_Wrapper(std::vector<T>(data.data(), data.data() + data.size()), factory, strategy) {}
+        : gef::B_GEF_STAR<T>(factory, data, strategy) {}
 
     B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
 };

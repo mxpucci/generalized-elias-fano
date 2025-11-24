@@ -21,9 +21,7 @@ struct B_GEF_Wrapper : public gef::U_GEF<T> {
     B_GEF_Wrapper(gef::Span<const T> data,
                   std::shared_ptr<IBitVectorFactory> factory,
                   gef::SplitPointStrategy strategy = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT)
-            : gef::U_GEF<T>(factory,
-                            std::vector<T>(data.data(), data.data() + data.size()),
-                            strategy) {}
+            : gef::U_GEF<T>(factory, data, strategy) {}
 
     // Default constructor for loading from stream
     B_GEF_Wrapper() : gef::U_GEF<T>() {}

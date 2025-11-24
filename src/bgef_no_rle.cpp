@@ -17,7 +17,7 @@ struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
     B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
                          const std::shared_ptr<IBitVectorFactory>& factory,
                          gef::SplitPointStrategy strategy)
-            : gef::B_GEF_STAR<T>(factory, std::vector<T>(data.data(), data.data() + data.size()), strategy) {}
+            : gef::B_GEF_STAR<T>(factory, data, strategy) {}
 
     // Convenience constructor using the default split-point strategy
     B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
