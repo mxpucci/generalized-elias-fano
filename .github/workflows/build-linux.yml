@@ -95,5 +95,8 @@ jobs:
           name: gef-linux-benchmarks
           path: |
             build
+            !build/**/_deps/**
+            !build/**/CMakeFiles/**
+            !build/**/*.cmake
             run_benchmarks.sh
             validate_benchmark_json.sh
