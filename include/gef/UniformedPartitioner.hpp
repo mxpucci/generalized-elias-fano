@@ -20,18 +20,6 @@
 
 namespace gef {
 
-    #if __cplusplus < 202002L
-    template<typename T>
-    struct Span {
-        const T* ptr;
-        size_t n;
-        Span(const T* p, size_t n) : ptr(p), n(n) {}
-        const T* data() const { return ptr; }
-        size_t size() const { return n; }
-    };
-    #endif
-
-
 /**
  * @brief A class that partitions a sequence and applies a given compressor to each partition.
  *
@@ -83,13 +71,21 @@ public:
                       "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
 
         // Resize vector to allow parallel access (if Compressor is default constructible and movable)
-        m_partitions.resize(num_partitions);
-
+        // Only needed for OpenMP where we assign by index
     #ifdef _OPENMP
+        m_partitions.resize(num_partitions);
         // For uniform-sized partitions, use static scheduling without explicit chunk
         // This distributes work evenly with minimal overhead
-        #pragma omp parallel for schedule(static)
-        for (size_t p = 0; p < num_partitions; ++p) {
+        #pragma omp parallel
+        {
+            // Thread-local buffer to avoid repeated allocations in fallback cases
+            std::vector<T> buffer;
+            if constexpr (!can_use_view && !accepts_vector_value) {
+                buffer.reserve(k);
+            }
+
+            #pragma omp for schedule(static)
+            for (size_t p = 0; p < num_partitions; ++p) {
                 const size_t start = p * k;
                 const size_t end   = std::min(start + k, data.size());
                 const size_t len   = end - start;
@@ -98,28 +94,51 @@ public:
                 if constexpr (can_use_view) {
                     m_partitions[p] = Compressor(view, args...);
                 } else if constexpr (accepts_vector_value) {
-                    std::vector<T> buffer(view.data(), view.data() + view.size());
-                    m_partitions[p] = Compressor(std::move(buffer), args...);
+                    // Must allocate fresh vector for move-construction
+                    std::vector<T> move_buffer(view.data(), view.data() + view.size());
+                    m_partitions[p] = Compressor(std::move(move_buffer), args...);
                 } else {
-                    std::vector<T> buffer(view.data(), view.data() + view.size());
+                    // Reuse thread-local buffer
+                    buffer.assign(view.data(), view.data() + view.size());
                     m_partitions[p] = Compressor(buffer, args...);
                 }
+            }
         }
     #else
-        for (size_t p = 0; p < num_partitions; ++p) {
-            const size_t start = p * k;
-            const size_t end   = std::min(start + k, data.size());
-            const size_t len   = end - start;
+        // Single-threaded optimization:
+        // 1. Use emplace_back to avoid default construction + move assignment
+        // 2. Try to use Span directly to avoid ANY allocation
+        // 3. If Span not supported, reuse buffer for compressors that take const vector&
+        
+        if constexpr (can_use_view) {
+            for (size_t p = 0; p < num_partitions; ++p) {
+                const size_t start = p * k;
+                const size_t end   = std::min(start + k, data.size());
+                const size_t len   = end - start;
+                m_partitions.emplace_back(PartitionView(data.data() + start, len), args...);
+            }
+        } else if constexpr (!accepts_vector_value) {
+             // Re-use buffer optimization
+            std::vector<T> buffer;
+            buffer.reserve(k);
+            for (size_t p = 0; p < num_partitions; ++p) {
+                const size_t start = p * k;
+                const size_t end   = std::min(start + k, data.size());
+                const size_t len   = end - start;
 
-            Span<const T> view(data.data() + start, len);
-            if constexpr (can_use_view) {
-                m_partitions[p] = Compressor(view, args...);
-            } else if constexpr (accepts_vector_value) {
+                buffer.assign(data.data() + start, data.data() + start + len);
+                m_partitions.emplace_back(buffer, args...);
+            }
+        } else {
+             // Must pass by value (move)
+            for (size_t p = 0; p < num_partitions; ++p) {
+                const size_t start = p * k;
+                const size_t end   = std::min(start + k, data.size());
+                const size_t len   = end - start;
+
+                PartitionView view(data.data() + start, len);
                 std::vector<T> buffer(view.data(), view.data() + view.size());
-                m_partitions[p] = Compressor(std::move(buffer), args...);
-            } else {
-                std::vector<T> buffer(view.data(), view.data() + view.size());
-                m_partitions[p] = Compressor(buffer, args...);
+                m_partitions.emplace_back(std::move(buffer), args...);
             }
         }
     #endif

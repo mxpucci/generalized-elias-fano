@@ -93,14 +93,16 @@ namespace gef {
             return total_bytes;
         }
 
-        static double approximated_optimal_split_point(const std::vector<T> &S, const T min, const T max) {
+        template<typename C>
+        static double approximated_optimal_split_point(const C &S, const T min, const T max) {
             const GapComputation gap_computation = variation_of_original_vec(S, min, max);
             const size_t total_variation = gap_computation.sum_of_negative_gaps + gap_computation.sum_of_positive_gaps;
 
             return log2(log(2) * total_variation / S.size());
         }
 
-        static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const std::vector<T> &S,
+        template<typename C>
+        static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const C &S,
             const T min, const T max) {
             using WI = __int128;
             using WU = unsigned __int128;
@@ -167,8 +169,9 @@ namespace gef {
         }
 
 
+        template<typename C>
         static std::pair<uint8_t, GapComputation>
-        optimal_split_point(const std::vector<T> &S, const T min, const T max) {
+        optimal_split_point(const C &S, const T min, const T max) {
             using WI = __int128;
             using WU = unsigned __int128;
             const WI min_w = static_cast<WI>(min);
@@ -324,8 +327,9 @@ namespace gef {
 
 
         // Constructor
+        template<typename C>
         B_GEF_STAR(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-                   const std::vector<T> &S,
+                   const C &S,
                    SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT,
                    CompressionBuildMetrics* metrics = nullptr) {
             using clock = std::chrono::steady_clock;

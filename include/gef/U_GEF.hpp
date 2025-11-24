@@ -169,10 +169,11 @@ namespace gef {
             return l_bytes + h_bytes + b_bytes + g_bytes + metadata + struct_overhead;
         }
 
+        template<typename C>
         static std::tuple<uint8_t, GapComputation, bool> approximate_optimal_split_point
-        (const std::vector<T> &S,
+        (const C &S,
             const T min,
-                                                       const T max) {
+            const T max) {
             const size_t total_bits = bits_for_range(min, max);
 
             const auto gc = variation_of_original_vec(S, min, max);
@@ -237,8 +238,9 @@ namespace gef {
             return {static_cast<uint8_t>(min_b + best_index), gcs[best_index], best_rev};
         }
 
+        template<typename C>
         static std::tuple<uint8_t, GapComputation, bool> brute_force_optima_split_point(
-            const std::vector<T> &S,
+            const C &S,
             const T min_val,
             const T max_val) {
             const size_t N = S.size();
@@ -383,8 +385,9 @@ namespace gef {
         }
 
         // Constructor
+        template<typename C>
         U_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-              const std::vector<T> &S,
+              const C &S,
               SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT) {
             // [Constructor unchanged]
             const size_t N = S.size();

@@ -22,6 +22,20 @@
 
 namespace gef {
 
+    template<typename T>
+    struct Span {
+        using value_type = T;
+        const T* ptr;
+        size_t n;
+        Span() : ptr(nullptr), n(0) {}
+        Span(const T* p, size_t n) : ptr(p), n(n) {}
+        const T* data() const { return ptr; }
+        size_t size() const { return n; }
+        const T& operator[](size_t i) const { return ptr[i]; }
+        const T* begin() const { return ptr; }
+        const T* end() const { return ptr + n; }
+    };
+
 typedef struct {
 	size_t positive_gaps;
 	size_t negative_gaps;

@@ -34,11 +34,12 @@ enum class ExceptionRule : uint8_t {
  * sum_of_positive_gaps = sum_of_positive_gaps_without_exception = \sum { s_i - s_{i - 1} : s[i] >= s[i - 1]}
  * sum_of_negative_gaps = sum_of_negative_gaps_without_exception = \sum { s_{i - 1} - s_i : s[i] < s[i - 1]}
  */
-template<typename T>
+template<typename C>
 GapComputation variation_of_original_vec(
-    const std::vector<T>& vec,
-    const T min_val,
-    const T max_val) {
+    const C& vec,
+    const typename C::value_type min_val,
+    const typename C::value_type max_val) {
+    using T = typename C::value_type;
     GapComputation result{};
     size_t n = vec.size();
     if (n < 2) return result;
@@ -92,14 +93,15 @@ GapComputation variation_of_original_vec(
     return result;
 }
 
-template<typename T>
+template<typename C>
 GapComputation variation_of_shifted_vec(
-    const std::vector<T>& v,
-    const T min_val,
-    const T max_val,
+    const C& v,
+    const typename C::value_type min_val,
+    const typename C::value_type max_val,
     const uint8_t b,
     ExceptionRule rule = ExceptionRule::None
 ) {
+    using T = typename C::value_type;
     GapComputation result{};
     const size_t n = v.size();
     if (n == 0) return result;
@@ -188,16 +190,17 @@ GapComputation variation_of_shifted_vec(
 
 // Replace the entire function starting from template<typename T> total_variation_of_shifted_vec_with_multiple_shifts to its closing brace with this corrected version
 
-template<typename T>
+template<typename C>
 std::vector<GapComputation>
 total_variation_of_shifted_vec_with_multiple_shifts(
-    const std::vector<T>& vec,
-    const T min_val,
-    const T max_val,
+    const C& vec,
+    const typename C::value_type min_val,
+    const typename C::value_type max_val,
     const uint8_t min_b,
     const uint8_t max_b,
     ExceptionRule rule = ExceptionRule::None
 ) {
+    using T = typename C::value_type;
     if (min_b > max_b) return {};
 
     const size_t n = vec.size();
@@ -385,11 +388,11 @@ total_variation_of_shifted_vec_with_multiple_shifts(
 }
 
 // Refactored compute_all_gap_computations to use the SIMD version above
-template<typename T>
+template<typename C>
 std::vector<GapComputation> compute_all_gap_computations(
-    const std::vector<T>& v,
-    const T min_val,
-    const T max_val,
+    const C& v,
+    const typename C::value_type min_val,
+    const typename C::value_type max_val,
     ExceptionRule rule,
     size_t total_bits
 ) {

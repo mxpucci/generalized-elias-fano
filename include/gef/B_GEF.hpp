@@ -138,8 +138,9 @@ namespace gef {
             return l_bytes + h_bytes + b_bytes + g_plus_bytes + g_minus_bytes + metadata + struct_overhead;
         }
 
+        template<typename C>
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point
-        (const std::vector<T> &S,
+        (const C &S,
             const T min,
             const T max) {
             const size_t total_bits = bits_for_range(min, max);
@@ -186,8 +187,9 @@ namespace gef {
             return {static_cast<uint8_t>(min_b + best_index), gcs[best_index]};
         }
 
+        template<typename C>
         static std::pair<uint8_t, GapComputation> brute_force_optima_split_point(
-            const std::vector<T> &S,
+            const C &S,
             const T min_val,
             const T max_val) {
             const size_t N = S.size();
@@ -327,8 +329,9 @@ namespace gef {
         }
 
         // Constructor
+        template<typename C>
         B_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-            const std::vector<T> &S,
+            const C &S,
             SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT,
             CompressionBuildMetrics* metrics = nullptr) {
             // [Constructor implementation omitted for brevity, same as before]

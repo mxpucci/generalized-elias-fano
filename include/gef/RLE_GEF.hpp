@@ -88,7 +88,8 @@ namespace gef {
             return leading_zeros - (8 * sizeof(T) - total_bits);
         }
 
-        static uint8_t optimal_split_point(const std::vector<T> S, const uint8_t total_bits, const T min) {
+        template<typename C>
+        static uint8_t optimal_split_point(const C& S, const uint8_t total_bits, const T min) {
             std::vector<size_t> lcp_frequencies(total_bits + 1, 0);
             for (size_t i = 1; i < S.size(); i++) {
                 const uint8_t lcp = LCP(S[i] - min, S[i - 1] - min, total_bits);
@@ -207,8 +208,9 @@ namespace gef {
 
 
         // Constructor
+        template<typename C>
         RLE_GEF(std::shared_ptr<IBitVectorFactory> bit_vector_factory,
-                const std::vector<T> &S) {
+                const C &S) {
             // [Constructor implementation unchanged]
             const size_t N = S.size();
             m_num_elements = N;

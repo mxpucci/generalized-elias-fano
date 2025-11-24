@@ -140,15 +140,11 @@ competitor_tradeoff_placeholders = {
         "compression_throughput": 1.467362
     },
     "SNeaTS": {
-        "compression_ratio": 20.4,
-        "decompression_speed": 2900.0,
-        "random_access_speed": 90.0,
-        "compression_throughput": 0
+        "compression_ratio": 22.98,
+        "compression_throughput": 18.90
     },
     "LeaTS": {
-        "compression_ratio": 22.8,
-        "decompression_speed": 1100.0,
-        "random_access_speed": 60.0,
-        "compression_throughput": 7.198840
+        "compression_ratio": 21.43,
+        "compression_throughput": 7.20
     },
 }
