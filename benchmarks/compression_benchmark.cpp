@@ -6,6 +6,7 @@
 #include "gef/UniformedPartitioner.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "datastructures/SUXBitVectorFactory.hpp"
+#include "datastructures/PastaBitVectorFactory.hpp"
 #include "gef/CompressionProfile.hpp"
 #include "gef/utils.hpp"
 #include <vector>
@@ -83,10 +84,11 @@ struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
 };
 
 std::vector<std::string> g_input_files;
-std::shared_ptr<IBitVectorFactory> g_factory = std::make_shared<SDSLBitVectorFactory>();
-std::string g_factory_name = "SDSL";
+std::shared_ptr<IBitVectorFactory> g_factory = std::make_shared<PastaBitVectorFactory>();
+std::string g_factory_name = "PASTA";
 
 enum class BitVectorImplementation {
+    PASTA,
     SDSL,
     SUX
 };
@@ -101,6 +103,7 @@ std::string strategyToString(gef::SplitPointStrategy strategy) {
 
 std::string implementationToString(BitVectorImplementation impl) {
     switch (impl) {
+        case BitVectorImplementation::PASTA: return "PASTA";
         case BitVectorImplementation::SDSL: return "SDSL";
         case BitVectorImplementation::SUX: return "SUX";
         default: return "UNKNOWN";
@@ -109,6 +112,10 @@ std::string implementationToString(BitVectorImplementation impl) {
 
 void setFactory(BitVectorImplementation impl) {
     switch (impl) {
+        case BitVectorImplementation::PASTA:
+            g_factory = std::make_shared<PastaBitVectorFactory>();
+            g_factory_name = "PASTA";
+            break;
         case BitVectorImplementation::SDSL:
             g_factory = std::make_shared<SDSLBitVectorFactory>();
             g_factory_name = "SDSL";
@@ -714,7 +721,7 @@ int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
 
     // Parse custom arguments
-    BitVectorImplementation selected_impl = BitVectorImplementation::SDSL;
+    BitVectorImplementation selected_impl = BitVectorImplementation::PASTA;
     
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -722,6 +729,8 @@ int main(int argc, char** argv) {
             selected_impl = BitVectorImplementation::SUX;
         } else if (arg == "--bitvector=sdsl") {
             selected_impl = BitVectorImplementation::SDSL;
+        } else if (arg == "--bitvector=pasta") {
+            selected_impl = BitVectorImplementation::PASTA;
         } else if (arg == "--bitvector=both") {
             std::cerr << "Error: --bitvector=both is not supported." << std::endl;
             std::cerr << "Please run the benchmark twice, once with --bitvector=sdsl and once with --bitvector=sux" << std::endl;
@@ -733,10 +742,11 @@ int main(int argc, char** argv) {
     }
 
     if (g_input_files.empty()) {
-        std::cerr << "Usage: " << argv[0] << " [--bitvector=sdsl|sux] <input_file1> [input_file2 ...] [benchmark_flags]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [--bitvector=pasta|sdsl|sux] <input_file1> [input_file2 ...] [benchmark_flags]" << std::endl;
         std::cerr << "Example: " << argv[0] << " --bitvector=sux data/file1.bin --benchmark_format=json" << std::endl;
         std::cerr << "\nBitVector Implementation Options:" << std::endl;
-        std::cerr << "  --bitvector=sdsl   Use SDSL bitvectors (default)" << std::endl;
+        std::cerr << "  --bitvector=pasta  Use Pasta bitvectors (default)" << std::endl;
+        std::cerr << "  --bitvector=sdsl   Use SDSL bitvectors" << std::endl;
         std::cerr << "  --bitvector=sux    Use SUX bitvectors" << std::endl;
         std::cerr << "\nTo compare both implementations, run the benchmark twice with different flags." << std::endl;
         return 1;
