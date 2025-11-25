@@ -13,11 +13,12 @@
 #include <stdexcept>
 #include "IGEF.hpp"
 #include "FastBitWriter.hpp"
-#include "FastZeroTerminatedDecoder.hpp"
+
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
+#include "../datastructures/PastaBitVector.hpp"
 
 #if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
 #include <experimental/simd>
@@ -26,7 +27,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T, typename BitVectorType = SDSLBitVector>
+    template<typename T, typename BitVectorType = PastaBitVector>
     class RLE_GEF : public IGEF<T> {
     public:
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
@@ -266,7 +267,7 @@ namespace gef {
             T lastHighBits = 0;
             size_t h_count = 0;
             uint64_t* b_data = B->raw_data_ptr();
-            FastBitWriter b_writer(b_data);
+            FastBitWriter<BitVectorType::reverse_bit_order> b_writer(b_data);
             
             // Precompute low mask once - b < total_bits is guaranteed by h > 0
             using U = std::make_unsigned_t<T>;

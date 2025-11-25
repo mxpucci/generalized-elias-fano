@@ -1,11 +1,15 @@
 #include "gef/B_GEF_STAR.hpp"
+#include "gef/B_GEF.hpp"
 #include "gef/UniformedPartitioner.hpp"
 #include "gef/CompressionProfile.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
+#include "datastructures/SDSLBitVector.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "datastructures/SUXBitVectorFactory.hpp"
-
+#include "datastructures/SUXBitVector.hpp"
+#include "datastructures/PastaBitVector.hpp"
+#include "datastructures/PastaBitVectorFactory.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -36,21 +40,23 @@ struct ProgramOptions {
     bool verbose = false;
 };
 
-template<typename T>
-struct BGEFStarWrapper : public gef::B_GEF_STAR<T> {
+template<typename T, typename BitVectorType = SDSLBitVector>
+struct BGEFStarWrapper : public gef::B_GEF<T, BitVectorType> {
+    using Base = gef::B_GEF<T, BitVectorType>;
+
     BGEFStarWrapper(gef::Span<const T> data,
                     const std::shared_ptr<IBitVectorFactory>& factory,
                     gef::SplitPointStrategy strategy,
                     gef::CompressionBuildMetrics* metrics = nullptr)
-        : gef::B_GEF_STAR<T>(factory, data, strategy, metrics) {}
+        : Base(factory, data, strategy, metrics) {}
 
     BGEFStarWrapper(const std::vector<T>& data,
                     const std::shared_ptr<IBitVectorFactory>& factory,
                     gef::SplitPointStrategy strategy,
                     gef::CompressionBuildMetrics* metrics = nullptr)
-        : gef::B_GEF_STAR<T>(factory, data, strategy, metrics) {}
+        : Base(factory, data, strategy, metrics) {}
 
-    BGEFStarWrapper() : gef::B_GEF_STAR<T>() {}
+    BGEFStarWrapper() : Base() {}
 };
 
 std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
@@ -90,7 +96,7 @@ std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
                            value.end(),
                            value.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (value != "sdsl" && value != "sux") {
+            if (value != "sdsl" && value != "sux" && value != "pasta") {
                 throw std::invalid_argument("Unsupported bitvector implementation: " + value);
             }
             opts.bitvector = std::move(value);
@@ -124,6 +130,9 @@ std::shared_ptr<IBitVectorFactory> make_factory(const std::string& name) {
     if (name == "sux") {
         return std::make_shared<SUXBitVectorFactory>();
     }
+    if (name == "pasta") {
+        return std::make_shared<PastaBitVectorFactory>();
+    }
     throw std::invalid_argument("Unsupported bitvector factory: " + name);
 }
 
@@ -148,6 +157,7 @@ struct MeasurementResult {
     gef::CompressionBuildMetrics build_metrics{};
 };
 
+template<typename BitVectorType>
 MeasurementResult measure(const std::vector<int64_t>& data,
                           size_t iterations,
                           size_t partition_size,
@@ -161,11 +171,13 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     std::vector<double> elapsed_seconds;
     elapsed_seconds.reserve(iterations);
 
+    using Compressor = BGEFStarWrapper<int64_t, BitVectorType>;
+
     for (size_t i = 0; i < iterations; ++i) {
         std::vector<int64_t> data_copy = data;
         auto t0 = steady_clock::now();
         gef::UniformedPartitioner<int64_t,
-                                  BGEFStarWrapper<int64_t>,
+                                  Compressor,
                                   std::shared_ptr<IBitVectorFactory>,
                                   gef::SplitPointStrategy> compressor(
             data_copy, partition_size, factory, strategy);
@@ -188,7 +200,7 @@ MeasurementResult measure(const std::vector<int64_t>& data,
 
     gef::CompressionBuildMetrics build_metrics;
     gef::UniformedPartitioner<int64_t,
-                              BGEFStarWrapper<int64_t>,
+                              Compressor,
                               std::shared_ptr<IBitVectorFactory>,
                               gef::SplitPointStrategy,
                               gef::CompressionBuildMetrics*> final_compressor(
@@ -233,7 +245,7 @@ int main(int argc, char** argv) {
                       << "  --partition-size=<N>   Partition size (default: auto - entire dataset)\n"
                       << "  --iterations=<N>       Number of measurement iterations (default: 5)\n"
                       << "  --strategy=<approx|optimal>  Split point strategy (default: optimal)\n"
-                      << "  --bitvector=<sdsl|sux> Bitvector implementation (default: sdsl)\n"
+                      << "  --bitvector=<sdsl|sux|pasta> Bitvector implementation (default: sdsl)\n"
                       << "  --verbose              Print per-iteration timings\n"
                       << std::endl;
             return maybe_opts.has_value() ? 0 : 1;
@@ -257,12 +269,29 @@ int main(int argc, char** argv) {
         std::cout << "Number of integers:  " << data.size() << "\n";
 
         auto factory = make_factory(opts.bitvector);
-        auto result = measure(data,
-                              opts.iterations,
-                              effective_partition_size,
-                              factory,
-                              opts.strategy,
-                              opts.verbose);
+        MeasurementResult result;
+        if (opts.bitvector == "sux") {
+            result = measure<SUXBitVector>(data,
+                                           opts.iterations,
+                                           effective_partition_size,
+                                           factory,
+                                           opts.strategy,
+                                           opts.verbose);
+        } else if (opts.bitvector == "pasta") {
+            result = measure<PastaBitVector>(data,
+                                             opts.iterations,
+                                             effective_partition_size,
+                                             factory,
+                                             opts.strategy,
+                                             opts.verbose);
+        } else {
+            result = measure<SDSLBitVector>(data,
+                                            opts.iterations,
+                                            effective_partition_size,
+                                            factory,
+                                            opts.strategy,
+                                            opts.verbose);
+        }
 
         std::cout << std::fixed << std::setprecision(3);
         std::cout << "Average time:        " << result.average_seconds << " s\n"

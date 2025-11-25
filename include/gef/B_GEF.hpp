@@ -24,6 +24,7 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
+#include "../datastructures/PastaBitVector.hpp"
 
 #if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
 #include <experimental/simd>
@@ -32,7 +33,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T, typename BitVectorType = SDSLBitVector>
+    template<typename T, typename BitVectorType = PastaBitVector>
     class B_GEF : public IGEF<T> {
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
@@ -455,12 +456,12 @@ namespace gef {
           const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
 
           uint64_t* b_data = B->raw_data_ptr();
-          FastBitWriter b_writer(b_data);
+          FastBitWriter<BitVectorType::reverse_bit_order> b_writer(b_data);
 
           uint64_t* g_plus_data = G_plus->raw_data_ptr();
           uint64_t* g_minus_data = G_minus->raw_data_ptr();
-          FastBitWriter plus_writer(g_plus_data);
-          FastBitWriter minus_writer(g_minus_data);
+          FastBitWriter<BitVectorType::reverse_bit_order> plus_writer(g_plus_data);
+          FastBitWriter<BitVectorType::reverse_bit_order> minus_writer(g_minus_data);
 
           if (N > 0) {
               const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
@@ -577,8 +578,8 @@ namespace gef {
             const size_t minus_bits = G_minus->size();
             const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
             const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
-            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+            FastUnaryDecoder<BitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder<BitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
             constexpr size_t GAP_BATCH = 64;
             uint32_t pos_buffer[GAP_BATCH];
             uint32_t neg_buffer[GAP_BATCH];

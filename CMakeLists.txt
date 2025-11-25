@@ -5,6 +5,12 @@ project(gef
     LANGUAGES CXX
 )
 
+include(GNUInstallDirs)
+if(NOT CMAKE_INSTALL_INCLUDEDIR)
+    set(CMAKE_INSTALL_INCLUDEDIR "include" CACHE PATH "Installation directory for header files" FORCE)
+endif()
+set(TLX_INSTALL_INCLUDE_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Installation directory for TLX headers" FORCE)
+
 # Set a default build type if none was specified
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to 'Release' as none was specified.")
@@ -49,7 +55,7 @@ if(GEF_STATIC_LINK)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libstdc++ -static-libgcc")
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find and enable OpenMP for parallel processing
@@ -101,8 +107,30 @@ else()
     set(SUX_INCLUDE_DIR ${sux_SOURCE_DIR})
 endif()
 
+
+# --- Pasta (rank/select bitvectors) ---
+set(TLX_INSTALL OFF CACHE BOOL "" FORCE)
+set(TLX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TLX_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    pasta
+    GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
+    GIT_TAG        main
+)
+
+FetchContent_MakeAvailable(pasta)
+set(PASTA_INCLUDE_DIR ${pasta_SOURCE_DIR}/include)
+
+
 # --- Project Sources ---
 add_subdirectory(src)
+
+# Link Pasta bit-vector implementation
+if(TARGET pasta_bit_vector)
+    target_link_libraries(gef PUBLIC pasta_bit_vector)
+elseif(EXISTS "${PASTA_INCLUDE_DIR}")
+    target_include_directories(gef PUBLIC ${PASTA_INCLUDE_DIR})
+endif()
 
 # --- Tests Configuration ---
 option(GEF_BUILD_TESTS "Build tests for gef" ${GEF_IS_MAIN_PROJECT})

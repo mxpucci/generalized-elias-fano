@@ -17,9 +17,10 @@
 namespace gef {
     /**
      * @brief Fast inline bit writer for hot path optimization
-     * Eliminates virtual function call overhead during construction by directly
-     * manipulating bit vector memory. Optimized for small gap sequences.
+     * @tparam ReverseOrder If true, writes bits from MSB (63) down to LSB (0) within a word.
+     * (Required for pasta::bit_vector compatibility).
      */
+    template<bool ReverseOrder = false>
     class FastBitWriter {
     private:
         uint64_t* data_;
@@ -35,23 +36,23 @@ namespace gef {
         __attribute__((always_inline)) inline void set_zero() {
             const size_t word_idx = pos_ >> 6;
             const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-            data_[word_idx] &= ~(1ULL << bit_offset);
+            
+            if constexpr (ReverseOrder) {
+                // Pasta/Reverse: Index 0 is MSB (bit 63)
+                data_[word_idx] &= ~(1ULL << (63 - bit_offset));
+            } else {
+                // Standard: Index 0 is LSB (bit 0)
+                data_[word_idx] &= ~(1ULL << bit_offset);
+            }
             ++pos_;
         }
 
         /**
          * @brief Set a range of bits to 1 (optimized for all gap sizes)
-         * @param count Number of consecutive bits to set to 1
-         *
-         * Optimized for:
-         * - Small gaps (0-8 bits): ~90% of cases in high-entropy data
-         * - Large gaps (100s-1000s bits): common when split point is near 0
          */
         __attribute__((always_inline)) inline void set_ones_range(uint64_t count) {
             if (count == 0) return;
 
-            // Unified path using word-level operations.
-            // This eliminates the loop overhead for small counts and uses efficient masking.
             const size_t end_pos = pos_ + count - 1;
             const size_t start_word = pos_ >> 6;
             const size_t end_word = end_pos >> 6;
@@ -59,66 +60,71 @@ namespace gef {
             const uint32_t end_bit = static_cast<uint32_t>(end_pos & 63);
 
             if (start_word == end_word) {
-                // All bits in same word - single mask operation
-                // (~0ULL >> (64 - count)) creates a mask of 'count' ones at the LSBs.
-                // We then shift it to the correct position.
-                // This handles count=64 correctly if start_bit=0.
-                const uint64_t mask = (~0ULL >> (64 - count)) << start_bit;
+                // Single word case
+                uint64_t mask = (~0ULL >> (64 - count));
+                
+                if constexpr (ReverseOrder) {
+                    // Shift to the "left" (High bits) based on start_bit
+                    mask <<= (64 - count - start_bit);
+                } else {
+                    // Shift to "right" (Low bits) based on start_bit
+                    mask <<= start_bit;
+                }
+                
                 data_[start_word] |= mask;
             } else {
                 // Spans multiple words
-                // Head: set bits from start_bit to 63
-                data_[start_word] |= (~0ULL << start_bit);
+                
+                // --- HEAD ---
+                if constexpr (ReverseOrder) {
+                    // Reverse: Fill from start_bit "down" to 0. 
+                    // This creates a mask of 1s at the BOTTOM of the word.
+                    data_[start_word] |= (~0ULL >> start_bit);
+                } else {
+                    // Standard: Fill from start_bit "up" to 63.
+                    data_[start_word] |= (~0ULL << start_bit);
+                }
 
                 const size_t num_full_words = end_word - start_word - 1;
                 if (num_full_words > 0) {
                     uint64_t* body_start = data_ + start_word + 1;
-
+                    
+                    // SIMD Body (Endian agnostic for 0xFFFFFF...)
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-                    // AVX2 path: write 4 words (32 bytes) at a time
                     __m256i ones = _mm256_set1_epi64x(~0ULL);
                     size_t w = 0;
-                    // Process 4 words at a time
                     for (; w + 4 <= num_full_words; w += 4) {
                         _mm256_storeu_si256(reinterpret_cast<__m256i*>(body_start + w), ones);
                     }
-                    // Handle remaining 0-3 words
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
+                    for (; w < num_full_words; ++w) body_start[w] = ~0ULL;
 #elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
-                    // NEON path: write 2 words (16 bytes) at a time
                     uint64x2_t ones = vdupq_n_u64(~0ULL);
                     size_t w = 0;
-                    // Process 2 words at a time
                     for (; w + 2 <= num_full_words; w += 2) {
                         vst1q_u64(body_start + w, ones);
                     }
-                    // Handle remaining 0-1 word
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
+                    for (; w < num_full_words; ++w) body_start[w] = ~0ULL;
 #else
-                    // Scalar path with loop unrolling for better performance
+                    // Unrolled scalar
                     size_t w = 0;
-                    // Unroll by 4 for better ILP (instruction-level parallelism)
                     for (; w + 4 <= num_full_words; w += 4) {
-                        body_start[w] = ~0ULL;
-                        body_start[w + 1] = ~0ULL;
-                        body_start[w + 2] = ~0ULL;
-                        body_start[w + 3] = ~0ULL;
+                        body_start[w] = ~0ULL; body_start[w+1] = ~0ULL;
+                        body_start[w+2] = ~0ULL; body_start[w+3] = ~0ULL;
                     }
-                    // Handle remaining 0-3 words
-                    for (; w < num_full_words; ++w) {
-                        body_start[w] = ~0ULL;
-                    }
+                    for (; w < num_full_words; ++w) body_start[w] = ~0ULL;
 #endif
                 }
 
-                // Tail: set bits from 0 to end_bit
-                // (~0ULL >> (63 - end_bit)) creates a mask of (end_bit + 1) ones at LSBs
-                const uint64_t tail_mask = ~0ULL >> (63 - end_bit);
-                data_[end_word] |= tail_mask;
+                // --- TAIL ---
+                if constexpr (ReverseOrder) {
+                    // Reverse: Fill from MSB (63) down to end_bit (inclusive).
+                    // This creates a mask of 1s at the TOP of the word.
+                    // We want (end_bit + 1) bits at the top.
+                    data_[end_word] |= (~0ULL << (63 - end_bit));
+                } else {
+                    // Standard: Fill from 0 up to end_bit.
+                    data_[end_word] |= (~0ULL >> (63 - end_bit));
+                }
             }
 
             pos_ += count;
@@ -129,5 +135,3 @@ namespace gef {
 } // namespace gef
 
 #endif // GEF_FAST_BIT_WRITER_HPP
-
-

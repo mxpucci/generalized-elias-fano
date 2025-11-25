@@ -16,6 +16,7 @@
 #include <chrono>
 #include <stdexcept>
 
+
 // SIMD intrinsics for optimized bit operations
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
@@ -38,12 +39,13 @@ namespace stdx = std::experimental;
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
+#include "../datastructures/PastaBitVector.hpp"
 #include "FastBitWriter.hpp"
 
 
 namespace gef {
 
-    template<typename T, typename BitVectorType = SDSLBitVector>
+    template<typename T, typename BitVectorType = PastaBitVector>
     class B_GEF_STAR : public IGEF<T> {
     private:
         /*
@@ -462,9 +464,9 @@ namespace gef {
             
             uint64_t* g_plus_data = G_plus->raw_data_ptr();
             uint64_t* g_minus_data = G_minus->raw_data_ptr();
-            
-            FastBitWriter plus_writer(g_plus_data);
-            FastBitWriter minus_writer(g_minus_data);
+
+            FastBitWriter<BitVectorType::reverse_bit_order> plus_writer(g_plus_data);
+            FastBitWriter<BitVectorType::reverse_bit_order> minus_writer(g_minus_data);
             U lastHighBits = 0;
 
             // L writer state
@@ -588,8 +590,8 @@ namespace gef {
             const size_t minus_start_bit =
                 startIndex > 0 ? std::min(G_minus->select0(startIndex) + 1, minus_bits) : 0;
 
-            FastUnaryDecoder plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+            FastUnaryDecoder<BitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder<BitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
 
             constexpr size_t GAP_BATCH = 64;
             uint32_t pos_buffer[GAP_BATCH];

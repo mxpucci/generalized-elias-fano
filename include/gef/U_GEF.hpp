@@ -25,6 +25,7 @@
 #include "../datastructures/IBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
+#include "../datastructures/PastaBitVector.hpp"
 
 #if (defined(__AVX2__) || defined(__SSE4_2__)) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
@@ -41,7 +42,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T, typename BitVectorType = SDSLBitVector>
+    template<typename T, typename BitVectorType = PastaBitVector>
     class U_GEF : public IGEF<T> {
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
@@ -471,10 +472,10 @@ namespace gef {
             const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
 
             uint64_t* b_data = B->raw_data_ptr();
-            FastBitWriter b_writer(b_data);
+            FastBitWriter<BitVectorType::reverse_bit_order> b_writer(b_data);
 
             uint64_t* g_data = G->raw_data_ptr();
-            FastBitWriter g_writer(g_data);
+            FastBitWriter<BitVectorType::reverse_bit_order> g_writer(g_data);
 
             // Handle first element separately to avoid i==0 check in loop
             if (N > 0) {
@@ -565,7 +566,7 @@ namespace gef {
                 decoder_bit_pos = G->select0(zeros_before) + 1;
             }
             if (decoder_bit_pos > G->size()) decoder_bit_pos = G->size();
-            FastUnaryDecoder gap_decoder(G->raw_data_ptr(), G->size(), decoder_bit_pos);
+            FastUnaryDecoder<BitVectorType::reverse_bit_order> gap_decoder(G->raw_data_ptr(), G->size(), decoder_bit_pos);
             U current_high = 0;
             if (startIndex > 0) {
                 current_high = static_cast<U>(H[exception_rank - 1]);
