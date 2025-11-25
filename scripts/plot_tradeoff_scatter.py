@@ -25,7 +25,7 @@ except ImportError:
     competitor_benchmarks = {}
     competitor_tradeoff_placeholders = {}
 
-TARGET_PARTITION_SIZE = 2 ** 20  # 1,048,576
+TARGET_PARTITION_SIZE = 32000
 
 GEF_VARIANTS = {
     "RLE_GEF": "RLE-GEF",

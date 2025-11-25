@@ -122,7 +122,7 @@ for dataset_path in "${BIN_FILES[@]}"; do
         --benchmark_out_format=json
         --benchmark_context=openmp=disabled
         --benchmark_context=variant=no_omp
-        --benchmark_context=bitvector=sdsl
+        --benchmark_context=bitvector=pasta
         --benchmark_context=dataset="${dataset_name}"
         --benchmark_context=threads=1
     )

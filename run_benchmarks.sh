@@ -122,7 +122,7 @@ for input_file in "$INPUT_DIR"/*.bin; do
         --benchmark_format=json \
         --benchmark_context=openmp=disabled \
         --benchmark_context=variant=no_omp \
-        --benchmark_context=bitvector=sdsl \
+        --benchmark_context=bitvector=pasta \
         --benchmark_context=dataset="$base_name" \
         > "$output_no_omp" 2>&1
     echo "     Saved to: ${base_name}_no_omp.json"

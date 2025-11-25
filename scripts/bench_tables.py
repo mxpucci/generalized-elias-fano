@@ -248,7 +248,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate benchmark tables.')
     parser.add_argument('benchmark_dir', nargs='?', default='benchmark_results', help='Directory containing benchmark JSON files')
     parser.add_argument('output_dir', nargs='?', default='latex_tables', help='Directory to save LaTeX tables')
-    parser.add_argument('--partition_size', type=int, default=1048576, help='Partition size to filter (default: 1048576)')
+    parser.add_argument('--partition_size', type=int, default=32000, help='Partition size to filter (default: 1048576)')
     
     args = parser.parse_args()
     

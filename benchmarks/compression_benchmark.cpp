@@ -166,11 +166,11 @@ public:
 // };
 // Full set:
 const std::vector<size_t> PARTITION_SIZES = {
-    8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304, 8388608
+    8000, 16000, 24000, 32000, 40000, 48000, 56000, 64000, 10000, 250000, 500000, 100000
 };
 
 // Partition size for restricted benchmarks
-const size_t FIXED_PARTITION_SIZE = 1048576;
+const size_t FIXED_PARTITION_SIZE = 32000;
 
 const size_t DEFAULT_PARTITION_SIZE = FIXED_PARTITION_SIZE; // Updated to match the restriction
 const gef::SplitPointStrategy DEFAULT_LOOKUP_STRATEGY = gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT;
