@@ -74,18 +74,31 @@ public:
         // Only needed for OpenMP where we assign by index
     #ifdef _OPENMP
         m_partitions.resize(num_partitions);
-        // For uniform-sized partitions, use static scheduling without explicit chunk
-        // This distributes work evenly with minimal overhead
+        // Manual thread partitioning to eliminate #pragma omp for overhead.
+        // With small partitions, the per-iteration scheduling overhead of omp for
+        // becomes significant. By computing each thread's range once upfront,
+        // we eliminate all synchronization during the compression loop.
         #pragma omp parallel
         {
+            const int num_threads = omp_get_num_threads();
+            const int thread_id = omp_get_thread_num();
+            
+            // Divide partitions evenly: first 'remainder' threads get one extra
+            const size_t base_count = num_partitions / static_cast<size_t>(num_threads);
+            const size_t remainder = num_partitions % static_cast<size_t>(num_threads);
+            const size_t my_start = static_cast<size_t>(thread_id) * base_count 
+                                  + std::min(static_cast<size_t>(thread_id), remainder);
+            const size_t my_count = base_count + (static_cast<size_t>(thread_id) < remainder ? 1 : 0);
+            const size_t my_end = my_start + my_count;
+            
             // Thread-local buffer to avoid repeated allocations in fallback cases
             std::vector<T> buffer;
             if constexpr (!can_use_view && !accepts_vector_value) {
                 buffer.reserve(k);
             }
 
-            #pragma omp for schedule(static)
-            for (size_t p = 0; p < num_partitions; ++p) {
+            // Process assigned partitions without any per-iteration synchronization
+            for (size_t p = my_start; p < my_end; ++p) {
                 const size_t start = p * k;
                 const size_t end   = std::min(start + k, data.size());
                 const size_t len   = end - start;

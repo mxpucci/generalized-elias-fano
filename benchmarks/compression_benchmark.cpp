@@ -621,7 +621,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgNames({"file_idx", "partition_size"});
 
     // Lookup - Run only on FIXED partition size (2^20) and only if NOT OpenMP
-    #ifndef _OPENMP
+#ifndef GEF_BENCHMARK_WITH_OPENMP
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})

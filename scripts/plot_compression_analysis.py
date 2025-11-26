@@ -387,7 +387,6 @@ def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
 
 def create_plots(compression_data, decompression_data, lookup_data, output_dir):
     """Create and save the plots showing each compressor separately."""
-    del lookup_data  # Random-access plots removed with the multi-metric view.
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -410,6 +409,7 @@ def create_plots(compression_data, decompression_data, lookup_data, output_dir):
     
     compression_results = build_status_results(compression_data)
     decompression_results = build_status_results(decompression_data)
+    lookup_results = build_status_results(lookup_data)
     
     if not compression_results:
         print("Error: No data to plot")
@@ -489,6 +489,31 @@ def create_plots(compression_data, decompression_data, lookup_data, output_dir):
         plt.close(fig)
     else:
         print("Warning: No decompression throughput data available for plotting.")
+
+    # Random access throughput plots (lookup benchmarks)
+    if lookup_results:
+        plotted_lookup = False
+        for status_key in ('with_omp', 'no_omp'):
+            status_data = lookup_results.get(status_key)
+            if not status_data:
+                continue
+            fig, ax = plt.subplots(figsize=(9, 7))
+            plot_status_subplot(
+                ax,
+                status_data,
+                compressor_styles,
+                'Random Access Throughput (MB/s)',
+                f"Random Access Throughput vs Partition Size ({status_titles.get(status_key, status_key)})"
+            )
+            plt.tight_layout()
+            suffix = 'mt' if status_key == 'with_omp' else 'st'
+            save_figure(fig, output_path, f'random_access_throughput_by_compressor_{suffix}')
+            plt.close(fig)
+            plotted_lookup = True
+        if not plotted_lookup:
+            print("Warning: Random access data exists but no usable series were found for plotting.")
+    else:
+        print("Warning: No random access throughput data available for plotting.")
     
     # Print summary statistics by compressor
     print("\n" + "=" * 80)
@@ -519,6 +544,28 @@ def create_plots(compression_data, decompression_data, lookup_data, output_dir):
                 print(f"{ps:<12} {comp_pct:<18.2f} {throughput:<20.2f}")
     
     print("\n" + "=" * 80)
+    if lookup_results:
+        print("RANDOM ACCESS SUMMARY (lookup throughput)")
+        print("=" * 80)
+        for openmp_status in ('with_omp', 'no_omp'):
+            if openmp_status not in lookup_results:
+                continue
+            status_label = status_titles.get(openmp_status, openmp_status).upper()
+            print(f"\n{'='*80}")
+            print(f"{status_label}")
+            print(f"{'='*80}")
+            for compressor_key in sorted(lookup_results[openmp_status].keys()):
+                comp_data = lookup_results[openmp_status][compressor_key]
+                print(f"\n{compressor_key}:")
+                print("-" * 80)
+                print(f"{'Partition':<12} {'Lookup Throughput (MB/s)':<26}")
+                print("-" * 80)
+                for ps, throughput in zip(
+                    comp_data['partition_sizes'],
+                    comp_data['throughput']
+                ):
+                    value = throughput if throughput is not None else float('nan')
+                    print(f"{ps:<12} {value:<26.2f}")
 
 
 def main():

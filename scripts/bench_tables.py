@@ -248,7 +248,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate benchmark tables.')
     parser.add_argument('benchmark_dir', nargs='?', default='benchmark_results', help='Directory containing benchmark JSON files')
     parser.add_argument('output_dir', nargs='?', default='latex_tables', help='Directory to save LaTeX tables')
-    parser.add_argument('--partition_size', type=int, default=32000, help='Partition size to filter (default: 1048576)')
+    parser.add_argument('--partition_size', type=int, default=32000, help='Partition size to filter (default: 32000)')
     
     args = parser.parse_args()
     
@@ -261,24 +261,19 @@ if __name__ == "__main__":
         print(f"Created output directory: {gef_output_dir}")
     # combined_output_dir is same as gef_output_dir
 
+    TABLE_PARTITION_SIZE = 32000
+    if args.partition_size != TABLE_PARTITION_SIZE:
+        print(f"Overriding requested partition size {args.partition_size} with {TABLE_PARTITION_SIZE} for table generation.")
+
+    target_partition_size = TABLE_PARTITION_SIZE
+
     print(f"Processing benchmarks from: {benchmark_dir}")
     print(f"Outputting tables to:     {gef_output_dir}")
-    print(f"Filtering partition size: {args.partition_size}")
+    print(f"Filtering partition size: {target_partition_size}")
 
     # --- PART 1: Generate GEF-only tables ---
-    # IMPORTANT: The user requested random access speed to be filtered for partition_size: 1048576 (2^20)
-    # We will parse data twice: once generically (using command line arg) and once specifically for random access if needed.
-    # However, the current parse_gef_data filters by the passed partition_size.
-    # So we should ensure we pass the correct partition size for the general tables or handle it.
-    # The user query implies we should specifically use 2^20 for random access in the "Best GEF" calculation.
-    
-    # Let's parse generally first (using CLI arg, default 1MB)
-    gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir, args.partition_size)
-    
-    # For "Best GEF" random access consistency, we might need to ensure we have the 2^20 data available.
-    # If args.partition_size is NOT 1048576, we might be missing the data the user requested for the combined table.
-    # Let's re-parse specifically for 2^20 to get the random access data for the combined table.
-    _, _, gef_access_df_2_20 = parse_gef_data(benchmark_dir, 1048576)
+    # All GEF tables should rely on partition size 32000 for consistency across metrics.
+    gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir, target_partition_size)
     
     gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", r"$\mathrm{B^*-GEF}$"]
 
@@ -313,9 +308,8 @@ if __name__ == "__main__":
                 
                 # Get Access Speed
                 # Ensure we look up the exact same variant in the access dataframe
-                # Use the specific 2^20 partition size dataframe for access speed
-                if variant in gef_access_df_2_20.columns and dataset in gef_access_df_2_20.index:
-                     val_access = gef_access_df_2_20.loc[dataset, variant]
+                if variant in gef_access_df.columns and dataset in gef_access_df.index:
+                     val_access = gef_access_df.loc[dataset, variant]
                 else:
                      val_access = np.nan
                 best_gef_access.append(val_access)

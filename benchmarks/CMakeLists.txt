@@ -31,6 +31,10 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     
     # Disable debug symbols for benchmarks to reduce binary size
     target_compile_options(${benchmark_name} PRIVATE -g0)
+
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(${benchmark_name} PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endforeach()
 
 # Special handling for compression_benchmark: create two versions
@@ -40,6 +44,9 @@ endforeach()
 # Version 1: WITH OpenMP (default)
 add_executable(compression_benchmark compression_benchmark.cpp)
 target_link_libraries(compression_benchmark PRIVATE gef::gef benchmark::benchmark)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(compression_benchmark PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_compile_options(compression_benchmark PRIVATE 
     -O3 -march=native -ffast-math -funroll-loops
     $<$<CXX_COMPILER_ID:GNU,Clang>:-ftree-vectorize -fvect-cost-model=dynamic>
@@ -49,8 +56,7 @@ set_target_properties(compression_benchmark PROPERTIES
 )
 target_compile_options(compression_benchmark PRIVATE -g0)
 
-# If OpenMP was found, it's already linked via CMAKE_CXX_FLAGS
-# Add a compile definition to make it clear this version has OpenMP
+# If OpenMP was found, add a compile definition to make it clear this version has OpenMP
 if(OpenMP_CXX_FOUND)
     target_compile_definitions(compression_benchmark PRIVATE GEF_BENCHMARK_WITH_OPENMP=1)
 endif()
@@ -66,26 +72,9 @@ set_target_properties(compression_benchmark_no_omp PROPERTIES
     INTERPROCEDURAL_OPTIMIZATION TRUE
 )
 target_compile_options(compression_benchmark_no_omp PRIVATE -g0)
+target_compile_definitions(compression_benchmark_no_omp PRIVATE GEF_BENCHMARK_WITH_OPENMP=0)
 
-# Explicitly remove OpenMP flags and undefine _OPENMP for the no-omp version
 if(OpenMP_CXX_FOUND)
-    # Remove OpenMP compile flags
-    target_compile_options(compression_benchmark_no_omp PRIVATE ${OpenMP_CXX_FLAGS})
-    # The above adds flags, we need to remove them. Use a different approach:
-    # Undefine _OPENMP to disable OpenMP code paths
-    target_compile_definitions(compression_benchmark_no_omp PRIVATE _OPENMP=0)
-    target_compile_options(compression_benchmark_no_omp PRIVATE -Wno-unknown-pragmas)
-    
-    # For GCC/Clang: explicitly disable OpenMP
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(compression_benchmark_no_omp PRIVATE -fno-openmp)
-        # Remove OpenMP from link flags by using a custom link options
-        get_target_property(LINK_FLAGS compression_benchmark_no_omp LINK_FLAGS)
-        if(LINK_FLAGS)
-            string(REPLACE "${OpenMP_CXX_FLAGS}" "" LINK_FLAGS "${LINK_FLAGS}")
-            set_target_properties(compression_benchmark_no_omp PROPERTIES LINK_FLAGS "${LINK_FLAGS}")
-        endif()
-    endif()
     message(STATUS "Building two compression_benchmark versions:")
     message(STATUS "  - compression_benchmark (WITH OpenMP)")
     message(STATUS "  - compression_benchmark_no_omp (WITHOUT OpenMP)")

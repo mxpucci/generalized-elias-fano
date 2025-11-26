@@ -11,12 +11,12 @@
 # Arguments:
 #   bench_output_dir - Directory containing benchmark JSON files (default: ./bench-output)
 #   output_dir       - Directory to save plots (default: ./plots)
-#   partition_size   - Partition size to filter for tables (default: 1048576)
+#   partition_size   - Partition size to filter for trade-off plots and tables (default: 32000)
 #
 # Examples:
 #   ./plot_benchmarks.sh
 #   ./plot_benchmarks.sh bench-output my_plots
-#   ./plot_benchmarks.sh bench-output my_plots 1048576
+#   ./plot_benchmarks.sh bench-output my_plots 32000
 # =============================================================================
 
 # Exit immediately if a command fails
@@ -25,7 +25,7 @@ set -e
 # --- Parse Arguments ---
 BENCH_OUTPUT_DIR="${1:-./bench-output}"
 OUTPUT_DIR="${2:-./plots}"
-PARTITION_SIZE="${3:-1048576}"
+PARTITION_SIZE="${3:-32000}"
 
 # --- Configuration ---
 VENV_PATH="./mac-venv"
@@ -91,7 +91,7 @@ export MPLCONFIGDIR="$MPL_CACHE_DIR"
 echo "Generating plots..."
 echo ""
 python3 "$PLOT_SCRIPT" "$BENCH_OUTPUT_DIR" "$OUTPUT_DIR"
-python3 "$TRADEOFF_SCRIPT" "$BENCH_OUTPUT_DIR" "$OUTPUT_DIR"
+python3 "$TRADEOFF_SCRIPT" "$BENCH_OUTPUT_DIR" "$OUTPUT_DIR" --partition_size "$PARTITION_SIZE"
 
 echo ""
 # --- Run Tables Script ---
