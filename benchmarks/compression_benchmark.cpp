@@ -620,8 +620,13 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgsProduct(partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
-    // Lookup - Run only on FIXED partition size (2^20) and only if NOT OpenMP
-#ifndef GEF_BENCHMARK_WITH_OPENMP
+    // =========================================================================
+    // Single-threaded only benchmarks (Lookup, SizeInBytes, Decompression, GetElements)
+    // These are only registered in the non-OpenMP version.
+    // Compression benchmarks above run in both versions to measure parallel vs sequential.
+    // =========================================================================
+#if !GEF_BENCHMARK_WITH_OPENMP
+    // Lookup - Run only on FIXED partition size
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
@@ -641,9 +646,8 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
-    #endif
 
-    // Size benchmarks - Run only on FIXED partition size (DEFAULT_PARTITION_SIZE is updated)
+    // Size benchmarks - Run only on FIXED partition size
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_SizeInBytes)
         ->ArgsProduct({
             file_idx_args,
@@ -679,7 +683,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
 
-    // Decompression Throughput - Run only on FIXED partition size (2^20)
+    // Decompression Throughput - Run only on FIXED partition size
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Decompression)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
@@ -696,7 +700,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
-    // Partial get_elements throughput - Run only on FIXED partition size (2^20)
+    // Partial get_elements throughput - Run only on FIXED partition size
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_GetElements)
         ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
@@ -712,6 +716,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_GetElements)
         ->ArgsProduct(fixed_get_elements_partition_lists)
         ->ArgNames({"file_idx", "partition_size", "range"});
+#endif // !GEF_BENCHMARK_WITH_OPENMP
 }
 #pragma endregion
 

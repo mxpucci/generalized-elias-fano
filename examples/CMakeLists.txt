@@ -14,4 +14,8 @@ endif()
 if(TARGET gef::gef)
     add_executable(basic_usage_subdir basic_usage.cpp)
     target_link_libraries(basic_usage_subdir PRIVATE gef::gef)
+
+    # Graph compression example
+    add_executable(graph_example graph_example.cpp)
+    target_link_libraries(graph_example PRIVATE gef::gef)
 endif() 

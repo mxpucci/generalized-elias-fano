@@ -131,6 +131,21 @@ namespace gef {
         }
 
         size_t position() const { return pos_; }
+
+        /**
+         * @brief Skip over count bits (leave them at 0, assuming memory is zeroed)
+         * Used for unary encoding where zeros represent gaps.
+         */
+        __attribute__((always_inline)) inline void skip_zeros(size_t count) {
+            pos_ += count;
+        }
+
+        /**
+         * @brief Write a single 1 bit (terminator for unary encoding)
+         */
+        __attribute__((always_inline)) inline void write_one() {
+            set_ones_range(1);
+        }
     };
 } // namespace gef
 

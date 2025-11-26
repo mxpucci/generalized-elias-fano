@@ -3,8 +3,13 @@
 # =============================================================================
 # Benchmark Runner Script
 # =============================================================================
-# This script runs both OpenMP-enabled and OpenMP-disabled compression benchmarks
-# on all .bin files in a specified directory.
+# This script runs compression benchmarks on all .bin files in a specified directory.
+#
+# Benchmark Strategy:
+#   - COMPRESSION benchmarks: Run in BOTH OpenMP and non-OpenMP versions
+#     (to compare parallel vs sequential compression throughput)
+#   - ALL OTHER benchmarks (Lookup, SizeInBytes, Decompression, GetElements):
+#     Run ONLY in the non-OpenMP (single-threaded) version
 #
 # Usage:
 #   ./run_benchmarks.sh <input_directory> [output_directory]
@@ -33,11 +38,12 @@ if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "  $0 /Users/michelangelopucci/Downloads/Data"
     echo "  $0 /path/to/data ./my_results"
     echo ""
-    echo "This script runs both:"
-    echo "  - compression_benchmark (WITH OpenMP - parallel decompression)"
-    echo "  - compression_benchmark_no_omp (WITHOUT OpenMP - sequential decompression)"
+    echo "This script runs:"
+    echo "  - compression_benchmark (WITH OpenMP): Compression benchmarks only (parallel)"
+    echo "  - compression_benchmark_no_omp (WITHOUT OpenMP): ALL benchmarks (single-threaded)"
     echo ""
-    echo "Results are saved as separate JSON files for comparison."
+    echo "Compression throughput can be compared between parallel and sequential versions."
+    echo "All other benchmarks (Lookup, SizeInBytes, Decompression, GetElements) run single-threaded only."
     exit 0
 fi
 
@@ -82,8 +88,8 @@ echo "Input directory:  $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "Files to process: $bin_count .bin file(s)"
 echo "Benchmark variants:"
-echo "  1. WITH OpenMP:    $BENCH_WITH_OMP"
-echo "  2. WITHOUT OpenMP: $BENCH_NO_OMP"
+echo "  1. WITH OpenMP:    $BENCH_WITH_OMP (Compression only)"
+echo "  2. WITHOUT OpenMP: $BENCH_NO_OMP (ALL benchmarks)"
 echo "========================================================================="
 echo ""
 
@@ -103,9 +109,9 @@ for input_file in "$INPUT_DIR"/*.bin; do
     
     echo "[$file_counter/$bin_count] Processing '$base_name.bin'..."
     
-    # --- Run WITH OpenMP ---
+    # --- Run WITH OpenMP (Compression benchmarks only) ---
     output_with_omp="$OUTPUT_DIR/${base_name}_with_omp.json"
-    echo "  -> Running WITH OpenMP (parallel)..."
+    echo "  -> Running WITH OpenMP (Compression benchmarks only, parallel)..."
     "$BENCH_WITH_OMP" "$input_file" \
         --benchmark_format=json \
         --benchmark_context=openmp=enabled \
@@ -115,9 +121,9 @@ for input_file in "$INPUT_DIR"/*.bin; do
         > "$output_with_omp" 2>&1
     echo "     Saved to: ${base_name}_with_omp.json"
     
-    # --- Run WITHOUT OpenMP ---
+    # --- Run WITHOUT OpenMP (ALL benchmarks, single-threaded) ---
     output_no_omp="$OUTPUT_DIR/${base_name}_no_omp.json"
-    echo "  -> Running WITHOUT OpenMP (sequential)..."
+    echo "  -> Running WITHOUT OpenMP (ALL benchmarks, single-threaded)..."
     "$BENCH_NO_OMP" "$input_file" \
         --benchmark_format=json \
         --benchmark_context=openmp=disabled \
@@ -136,11 +142,10 @@ echo "All benchmarks complete!"
 echo "========================================================================="
 echo "Results saved in: $OUTPUT_DIR"
 echo ""
-echo "To compare performance between OpenMP and non-OpenMP versions:"
-echo "  - Review JSON files in $OUTPUT_DIR"
-echo "  - Files ending in '_with_omp.json' used parallel decompression"
-echo "  - Files ending in '_no_omp.json' used sequential decompression"
+echo "To compare compression throughput between OpenMP and non-OpenMP versions:"
+echo "  - Files ending in '_with_omp.json': Compression benchmarks only (parallel)"
+echo "  - Files ending in '_no_omp.json': ALL benchmarks (single-threaded)"
 echo ""
-echo "You can use the Google Benchmark compare.py tool to generate comparisons:"
+echo "Use Google Benchmark compare.py to compare Compression benchmarks:"
 echo "  compare.py benchmarks ${OUTPUT_DIR}/<file>_no_omp.json ${OUTPUT_DIR}/<file>_with_omp.json"
 echo "========================================================================="
