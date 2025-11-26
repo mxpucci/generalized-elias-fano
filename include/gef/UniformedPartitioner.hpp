@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <optional>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -70,19 +71,19 @@ public:
         static_assert(can_use_view || can_use_vector,
                       "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
 
-        // Sequential implementation - used when OpenMP is disabled or parallelization overhead
-        // would exceed the benefit (small partitions)
+        // Sequential implementation - used when OpenMP is disabled
         auto build_sequential = [&]() {
-            // Single-threaded optimization:
-            // 1. Use emplace_back to avoid default construction + move assignment
-            // 2. Try to use Span directly to avoid ANY allocation
-            // 3. If Span not supported, reuse buffer for compressors that take const vector&
+            m_partitions.resize(num_partitions);
+            
+            // Single-threaded: use indexed construction via emplace()
+            // Since m_partitions is vector<optional<Compressor>>, resize() is cheap
+            // (just creates empty optionals, no Compressor construction)
             if constexpr (can_use_view) {
                 for (size_t p = 0; p < num_partitions; ++p) {
                     const size_t start = p * k;
                     const size_t end   = std::min(start + k, data.size());
                     const size_t len   = end - start;
-                    m_partitions.emplace_back(PartitionView(data.data() + start, len), args...);
+                    m_partitions[p].emplace(PartitionView(data.data() + start, len), args...);
                 }
             } else if constexpr (!accepts_vector_value) {
                 // Re-use buffer optimization
@@ -93,7 +94,7 @@ public:
                     const size_t end   = std::min(start + k, data.size());
                     const size_t len   = end - start;
                     buffer.assign(data.data() + start, data.data() + start + len);
-                    m_partitions.emplace_back(buffer, args...);
+                    m_partitions[p].emplace(buffer, args...);
                 }
             } else {
                 // Must pass by value (move)
@@ -103,21 +104,16 @@ public:
                     const size_t len   = end - start;
                     PartitionView view(data.data() + start, len);
                     std::vector<T> buffer(view.data(), view.data() + view.size());
-                    m_partitions.emplace_back(std::move(buffer), args...);
+                    m_partitions[p].emplace(std::move(buffer), args...);
                 }
             }
         };
 
     #ifdef _OPENMP
-        // Use thread-local vectors with emplace_back (same as sequential), then merge.
-        // This avoids the O(N) default construction overhead from resize() which
-        // causes throughput to scale with partition size instead of being constant.
-        //
-        // Key insight: resize(N) + assignment = N default constructions + N move-assignments
-        //              emplace_back = N direct constructions (much faster)
-        
-        const int max_threads = omp_get_max_threads();
-        std::vector<std::vector<Compressor>> thread_partitions(max_threads);
+        // resize() on vector<optional<T>> creates N empty optionals - trivially cheap!
+        // No Compressor default construction. Each thread then constructs via emplace().
+        // This gives constant throughput regardless of partition count.
+        m_partitions.resize(num_partitions);
         
         #pragma omp parallel
         {
@@ -130,9 +126,7 @@ public:
             const size_t my_start = static_cast<size_t>(thread_id) * base_count 
                                   + std::min(static_cast<size_t>(thread_id), remainder);
             const size_t my_count = base_count + (static_cast<size_t>(thread_id) < remainder ? 1 : 0);
-            
-            // Reserve space and use emplace_back - same efficiency as sequential version
-            thread_partitions[thread_id].reserve(my_count);
+            const size_t my_end = my_start + my_count;
             
             // Thread-local buffer to avoid repeated allocations in fallback cases
             std::vector<T> buffer;
@@ -140,31 +134,22 @@ public:
                 buffer.reserve(k);
             }
 
-            // Build partitions using emplace_back (no default construction overhead)
-            for (size_t i = 0; i < my_count; ++i) {
-                const size_t p = my_start + i;
+            // Construct directly at target indices - no merge needed!
+            for (size_t p = my_start; p < my_end; ++p) {
                 const size_t start = p * k;
                 const size_t end   = std::min(start + k, data.size());
                 const size_t len   = end - start;
 
                 Span<const T> view(data.data() + start, len);
                 if constexpr (can_use_view) {
-                    thread_partitions[thread_id].emplace_back(view, args...);
+                    m_partitions[p].emplace(view, args...);
                 } else if constexpr (accepts_vector_value) {
                     std::vector<T> move_buffer(view.data(), view.data() + view.size());
-                    thread_partitions[thread_id].emplace_back(std::move(move_buffer), args...);
+                    m_partitions[p].emplace(std::move(move_buffer), args...);
                 } else {
                     buffer.assign(view.data(), view.data() + view.size());
-                    thread_partitions[thread_id].emplace_back(buffer, args...);
+                    m_partitions[p].emplace(buffer, args...);
                 }
-            }
-        }
-        
-        // Merge thread-local results in order - O(N) moves, which is fast
-        m_partitions.reserve(num_partitions);
-        for (auto& tp : thread_partitions) {
-            for (auto& compressor : tp) {
-                m_partitions.push_back(std::move(compressor));
             }
         }
     #else
@@ -199,8 +184,8 @@ public:
         // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
-        for (const auto& p : m_partitions) {
-            total_bytes += p.size_in_bytes();
+        for (size_t i = 0; i < num_partitions; ++i) {
+            total_bytes += partition(i).size_in_bytes();
         }
         return total_bytes;
     }
@@ -209,11 +194,9 @@ public:
         size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
-        // Removed overhead of unique_ptr
-        // total_bytes += m_partitions.size() * sizeof(std::unique_ptr<IGEF<T>>);
 
-        for (const auto& p : m_partitions) {
-            total_bytes += p.theoretical_size_in_bytes();
+        for (size_t i = 0; i < num_partitions; ++i) {
+            total_bytes += partition(i).theoretical_size_in_bytes();
         }
         return total_bytes;
     }
@@ -245,7 +228,7 @@ public:
                 return 0;
             }
             buffer.assign(count_in_partition, T{});
-            size_t written = m_partitions[partition_index].get_elements(
+            size_t written = partition(partition_index).get_elements(
                 offset_in_partition, count_in_partition, buffer);
             buffer.resize(written);
             return written;
@@ -254,7 +237,7 @@ public:
         // Fast path: all elements in same partition
         if (start_partition == end_partition) {
             std::vector<T> partition_buffer(total_requested);
-            const size_t written = m_partitions[start_partition].get_elements(
+            const size_t written = partition(start_partition).get_elements(
                 startIndex % m_block_size, total_requested, partition_buffer);
             std::copy_n(partition_buffer.begin(), written, output.begin());
             return written;
@@ -329,7 +312,7 @@ public:
         const size_t index_in_partition = index % m_block_size;
         
         // Direct object access - NO VIRTUAL CALL if Compressor type is final or compiler can devirtualize
-        return m_partitions[partition_index][index_in_partition];
+        return partition(partition_index)[index_in_partition];
     }
 
     uint8_t split_point() const override {
@@ -351,8 +334,8 @@ public:
         const size_t num_partitions = m_partitions.size();
         ofs.write(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
 
-        for (const auto& p : m_partitions) {
-            p.serialize(ofs);
+        for (size_t i = 0; i < num_partitions; ++i) {
+            partition(i).serialize(ofs);
         }
     }
 
@@ -374,18 +357,24 @@ public:
         }
 
         m_partitions.clear();
-        m_partitions.reserve(num_partitions);
+        m_partitions.resize(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
-            Compressor partition;
-            partition.load(ifs, bit_vector_factory);
-            m_partitions.push_back(std::move(partition));
+            m_partitions[i].emplace();  // Create empty Compressor
+            m_partitions[i]->load(ifs, bit_vector_factory);
         }
     }
 
 private:
-    std::vector<Compressor> m_partitions;
+    // Using std::optional allows O(1) indexed construction without default-constructing Compressors.
+    // resize(N) on vector<optional<T>> just creates N empty optionals (trivially cheap).
+    // This enables true constant throughput regardless of partition count.
+    std::vector<std::optional<Compressor>> m_partitions;
     size_t m_original_size;
     size_t m_block_size;
+    
+    // Helper to access partition - handles the optional unwrapping
+    const Compressor& partition(size_t i) const { return *m_partitions[i]; }
+    Compressor& partition(size_t i) { return *m_partitions[i]; }
 };
 
 } // namespace gef

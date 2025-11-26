@@ -62,6 +62,8 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 # Version 2: WITHOUT OpenMP (sequential)
+# NOTE: Since gef links OpenMP as PUBLIC, we must explicitly disable OpenMP at compile time
+# to prevent the parallel code paths from being taken.
 add_executable(compression_benchmark_no_omp compression_benchmark.cpp)
 target_link_libraries(compression_benchmark_no_omp PRIVATE gef::gef benchmark::benchmark)
 target_compile_options(compression_benchmark_no_omp PRIVATE 
@@ -73,6 +75,15 @@ set_target_properties(compression_benchmark_no_omp PROPERTIES
 )
 target_compile_options(compression_benchmark_no_omp PRIVATE -g0)
 target_compile_definitions(compression_benchmark_no_omp PRIVATE GEF_BENCHMARK_WITH_OPENMP=0)
+
+# CRITICAL: Explicitly disable OpenMP compilation to override the PUBLIC linkage from gef
+# This undefines _OPENMP and disables OpenMP pragmas at compile time
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(compression_benchmark_no_omp PRIVATE _OPENMP=0)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(compression_benchmark_no_omp PRIVATE -fno-openmp -Wno-unknown-pragmas)
+    endif()
+endif()
 
 if(OpenMP_CXX_FOUND)
     message(STATUS "Building two compression_benchmark versions:")
