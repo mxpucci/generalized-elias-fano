@@ -11,27 +11,30 @@ jobs:
     steps:
       # Check out the repository at the current commit using a Node‑based action
       # outside of any custom container. This avoids the glibc mismatch errors seen
-      # when using a CentOS 7 job‑level container with Node 20【693600283039977†L30-L38】.
+      # when using a CentOS 7 job‑level container with Node 20.
       - uses: actions/checkout@v4
 
       # Build the project inside an Alpine container using Docker. Alpine uses musl libc,
-      # which allows us to produce a fully static binary (-static) that runs on CentOS 7
-      # without depending on its outdated glibc. We mount the workspace into the container,
-      # install build tools via apk, and compile every target (including the test binaries)
-      # without executing ctest.
+      # which allows us to produce a fully static binary (-static).
       - name: Build inside Alpine container
         run: |
           docker run --rm -v "$PWD":/workspace -w /workspace alpine:latest sh -c "
-            # Install build tools, git, and OpenMP runtime for parallel processing
-            # Git is required for FetchContent dependencies such as sdsl-lite
-            # libgomp provides OpenMP runtime library for GCC
-            apk add --no-cache build-base cmake git libgomp && \
+            # 1. Install build tools. 
+            # REMOVED 'libgomp' from apk add to avoid prioritizing shared libs.
+            apk add --no-cache build-base cmake git && \
+            
+            # 2. Locate the static OpenMP library provided by GCC.
+            # This ensures CMake uses the .a file (static) instead of the .so (dynamic).
+            STATIC_OMP=\$(gcc -print-file-name=libgomp.a) && \
+            
             mkdir -p build && cd build && \
             cmake .. -DCMAKE_BUILD_TYPE=Release \
+                     -DCMAKE_CXX_STANDARD=20 \
                      -DGEF_TARGET_ARCH=skylake-avx512 \
                      -DGEF_STATIC_LINK=ON \
                      -DGEF_BUILD_BENCHMARKS=ON \
-                     -DGEF_BUILD_TESTS=ON && \
+                     -DGEF_BUILD_TESTS=ON \
+                     -DOpenMP_gomp_LIBRARY=\$STATIC_OMP && \
             cmake --build . -- -j\$(nproc)
           "
 
@@ -45,8 +48,6 @@ jobs:
           echo "✓ All benchmark and single-thread executables built successfully"
 
       # Ensure CLI binaries from src/ and every tracked test executable were generated.
-      # Test sources that are gitignored (e.g., learned_gef_test) will not be listed by
-      # `git ls-files` and therefore are skipped automatically.
       - name: Verify CLI and test executables
         run: |
           set -euo pipefail
@@ -86,9 +87,7 @@ jobs:
           echo "✓ CLI and tracked test executables are present"
 
       # Upload the entire build directory so artifacts include every generated
-      # binary (benchmarks, helper tools, etc.). Keep the run scripts alongside
-      # the build output for convenience. Use v4 of the upload-artifact action
-      # because earlier versions are deprecated.
+      # binary (benchmarks, helper tools, etc.).
       - name: Upload benchmarks
         uses: actions/upload-artifact@v4
         with:
