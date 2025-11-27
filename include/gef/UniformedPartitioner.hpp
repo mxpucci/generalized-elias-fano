@@ -15,7 +15,7 @@
 #include <utility>
 #include <optional>
 
-#ifdef _OPENMP
+#if _OPENMP
 #include <omp.h>
 #endif
 
@@ -109,7 +109,7 @@ public:
             }
         };
 
-    #ifdef _OPENMP
+    #if _OPENMP
         // resize() on vector<optional<T>> creates N empty optionals - trivially cheap!
         // No Compressor default construction. Each thread then constructs via emplace().
         // This gives constant throughput regardless of partition count.
@@ -249,7 +249,7 @@ public:
         // Parallelize only when the overhead is justified:
         // - Need enough total elements to decompress (amortize thread overhead)
         // - Need enough partitions to distribute work effectively
-        #ifdef _OPENMP
+        #if _OPENMP
         constexpr size_t MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS = 100000;
         constexpr size_t MIN_PARTITIONS_FOR_PARALLEL = 4;
         const bool use_parallel = (total_requested >= MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS) &&
