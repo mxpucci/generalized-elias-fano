@@ -29,7 +29,12 @@ PY
 usage() {
     cat <<EOF
 Usage:
-  $(basename "$0") <input_directory> [output_directory] [--filter REGEX]
+  $(basename "$0") <input_directory> [output_directory] [--filter REGEX] [--partition SIZE]
+
+Options:
+  --filter REGEX     Benchmark name filter (default: _Compression)
+  --partition SIZE   Run only benchmarks with specific partition size (e.g., 32000)
+                     If not specified, all partition sizes will be benchmarked.
 EOF
 }
 
@@ -49,10 +54,12 @@ else
 fi
 
 BENCH_FILTER="_Compression"
+PARTITION_SIZE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --filter) BENCH_FILTER="$2"; shift 2 ;;
+        --partition) PARTITION_SIZE="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: Unknown option '$1'" >&2; usage; exit 1 ;;
     esac
@@ -99,6 +106,12 @@ echo "Single-thread Compression Metrics"
 echo "========================================================================="
 echo "Datasets found  : ${#BIN_FILES[@]}"
 echo "Benchmark exec  : $BENCH_NO_OMP"
+echo "Benchmark filter: $BENCH_FILTER"
+if [[ -n "$PARTITION_SIZE" ]]; then
+    echo "Partition size  : $PARTITION_SIZE (will filter results after benchmarking)"
+else
+    echo "Partition size  : ALL"
+fi
 echo "========================================================================="
 echo ""
 
@@ -109,7 +122,15 @@ for dataset_path in "${BIN_FILES[@]}"; do
     ((dataset_index++))
     dataset_basename="$(basename "$dataset_path")"
     dataset_name="${dataset_basename%.bin}"
-    output_path="${OUTPUT_DIR}/${dataset_name}_no_omp.json"
+    
+    # Use temporary file if partition filtering is needed
+    if [[ -n "$PARTITION_SIZE" ]]; then
+        output_path_temp="${OUTPUT_DIR}/${dataset_name}_no_omp_temp.json"
+        output_path="${OUTPUT_DIR}/${dataset_name}_no_omp.json"
+    else
+        output_path_temp="${OUTPUT_DIR}/${dataset_name}_no_omp.json"
+        output_path="${output_path_temp}"
+    fi
 
     echo "[$dataset_index/${#BIN_FILES[@]}] Processing '${dataset_basename}'..."
 
@@ -118,7 +139,7 @@ for dataset_path in "${BIN_FILES[@]}"; do
         "$BENCH_NO_OMP" "$dataset_path"
         --benchmark_filter="${BENCH_FILTER}"
         --benchmark_format=json
-        --benchmark_out="${output_path}"
+        --benchmark_out="${output_path_temp}"
         --benchmark_out_format=json
         --benchmark_context=openmp=disabled
         --benchmark_context=variant=no_omp
@@ -142,6 +163,44 @@ for dataset_path in "${BIN_FILES[@]}"; do
         echo "${CMD[*]}"
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         exit 1
+    fi
+
+    # 4. Filter by partition size if specified
+    if [[ -n "$PARTITION_SIZE" ]]; then
+        python3 - "$output_path_temp" "$output_path" "$PARTITION_SIZE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+if len(sys.argv) != 4:
+    sys.exit(1)
+
+input_file = Path(sys.argv[1])
+output_file = Path(sys.argv[2])
+partition_size = sys.argv[3]
+
+data = json.loads(input_file.read_text())
+filtered_benchmarks = []
+
+for bench in data.get("benchmarks", []):
+    label = bench.get("label", "")
+    # Label format: basename/factory/strategy/partition_size
+    # Check if label ends with the partition size
+    if label.endswith("/" + partition_size):
+        filtered_benchmarks.append(bench)
+
+data["benchmarks"] = filtered_benchmarks
+output_file.write_text(json.dumps(data, indent=2))
+
+# Clean up temp file
+input_file.unlink()
+
+print(f"Filtered: kept {len(filtered_benchmarks)} benchmarks for partition size {partition_size}")
+PY
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to filter JSON by partition size"
+            exit 1
+        fi
     fi
 
     echo "     Saved JSON: $(basename "$output_path")"

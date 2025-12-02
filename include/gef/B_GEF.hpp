@@ -33,7 +33,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T, typename BitVectorType = PastaBitVector>
+    template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector>
     class B_GEF : public IGEF<T> {
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
@@ -51,19 +51,19 @@ namespace gef {
         }
 
         // Bit-vector such that B[i] = 0 <==> 0 <= highPart(i) - highPart(i - 1) <= h
-        std::unique_ptr<BitVectorType> B;
+        std::unique_ptr<ExceptionBitVectorType> B;
 
         /*
          * Bit-vector that store the gaps between consecutive high-parts
          * such that 0 <= highPart(i) - highPart(i - 1) <= h
          */
-        std::unique_ptr<BitVectorType> G_plus;
+        std::unique_ptr<GapBitVectorType> G_plus;
 
         /*
          * Bit-vector that store the gaps between consecutive high-parts
          * such that 0 <= highPart(i - 1) - highPart(i) <= h
          */
-        std::unique_ptr<BitVectorType> G_minus;
+        std::unique_ptr<GapBitVectorType> G_minus;
 
         // high parts
         sdsl::int_vector<> H;
@@ -131,12 +131,8 @@ namespace gef {
 
             // Metadata
             size_t metadata = sizeof(T) + sizeof(h) + sizeof(b);
-            
-            // Add structural overhead for vectors (sdsl::int_vector has overhead, and 3 bit vectors)
-            // SDSL support structures are heavy. ~2KB per vector (3 vectors) -> ~6KB.
-            size_t struct_overhead = 6144 + 64;
 
-            return l_bytes + h_bytes + b_bytes + g_plus_bytes + g_minus_bytes + metadata + struct_overhead;
+            return l_bytes + h_bytes + b_bytes + g_plus_bytes + g_minus_bytes + metadata;
         }
 
         template<typename C>
@@ -255,15 +251,15 @@ namespace gef {
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
-                B = std::make_unique<BitVectorType>(*other.B);
+                B = std::make_unique<ExceptionBitVectorType>(*other.B);
                 B->enable_rank();
-                B->enable_select1();
 
-                G_plus = std::make_unique<BitVectorType>(*other.G_plus);
+
+                G_plus = std::make_unique<GapBitVectorType>(*other.G_plus);
                 G_plus->enable_rank();
                 G_plus->enable_select0();
 
-                G_minus = std::make_unique<BitVectorType>(*other.G_minus);
+                G_minus = std::make_unique<GapBitVectorType>(*other.G_minus);
                 G_minus->enable_rank();
                 G_minus->enable_select0();
             } else {
@@ -433,10 +429,10 @@ namespace gef {
           const size_t g_plus_bits = gc.sum_of_positive_gaps_without_exception + non_exceptions;
           const size_t g_minus_bits = gc.sum_of_negative_gaps_without_exception + non_exceptions;
 
-          B = std::make_unique<BitVectorType>(N);
+          B = std::make_unique<ExceptionBitVectorType>(N);
           H = sdsl::int_vector<>(exceptions, 0, h);
-          G_plus = std::make_unique<BitVectorType>(g_plus_bits);
-          G_minus = std::make_unique<BitVectorType>(g_minus_bits);
+          G_plus = std::make_unique<GapBitVectorType>(g_plus_bits);
+          G_minus = std::make_unique<GapBitVectorType>(g_minus_bits);
 
           double allocation_seconds = 0.0;
           if (metrics) {
@@ -456,12 +452,12 @@ namespace gef {
           const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
 
           uint64_t* b_data = B->raw_data_ptr();
-          FastBitWriter<BitVectorType::reverse_bit_order> b_writer(b_data);
+          FastBitWriter<ExceptionBitVectorType::reverse_bit_order> b_writer(b_data);
 
           uint64_t* g_plus_data = G_plus->raw_data_ptr();
           uint64_t* g_minus_data = G_minus->raw_data_ptr();
-          FastBitWriter<BitVectorType::reverse_bit_order> plus_writer(g_plus_data);
-          FastBitWriter<BitVectorType::reverse_bit_order> minus_writer(g_minus_data);
+          FastBitWriter<GapBitVectorType::reverse_bit_order> plus_writer(g_plus_data);
+          FastBitWriter<GapBitVectorType::reverse_bit_order> minus_writer(g_minus_data);
 
           if (N > 0) {
               const U element_u = static_cast<U>(S[0]) - static_cast<U>(base);
@@ -509,7 +505,7 @@ namespace gef {
           assert(plus_writer.position() == g_plus_bits);
 
           B->enable_rank();
-          B->enable_select1();
+
           G_plus->enable_rank();
           G_plus->enable_select0();
           G_minus->enable_rank();
@@ -552,7 +548,7 @@ namespace gef {
                 return write_index;
             }
             
-            size_t exception_rank = B->rank(startIndex);
+            size_t exception_rank = B->rank_unchecked(startIndex);
             const size_t zero_before = startIndex - exception_rank;
             long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
             const uint64_t* b_data = B->raw_data_ptr();
@@ -564,10 +560,10 @@ namespace gef {
                     const size_t last_exc_pos = B->select(exception_rank);
                     gap_run_start = last_exc_pos - exception_rank + 1;
                 }
-                const size_t pos_gap_start = gap_run_start > 0 ? G_plus->select0(gap_run_start) - (gap_run_start - 1) : 0;
-                const size_t pos_gap_end = G_plus->select0(zero_before) - (zero_before - 1);
-                const size_t neg_gap_start = gap_run_start > 0 ? G_minus->select0(gap_run_start) - (gap_run_start - 1) : 0;
-                const size_t neg_gap_end = G_minus->select0(zero_before) - (zero_before - 1);
+                const size_t pos_gap_start = gap_run_start > 0 ? G_plus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t pos_gap_end = G_plus->select0_unchecked(zero_before) - (zero_before - 1);
+                const size_t neg_gap_start = gap_run_start > 0 ? G_minus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t neg_gap_end = G_minus->select0_unchecked(zero_before) - (zero_before - 1);
                 high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
                 high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
             } else if (start_is_exception) {
@@ -576,10 +572,10 @@ namespace gef {
             }
             const size_t plus_bits = G_plus->size();
             const size_t minus_bits = G_minus->size();
-            const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0(zero_before) + 1, plus_bits) : 0;
-            const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0(zero_before) + 1, minus_bits) : 0;
-            FastUnaryDecoder<BitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder<BitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+            const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0_unchecked(zero_before) + 1, plus_bits) : 0;
+            const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0_unchecked(zero_before) + 1, minus_bits) : 0;
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
             constexpr size_t GAP_BATCH = 64;
             uint32_t pos_buffer[GAP_BATCH];
             uint32_t neg_buffer[GAP_BATCH];
@@ -673,7 +669,7 @@ namespace gef {
                 using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
                 using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
                 
-                Wide low = (b == 0) ? 0 : static_cast<Wide>(L[index]);
+                Wide low = (b > 0) ? static_cast<Wide>(L[index]) : Wide(0);
 
                 const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
                 return static_cast<T>(sum);
@@ -683,11 +679,12 @@ namespace gef {
             using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
             using U = std::make_unsigned_t<T>;
             
-            Wide low = (b == 0) ? 0 : static_cast<Wide>(L[index]);
+            // Initiate L access early to hide memory latency
+            Wide low = (b > 0) ? static_cast<Wide>(L[index]) : Wide(0);
 
-            // Helper to compute cumulative gaps: sum of first 'count' gaps
-            const auto cumulative_gaps = [](const std::unique_ptr<BitVectorType> &bv, size_t count) -> size_t {
-                return (count == 0) ? 0 : bv->select0(count) - (count - 1);
+            // Helper to compute cumulative gaps using unchecked select0
+            const auto cumulative_gaps = [](const std::unique_ptr<GapBitVectorType> &bv, size_t count) -> size_t {
+                return (count == 0) ? 0 : bv->select0_unchecked(count) - (count - 1);
             };
 
             // Check if this position is an exception
@@ -696,7 +693,7 @@ namespace gef {
             bool is_exception = (b_data[index >> 6] >> (index & 63)) & 1;
 
             if (is_exception) [[unlikely]] {
-                const size_t exception_rank = B->rank(index + 1);
+                const size_t exception_rank = B->rank_unchecked(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
                 const Wide high_shifted = static_cast<Wide>(high_val) << b;
                 const Wide offset = low | high_shifted;
@@ -705,7 +702,7 @@ namespace gef {
             }
 
             // Non-exception case: reconstruct from gaps
-            const size_t exception_rank = B->rank(index);
+            const size_t exception_rank = B->rank_unchecked(index);
             const size_t zero_before = index - exception_rank;
             
             // Start from last exception high (or 0 if no prior exceptions)
@@ -714,7 +711,7 @@ namespace gef {
             // Find where the current gap run starts (after last exception)
             size_t gap_run_start = 0;
             if (exception_rank > 0) {
-                const size_t last_exc_pos = B->select(exception_rank);
+                const size_t last_exc_pos = B->select_unchecked(exception_rank);
                 gap_run_start = last_exc_pos - exception_rank + 1;
             }
 
@@ -768,14 +765,14 @@ namespace gef {
             
             H.load(ifs);
             if (h > 0) {
-                B = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+                B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
                 B->enable_rank();
-                B->enable_select1();
-                G_plus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+
+                G_plus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
                 G_plus->enable_rank();
                 G_plus->enable_select0();
 
-                G_minus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+                G_minus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
                 G_minus->enable_rank();
                 G_minus->enable_select0();
             } else {

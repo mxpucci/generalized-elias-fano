@@ -23,7 +23,11 @@ public:
     }
 
     std::unique_ptr<IBitVector> from_file(const std::filesystem::path& filepath) override {
-        auto loaded = PastaBitVector::load(filepath);
+        std::ifstream in(filepath, std::ios::binary);
+        if (!in.is_open()) {
+             throw std::runtime_error("Could not open file: " + filepath.string());
+        }
+        auto loaded = PastaBitVector::load(in);
         loaded.enable_rank();
         loaded.enable_select1();
         loaded.enable_select0();
@@ -59,5 +63,9 @@ private:
 };
 
 #endif
+
+
+
+
 
 

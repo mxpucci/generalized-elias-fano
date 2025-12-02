@@ -254,29 +254,25 @@ public:
         return size_;
     }
 
+    // NOTE: Caller must call enable_rank()/enable_select*() before using these methods.
+    // No runtime check is performed for performance.
+
     size_t rank(size_t pos) const override {
-        if (!rank_support_.has_value()) {
-            throw std::runtime_error("Rank support not enabled");
-        }
-        if (pos > size_) {
-            throw std::out_of_range("Position out of bounds");
-        }
         return rank_support_->rank(pos);
     }
 
     size_t select(size_t k) const override {
-        if (!select1_support_.has_value()) {
-            throw std::runtime_error("Select support not enabled");
-        }
         return select1_support_->select(k - 1);
     }
 
     size_t select0(size_t k) const override {
-        if (!select0_support_.has_value()) {
-            throw std::runtime_error("Select0 support not enabled");
-        }
         return select0_support_->selectZero(k - 1);
     }
+
+    // Aliases for consistency with code using unchecked variants
+    size_t rank_unchecked(size_t pos) const { return rank_support_->rank(pos); }
+    size_t select_unchecked(size_t k) const { return select1_support_->select(k - 1); }
+    size_t select0_unchecked(size_t k) const { return select0_support_->selectZero(k - 1); }
 
     size_t size_in_bytes() const override {
         size_t total = data_.size() * sizeof(uint64_t);

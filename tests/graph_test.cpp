@@ -1,10 +1,12 @@
 //
-// Tests for GEF_Graph and GraphPreprocessor
+// Tests for GEF_Graph, GraphPreprocessor, and U_GEF_AdjList
 //
 
 #include <gtest/gtest.h>
 #include "../include/graphs/GEF_Graph.hpp"
 #include "../include/graphs/GraphPreprocessor.hpp"
+#include "../include/graphs/GEF_AdjList.hpp"
+#include "../include/graphs/U_GEF_AdjList.hpp"
 #include "../include/gef/B_GEF.hpp"
 #include "../include/gef/MyEF.hpp"
 #include "../include/datastructures/PastaBitVectorFactory.hpp"
@@ -261,9 +263,313 @@ TEST_F(GEFGraphTest, LargerGraph) {
     }
 }
 
+// ===== U_GEF_AdjList Tests =====
+
+class UGEFAdjListTest : public ::testing::Test {
+protected:
+    std::shared_ptr<IBitVectorFactory> bv_factory;
+    
+    void SetUp() override {
+        bv_factory = std::make_shared<PastaBitVectorFactory>();
+    }
+    void TearDown() override {}
+};
+
+TEST_F(UGEFAdjListTest, BasicConstruction) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 2}, {1, 2}, {2, 3}
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 4, false, bv_factory);
+    
+    EXPECT_EQ(adj.num_nodes(), 4);
+    EXPECT_EQ(adj.num_edges(), 4);
+}
+
+TEST_F(UGEFAdjListTest, DegreeQuery) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 2}, {0, 3},  // Node 0 has degree 3
+        {1, 2},                   // Node 1 has degree 1
+                                  // Node 2, 3 have degree 0
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 4, false, bv_factory);
+    
+    EXPECT_EQ(adj.degree(0), 3);
+    EXPECT_EQ(adj.degree(1), 1);
+    EXPECT_EQ(adj.degree(2), 0);
+    EXPECT_EQ(adj.degree(3), 0);
+}
+
+TEST_F(UGEFAdjListTest, GetIthNeighbor) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 10}, {0, 20}, {0, 30}
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 31, 3, false, bv_factory);
+    
+    EXPECT_EQ(adj.getIthNeighbor(0, 0), 10);
+    EXPECT_EQ(adj.getIthNeighbor(0, 1), 20);
+    EXPECT_EQ(adj.getIthNeighbor(0, 2), 30);
+}
+
+TEST_F(UGEFAdjListTest, GetNeighbors) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 3}, {0, 2}  // Neighbors should be sorted: 1, 2, 3
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 3, false, bv_factory);
+    
+    auto neighbors = adj.getNeighbors(0);
+    ASSERT_EQ(neighbors.size(), 3);
+    
+    // Neighbors should be sorted
+    EXPECT_EQ(neighbors[0], 1);
+    EXPECT_EQ(neighbors[1], 2);
+    EXPECT_EQ(neighbors[2], 3);
+}
+
+TEST_F(UGEFAdjListTest, EmptyNeighborhood) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {2, 3}  // Node 1 has no outgoing edges
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 2, false, bv_factory);
+    
+    EXPECT_EQ(adj.degree(1), 0);
+    auto neighbors = adj.getNeighbors(1);
+    EXPECT_TRUE(neighbors.empty());
+}
+
+TEST_F(UGEFAdjListTest, EmptyGraph) {
+    std::vector<std::pair<size_t, size_t>> edges;
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 0, 0, false, bv_factory);
+    
+    EXPECT_EQ(adj.num_nodes(), 0);
+    EXPECT_EQ(adj.num_edges(), 0);
+}
+
+TEST_F(UGEFAdjListTest, GraphWithOnlyEmptyNodes) {
+    std::vector<std::pair<size_t, size_t>> edges;
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 5, 0, false, bv_factory);
+    
+    EXPECT_EQ(adj.num_nodes(), 5);
+    EXPECT_EQ(adj.num_edges(), 0);
+    
+    for (size_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(adj.degree(i), 0);
+    }
+}
+
+TEST_F(UGEFAdjListTest, ReverseEdges) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 2}, {0, 3}
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 3, true, bv_factory);  // reverse = true
+    
+    // With reverse, the edges become 1->0, 2->0, 3->0
+    EXPECT_EQ(adj.degree(0), 0);  // Node 0 has no outgoing edges
+    EXPECT_EQ(adj.degree(1), 1);
+    EXPECT_EQ(adj.degree(2), 1);
+    EXPECT_EQ(adj.degree(3), 1);
+    
+    EXPECT_EQ(adj.getIthNeighbor(1, 0), 0);
+    EXPECT_EQ(adj.getIthNeighbor(2, 0), 0);
+    EXPECT_EQ(adj.getIthNeighbor(3, 0), 0);
+}
+
+TEST_F(UGEFAdjListTest, DuplicateEdges) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 1}, {0, 2}, {0, 2}, {0, 2}  // Duplicates should be removed
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 3, 5, false, bv_factory);
+    
+    EXPECT_EQ(adj.degree(0), 2);  // Only 2 unique neighbors: 1, 2
+    EXPECT_EQ(adj.num_edges(), 2);
+    
+    auto neighbors = adj.getNeighbors(0);
+    ASSERT_EQ(neighbors.size(), 2);
+    EXPECT_EQ(neighbors[0], 1);
+    EXPECT_EQ(neighbors[1], 2);
+}
+
+TEST_F(UGEFAdjListTest, LargerGraph) {
+    std::vector<std::pair<size_t, size_t>> edges;
+    const size_t n = 100;
+    
+    // Each node i connects to (i+1) % n and (i+10) % n
+    for (size_t i = 0; i < n; ++i) {
+        edges.emplace_back(i, (i + 1) % n);
+        edges.emplace_back(i, (i + 10) % n);
+    }
+    
+    U_GEF_AdjList<uint32_t> adj(edges, n, 2 * n, false, bv_factory);
+    
+    EXPECT_EQ(adj.num_nodes(), n);
+    EXPECT_EQ(adj.num_edges(), 2 * n);
+    
+    // Each node should have degree 2
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(adj.degree(i), 2);
+    }
+    
+    // Verify specific neighbors
+    for (size_t i = 0; i < n; ++i) {
+        auto neighbors = adj.getNeighbors(i);
+        ASSERT_EQ(neighbors.size(), 2);
+        
+        // Neighbors should be sorted
+        size_t n1 = (i + 1) % n;
+        size_t n2 = (i + 10) % n;
+        if (n1 > n2) std::swap(n1, n2);
+        
+        EXPECT_EQ(neighbors[0], n1);
+        EXPECT_EQ(neighbors[1], n2);
+    }
+}
+
+TEST_F(UGEFAdjListTest, SizeInBytes) {
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 1}, {0, 2}, {1, 2}, {2, 3}
+    };
+    
+    U_GEF_AdjList<uint32_t> adj(edges, 4, 4, false, bv_factory);
+    
+    // Size should be positive
+    EXPECT_GT(adj.size_in_bytes(), 0);
+}
+
+TEST_F(UGEFAdjListTest, CompareWithGEFAdjList) {
+    // Verify that U_GEF_AdjList produces the same results as GEF_AdjList
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 5}, {0, 10}, {0, 15},
+        {1, 3}, {1, 7},
+        {2, 1}, {2, 4}, {2, 8}, {2, 9},
+        {3, 0}
+    };
+    
+    GEF_AdjList<B_GEF<uint32_t, PastaBitVector>> gef_adj(edges, 16, 10, false, bv_factory);
+    U_GEF_AdjList<uint32_t> u_gef_adj(edges, 16, 10, false, bv_factory);
+    
+    EXPECT_EQ(gef_adj.num_nodes(), u_gef_adj.num_nodes());
+    EXPECT_EQ(gef_adj.num_edges(), u_gef_adj.num_edges());
+    
+    // Compare all neighborhoods
+    for (size_t i = 0; i < 16; ++i) {
+        EXPECT_EQ(gef_adj.degree(i), u_gef_adj.degree(i)) << "Degree mismatch at node " << i;
+        
+        auto gef_neighbors = gef_adj.getNeighbors(i);
+        auto u_gef_neighbors = u_gef_adj.getNeighbors(i);
+        
+        ASSERT_EQ(gef_neighbors.size(), u_gef_neighbors.size()) << "Size mismatch at node " << i;
+        
+        for (size_t j = 0; j < gef_neighbors.size(); ++j) {
+            EXPECT_EQ(gef_neighbors[j], u_gef_neighbors[j]) 
+                << "Neighbor mismatch at node " << i << ", index " << j;
+        }
+    }
+}
+
+TEST_F(UGEFAdjListTest, SingleDegreeNodes) {
+    // Graph where every node has exactly degree 1
+    std::vector<std::pair<size_t, size_t>> edges;
+    const size_t n = 50;
+    
+    for (size_t i = 0; i < n; ++i) {
+        edges.emplace_back(i, (i + 1) % n);
+    }
+    
+    U_GEF_AdjList<uint32_t> adj(edges, n, n, false, bv_factory);
+    
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(adj.degree(i), 1);
+        EXPECT_EQ(adj.getIthNeighbor(i, 0), (i + 1) % n);
+    }
+}
+
+TEST_F(UGEFAdjListTest, HighDegreeNode) {
+    // One node with very high degree
+    std::vector<std::pair<size_t, size_t>> edges;
+    const size_t n = 1000;
+    
+    for (size_t i = 1; i < n; ++i) {
+        edges.emplace_back(0, i);
+    }
+    
+    U_GEF_AdjList<uint32_t> adj(edges, n, n - 1, false, bv_factory);
+    
+    EXPECT_EQ(adj.degree(0), n - 1);
+    
+    auto neighbors = adj.getNeighbors(0);
+    ASSERT_EQ(neighbors.size(), n - 1);
+    
+    // Verify neighbors are sorted 1, 2, 3, ..., n-1
+    for (size_t i = 0; i < n - 1; ++i) {
+        EXPECT_EQ(neighbors[i], i + 1);
+    }
+    
+    // Verify random access
+    for (size_t i = 0; i < n - 1; ++i) {
+        EXPECT_EQ(adj.getIthNeighbor(0, i), i + 1);
+    }
+}
+
+TEST_F(UGEFAdjListTest, SerializationDeserialization) {
+    // Create a graph
+    std::vector<std::pair<size_t, size_t>> edges = {
+        {0, 5}, {0, 10}, {0, 15},
+        {1, 3}, {1, 7},
+        {2, 1}, {2, 4}, {2, 8}, {2, 9},
+        {3, 0}
+    };
+    
+    U_GEF_AdjList<uint32_t> original(edges, 16, 10, false, bv_factory);
+    
+    // Serialize
+    std::string temp_file = "/tmp/u_gef_adjlist_test.bin";
+    {
+        std::ofstream ofs(temp_file, std::ios::binary);
+        original.serialize(ofs);
+    }
+    
+    // Deserialize
+    U_GEF_AdjList<uint32_t> loaded;
+    {
+        std::ifstream ifs(temp_file, std::ios::binary);
+        loaded.load(ifs, bv_factory);
+    }
+    
+    // Verify
+    EXPECT_EQ(loaded.num_nodes(), original.num_nodes());
+    EXPECT_EQ(loaded.num_edges(), original.num_edges());
+    
+    for (size_t i = 0; i < 16; ++i) {
+        EXPECT_EQ(loaded.degree(i), original.degree(i));
+        
+        auto orig_neighbors = original.getNeighbors(i);
+        auto load_neighbors = loaded.getNeighbors(i);
+        
+        ASSERT_EQ(orig_neighbors.size(), load_neighbors.size());
+        
+        for (size_t j = 0; j < orig_neighbors.size(); ++j) {
+            EXPECT_EQ(orig_neighbors[j], load_neighbors[j]);
+        }
+    }
+    
+    // Clean up
+    std::remove(temp_file.c_str());
+}
+
 int main(int argc, char **argv) {
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+
+
 
 

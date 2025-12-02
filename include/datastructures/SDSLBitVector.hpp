@@ -286,27 +286,25 @@ public:
         return bv_.size();
     }
 
+    // NOTE: Caller must call enable_rank()/enable_select*() before using these methods.
+    // No runtime check is performed for performance.
+
     size_t rank(size_t pos) const override {
-        if (!rank_support_.has_value()) {
-            throw std::runtime_error("Rank support not enabled");
-        }
-        // Access via dereference (*) or pointer (->)
         return (*rank_support_)(pos);
     }
 
     size_t select(size_t k) const override {
-        if (!select1_support_.has_value()) {
-            throw std::runtime_error("Select support not enabled");
-        }
         return (*select1_support_)(k);
     }
 
     size_t select0(size_t k) const override {
-        if (!select0_support_.has_value()) {
-            throw std::runtime_error("Select support not enabled");
-        }
         return (*select0_support_)(k);
     }
+
+    // Aliases for consistency with code using unchecked variants
+    size_t rank_unchecked(size_t pos) const { return (*rank_support_)(pos); }
+    size_t select_unchecked(size_t k) const { return (*select1_support_)(k); }
+    size_t select0_unchecked(size_t k) const { return (*select0_support_)(k); }
 
     size_t size_in_bytes() const override {
         size_t total = sdsl::size_in_bytes(bv_);

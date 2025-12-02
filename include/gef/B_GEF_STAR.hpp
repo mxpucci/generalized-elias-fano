@@ -45,20 +45,20 @@ namespace stdx = std::experimental;
 
 namespace gef {
 
-    template<typename T, typename BitVectorType = PastaBitVector>
+    template<typename T, typename GapBitVectorType = PastaGapBitVector>
     class B_GEF_STAR : public IGEF<T> {
     private:
         /*
          * Bit-vector that store the gaps between consecutive high-parts
          * such that highPart(i) >= highPart(i - 1)
          */
-        std::unique_ptr<BitVectorType> G_plus;
+        std::unique_ptr<GapBitVectorType> G_plus;
 
         /*
          * Bit-vector that store the gaps between consecutive high-parts
          * such that highPart(i - 1) >= highPart(i)
          */
-        std::unique_ptr<BitVectorType> G_minus;
+        std::unique_ptr<GapBitVectorType> G_minus;
 
         // low parts
         sdsl::int_vector<> L;
@@ -262,10 +262,10 @@ namespace gef {
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
-                G_plus = std::make_unique<BitVectorType>(*other.G_plus);
+                G_plus = std::make_unique<GapBitVectorType>(*other.G_plus);
                 G_plus->enable_select0();
 
-                G_minus = std::make_unique<BitVectorType>(*other.G_minus);
+                G_minus = std::make_unique<GapBitVectorType>(*other.G_minus);
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;
@@ -443,8 +443,8 @@ namespace gef {
             const size_t g_plus_bits = gap_computation.sum_of_positive_gaps + N;
             const size_t g_minus_bits = gap_computation.sum_of_negative_gaps + N;
 
-            G_plus = std::make_unique<BitVectorType>(g_plus_bits);
-            G_minus = std::make_unique<BitVectorType>(g_minus_bits);
+            G_plus = std::make_unique<GapBitVectorType>(g_plus_bits);
+            G_minus = std::make_unique<GapBitVectorType>(g_minus_bits);
 
             double allocation_seconds = 0.0;
             if (metrics) {
@@ -465,8 +465,8 @@ namespace gef {
             uint64_t* g_plus_data = G_plus->raw_data_ptr();
             uint64_t* g_minus_data = G_minus->raw_data_ptr();
 
-            FastBitWriter<BitVectorType::reverse_bit_order> plus_writer(g_plus_data);
-            FastBitWriter<BitVectorType::reverse_bit_order> minus_writer(g_minus_data);
+            FastBitWriter<GapBitVectorType::reverse_bit_order> plus_writer(g_plus_data);
+            FastBitWriter<GapBitVectorType::reverse_bit_order> minus_writer(g_minus_data);
             U lastHighBits = 0;
 
             // L writer state
@@ -581,17 +581,17 @@ namespace gef {
             // Compute prefix sums using select0 only (no rank needed)
             // select0(i) - (i-1) gives cumulative sum of first i gaps
             const size_t pos_prefix =
-                (startIndex > 0) ? G_plus->select0(startIndex) - (startIndex - 1) : 0;
+                (startIndex > 0) ? G_plus->select0_unchecked(startIndex) - (startIndex - 1) : 0;
             const size_t neg_prefix =
-                (startIndex > 0) ? G_minus->select0(startIndex) - (startIndex - 1) : 0;
+                (startIndex > 0) ? G_minus->select0_unchecked(startIndex) - (startIndex - 1) : 0;
 
             const size_t plus_start_bit =
-                startIndex > 0 ? std::min(G_plus->select0(startIndex) + 1, plus_bits) : 0;
+                startIndex > 0 ? std::min(G_plus->select0_unchecked(startIndex) + 1, plus_bits) : 0;
             const size_t minus_start_bit =
-                startIndex > 0 ? std::min(G_minus->select0(startIndex) + 1, minus_bits) : 0;
+                startIndex > 0 ? std::min(G_minus->select0_unchecked(startIndex) + 1, minus_bits) : 0;
 
-            FastUnaryDecoder<BitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder<BitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
 
             constexpr size_t GAP_BATCH = 64;
             uint32_t pos_buffer[GAP_BATCH];
@@ -723,20 +723,18 @@ namespace gef {
             
             using U = std::make_unsigned_t<T>;
 
+            // Initiate L access early to hide memory latency while computing select0
+            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
+
             const size_t zero_rank = index + 1;
-            const size_t pos_gaps = G_plus->select0(zero_rank) - zero_rank;
-            const size_t neg_gaps = G_minus->select0(zero_rank) - zero_rank;
+            // Use unchecked select0 - support is guaranteed enabled after construction
+            const size_t pos_gaps = G_plus->select0_unchecked(zero_rank) - zero_rank;
+            const size_t neg_gaps = G_minus->select0_unchecked(zero_rank) - zero_rank;
 
-            const long long high_signed =
-                static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps);
-            const U high_u = static_cast<U>(high_signed);
-            
-            U low;
-            if (b == 0) low = 0;
-            else low = static_cast<U>(L[index]);
+            const U high_u = static_cast<U>(
+                static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps));
 
-            const U combined = low | (high_u << b);
-            return base + static_cast<T>(combined);
+            return base + static_cast<T>(low | (high_u << b));
         }
 
         void serialize(std::ofstream &ofs) const override {
@@ -771,10 +769,10 @@ namespace gef {
             }
             
             if (h > 0) {
-                G_plus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+                G_plus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
                 G_plus->enable_select0();
 
-                G_minus = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+                G_minus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
                 G_minus->enable_select0();
             } else {
                 G_plus = nullptr;

@@ -108,9 +108,8 @@ TEST_F(SUXBitVectorTest, CopyConstructorWithoutSupport) {
     
     EXPECT_EQ(copy.size(), 10);
     EXPECT_TRUE(copy[3]);
-    
-    // Should throw since no rank support
-    EXPECT_THROW(copy.rank(5), std::runtime_error);
+    // Note: Calling rank/select without enabling support is undefined behavior
+    // The caller is responsible for enabling supports before use
 }
 
 // Test Rule of 5 - Copy assignment
@@ -198,10 +197,8 @@ TEST_F(SUXBitVectorTest, RankOperations) {
     EXPECT_EQ(bv.rank(2, 6), 3); // positions 2,3,5 have ones
 }
 
-TEST_F(SUXBitVectorTest, RankWithoutSupport) {
-    SUXBitVector bv(10);
-    EXPECT_THROW(bv.rank(5), std::runtime_error);
-}
+// RankWithoutSupport test removed - calling rank without enabling support is undefined behavior
+// The caller is responsible for enabling supports before use
 
 TEST_F(SUXBitVectorTest, RankInheritedMethods) {
     std::vector<bool> bits = {1, 0, 1, 1, 0};
@@ -241,25 +238,15 @@ TEST_F(SUXBitVectorTest, Select0Operations) {
     EXPECT_EQ(bv.select0(4), 7);
 }
 
-TEST_F(SUXBitVectorTest, SelectWithoutSupport) {
-    SUXBitVector bv(10);
-    bv.set(5, true);
-    
-    EXPECT_THROW(bv.select(1), std::runtime_error);
-    EXPECT_THROW(bv.select0(1), std::runtime_error);
-}
+// SelectWithoutSupport test removed - calling select without enabling support is undefined behavior
+// The caller is responsible for enabling supports before use
 
 // Test enable methods
 TEST_F(SUXBitVectorTest, EnableMethods) {
     SUXBitVector bv(10);
     bv.set(5, true);
     
-    // Initially should throw
-    EXPECT_THROW(bv.rank(10), std::runtime_error);
-    EXPECT_THROW(bv.select(1), std::runtime_error);
-    EXPECT_THROW(bv.select0(1), std::runtime_error);
-    
-    // Enable rank
+    // Enable supports before use (calling without support is undefined behavior)
     bv.enable_rank();
     EXPECT_EQ(bv.rank(10), 1);
     

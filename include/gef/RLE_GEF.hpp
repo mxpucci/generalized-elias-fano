@@ -27,11 +27,11 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
-    template<typename T, typename BitVectorType = PastaBitVector>
+    template<typename T, typename ExceptionBitVectorType = PastaRankBitVector>
     class RLE_GEF : public IGEF<T> {
     public:
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
-        std::unique_ptr<BitVectorType> B;
+        std::unique_ptr<ExceptionBitVectorType> B;
 
         // high parts
         sdsl::int_vector<> H;
@@ -147,9 +147,9 @@ namespace gef {
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
-                B = std::make_unique<BitVectorType>(*other.B);
+                B = std::make_unique<ExceptionBitVectorType>(*other.B);
                 B->enable_rank();
-                B->enable_select1();
+
             } else {
                 B = nullptr;
             }
@@ -263,11 +263,11 @@ namespace gef {
             }
 
             // Pass 1: Count unique high parts and populate L & B
-            B = std::make_unique<BitVectorType>(S.size());
+            B = std::make_unique<ExceptionBitVectorType>(S.size());
             T lastHighBits = 0;
             size_t h_count = 0;
             uint64_t* b_data = B->raw_data_ptr();
-            FastBitWriter<BitVectorType::reverse_bit_order> b_writer(b_data);
+            FastBitWriter<ExceptionBitVectorType::reverse_bit_order> b_writer(b_data);
             
             // Precompute low mask once - b < total_bits is guaranteed by h > 0
             using U = std::make_unsigned_t<T>;
@@ -291,7 +291,7 @@ namespace gef {
             }
             assert(b_writer.position() == S.size());
             B->enable_rank();
-            B->enable_select1();
+
 
             // Pass 2: Allocate exact size and populate H
             H = sdsl::int_vector<>(h_count, 0, h);
@@ -388,7 +388,7 @@ namespace gef {
             // --- Optimization Start ---
         
             // 1. Single Rank Call
-            size_t current_rank_idx = B->rank(startIndex + 1);
+            size_t current_rank_idx = B->rank_unchecked(startIndex + 1);
             if (current_rank_idx == 0) current_rank_idx = 1;
             
             T current_high = H[current_rank_idx - 1];
@@ -514,17 +514,13 @@ namespace gef {
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
             if (h == 0) [[unlikely]] {
-                if (b == 0) return base;
+                if (b == 0) [[unlikely]] return base;
                 return base + L[index];
             }
 
             using U = std::make_unsigned_t<T>;
-            const U low = (b > 0) ? static_cast<U>(L[index]) : 0;
-
-            // Helper to compute cumulative gaps: sum of first 'count' gaps
-            const auto cumulative_gaps = [](const std::unique_ptr<BitVectorType> &bv, size_t count) -> size_t {
-                return (count == 0) ? 0 : bv->select0(count) - (count - 1);
-            };
+            // Initiate L access early to hide memory latency
+            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
 
             // Check if this position is an exception
             // Optimization: Use raw bit access for B
@@ -532,12 +528,12 @@ namespace gef {
             bool is_exception = (b_data[index >> 6] >> (index & 63)) & 1;
 
             if (is_exception) [[unlikely]] {
-                const size_t exception_rank = B->rank(index + 1);
+                const size_t exception_rank = B->rank_unchecked(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
                 return base + static_cast<T>(low | (high_val << b));
             }
 
-            const size_t rank = B->rank(index + 1);
+            const size_t rank = B->rank_unchecked(index + 1);
             const T high_shifted = H[rank - 1] << b;
             return base + (low | high_shifted);
         }
@@ -574,9 +570,9 @@ namespace gef {
             
             H.load(ifs);
             if (h > 0) {
-                B = std::make_unique<BitVectorType>(BitVectorType::load(ifs));
+                B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
                 B->enable_rank();
-                B->enable_select1();
+
             } else {
                 B = nullptr;
             }

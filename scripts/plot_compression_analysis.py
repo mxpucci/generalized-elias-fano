@@ -23,7 +23,6 @@ import os
 from pathlib import Path
 from collections import defaultdict
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
 import numpy as np
 
 
@@ -102,8 +101,8 @@ def format_partition_size(value, _pos=None):
         return ""
     units = ["", "K", "M", "G", "T"]
     idx = 0
-    while value >= 1024 and idx < len(units) - 1:
-        value /= 1024.0
+    while value >= 1000 and idx < len(units) - 1:
+        value /= 1000.0
         idx += 1
     value_int = int(value)
     label_value = value_int if abs(value - value_int) < 1e-9 else round(value, 1)
@@ -303,22 +302,26 @@ def build_status_results(metric_data):
 def plot_metric_lines(ax, metric_dict, value_key, compressor_styles, y_label, title):
     plotted = False
     partition_ticks = collect_partition_ticks(metric_dict)
+    
+    # Create mapping from partition size to index for equally spaced x-axis
+    ps_to_idx = {ps: i for i, ps in enumerate(partition_ticks)} if partition_ticks else {}
+    
     for compressor_key, comp_data in sorted(metric_dict.items()):
         if compressor_key not in compressor_styles:
             continue
         values = comp_data[value_key]
         partition_sizes = comp_data['partition_sizes']
-        filtered_sizes = []
+        filtered_indices = []
         filtered_values = []
         for ps, val in zip(partition_sizes, values):
-            if val is None:
+            if val is None or ps not in ps_to_idx:
                 continue
-            filtered_sizes.append(ps)
+            filtered_indices.append(ps_to_idx[ps])
             filtered_values.append(val)
-        if not filtered_sizes:
+        if not filtered_indices:
             continue
         style = compressor_styles[compressor_key]
-        ax.plot(filtered_sizes, filtered_values,
+        ax.plot(filtered_indices, filtered_values,
                 marker=style['marker'], linestyle=style['linestyle'],
                 linewidth=2, markersize=7, color=style['color'],
                 label=style['label'], alpha=0.85)
@@ -329,10 +332,10 @@ def plot_metric_lines(ax, metric_dict, value_key, compressor_styles, y_label, ti
     ax.set_title(title, fontsize=14, fontweight='bold')
     
     if plotted:
-        ax.set_xscale('log', base=2)
+        # Use categorical (equally spaced) x-axis with formatted labels
         if partition_ticks:
-            ax.set_xticks(partition_ticks)
-        ax.xaxis.set_major_formatter(FuncFormatter(format_partition_size))
+            ax.set_xticks(range(len(partition_ticks)))
+            ax.set_xticklabels([format_partition_size(ps) for ps in partition_ticks], rotation=45, ha='right')
         ax.legend(fontsize=9, loc='best')
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=10)
@@ -342,7 +345,7 @@ def plot_metric_lines(ax, metric_dict, value_key, compressor_styles, y_label, ti
         ax.set_axis_off()
 
 
-def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
+def plot_status_subplot(ax, status_data, compressor_styles, y_label, title, legend_loc='best'):
     """
     Plot throughput values for a specific OpenMP status on a provided axis.
     """
@@ -354,6 +357,10 @@ def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
 
     plotted = False
     partition_ticks = collect_partition_ticks(status_data)
+    
+    # Create mapping from partition size to index for equally spaced x-axis
+    ps_to_idx = {ps: i for i, ps in enumerate(partition_ticks)} if partition_ticks else {}
+    
     for compressor_key, comp_data in sorted(status_data.items()):
         if compressor_key not in compressor_styles:
             continue
@@ -362,7 +369,19 @@ def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
         throughputs = comp_data.get('throughput', [])
         if not partition_sizes or not throughputs:
             continue
-        ax.plot(partition_sizes, throughputs,
+        
+        # Convert partition sizes to indices for equally spaced plotting
+        indices = []
+        filtered_throughputs = []
+        for ps, tp in zip(partition_sizes, throughputs):
+            if ps in ps_to_idx and tp is not None:
+                indices.append(ps_to_idx[ps])
+                filtered_throughputs.append(tp)
+        
+        if not indices:
+            continue
+        
+        ax.plot(indices, filtered_throughputs,
                 marker=style['marker'], linestyle=style['linestyle'],
                 linewidth=2, markersize=7, color=style['color'],
                 label=style['label'], alpha=0.8)
@@ -372,11 +391,13 @@ def plot_status_subplot(ax, status_data, compressor_styles, y_label, title):
         ax.set_xlabel('Partition Size', fontsize=13, fontweight='bold')
         ax.set_ylabel(y_label, fontsize=13, fontweight='bold')
         ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.set_xscale('log', base=2)
+        # Use categorical (equally spaced) x-axis with formatted labels
         if partition_ticks:
-            ax.set_xticks(partition_ticks)
-        ax.xaxis.set_major_formatter(FuncFormatter(format_partition_size))
-        ax.legend(fontsize=10, loc='best')
+            ax.set_xticks(range(len(partition_ticks)))
+            ax.set_xticklabels([format_partition_size(ps) for ps in partition_ticks], rotation=45, ha='right')
+        # Add top margin so legend doesn't overlap with high values
+        ax.margins(y=0.15)
+        ax.legend(fontsize=10, loc=legend_loc)
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=10)
     else:
@@ -459,7 +480,8 @@ def create_plots(compression_data, decompression_data, lookup_data, output_dir):
             no_omp_data,
             compressor_styles,
             'Compression Throughput (MB/s)',
-            f"Compression Throughput vs Partition Size ({status_titles['no_omp']})"
+            f"Compression Throughput vs Partition Size ({status_titles['no_omp']})",
+            legend_loc='upper right'
         )
         plt.tight_layout()
         save_figure(fig, output_path, 'compression_throughput_by_compressor_st')

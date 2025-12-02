@@ -1,0 +1,31 @@
+\begin{table*}[htbp]
+\caption{GEF Variants: Decompression throughput (MB/s). Higher is better.}
+\label{tab:gef_decomp_throughput}
+\centering
+\small
+\setlength{\tabcolsep}{4pt} % Reduce space between columns
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Dataset} & \textbf{RLE-GEF} & \multicolumn{2}{c}{\textbf{U-GEF}} & \multicolumn{2}{c}{\textbf{B-GEF}} & \multicolumn{2}{c}{\textbf{$\mathrm{B^*-GEF}$}} \\
+\textbf{(MB/s)} & Optimal & Approximate & Optimal & Approximate & Optimal & Approximate & Optimal \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6} \cmidrule(lr){7-8} 
+\midrule
+AP & \textbf{634.67} & 600.11 & 629.35 & 544.18 & 519.83 & 413.61 & 415.26 \\
+BM & \textbf{987.19} & 597.49 & 608.05 & 581.72 & 554.16 & 449.14 & 451.07 \\
+BP & 874.07 & 1289.54 & 1288.39 & 1319.94 & \textbf{1330.04} & 428.05 & 429.31 \\
+BT & 656.47 & 662.73 & \textbf{662.79} & 552.68 & 556.63 & 428.08 & 420.44 \\
+BW & \textbf{927.65} & 683.37 & 702.43 & 581.55 & 571.84 & 417.76 & 441.88 \\
+CT & 593.88 & 695.33 & 657.93 & \textbf{799.02} & 782.57 & 431.77 & 433.43 \\
+DP & \textbf{713.05} & 568.98 & 581.72 & 545.79 & 542.68 & 414.75 & 396.85 \\
+DU & \textbf{812.57} & 727.17 & 708.44 & 603.28 & 585.25 & 464.37 & 464.42 \\
+ECG & \textbf{651.72} & 611.81 & 603.77 & 531.41 & 518.00 & 423.71 & 424.74 \\
+GE & \textbf{706.14} & 589.99 & 624.14 & 553.40 & 547.12 & 431.00 & 430.56 \\
+IT & \textbf{683.65} & 600.25 & 610.21 & 536.57 & 525.03 & 425.41 & 422.58 \\
+LAT & \textbf{839.35} & 661.69 & 653.71 & 556.49 & 543.13 & 422.30 & 422.16 \\
+LON & \textbf{838.22} & 673.41 & 662.61 & 556.34 & 541.78 & 419.67 & 419.56 \\
+UK & \textbf{729.76} & 613.89 & 634.80 & 569.69 & 539.47 & 433.72 & 442.64 \\
+US & \textbf{740.48} & 634.73 & 632.32 & 597.58 & 558.79 & 455.05 & 457.97 \\
+WD & 557.96 & 656.44 & 663.86 & \textbf{901.06} & 688.99 & 423.58 & 413.46 \\
+\bottomrule
+\end{tabular}
+\end{table*}

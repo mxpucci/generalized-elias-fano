@@ -31,10 +31,10 @@ def parse_gef_data(directory, target_partition_size=None):
     This function is for the GEF-only tables.
     """
     compressor_name_map = {
-        "RLE_GEF_Compression": "RLE-GEF", "RLE_GEF_Lookup": "RLE-GEF",
-        "U_GEF_Compression": "U-GEF", "U_GEF_Lookup": "U-GEF",
-        "B_GEF_Compression": "B-GEF", "B_GEF_Lookup": "B-GEF",
-        "B_GEF_NO_RLE_Compression": r"$\mathrm{B^*-GEF}$", "B_GEF_NO_RLE_Lookup": r"$\mathrm{B^*-GEF}$",
+        "RLE_GEF_Compression": "RLE-GEF", "RLE_GEF_Lookup": "RLE-GEF", "RLE_GEF_Decompression": "RLE-GEF",
+        "U_GEF_Compression": "U-GEF", "U_GEF_Lookup": "U-GEF", "U_GEF_Decompression": "U-GEF",
+        "B_GEF_Compression": "B-GEF", "B_GEF_Lookup": "B-GEF", "B_GEF_Decompression": "B-GEF",
+        "B_GEF_NO_RLE_Compression": r"$\mathrm{B^*-GEF}$", "B_GEF_NO_RLE_Lookup": r"$\mathrm{B^*-GEF}$", "B_GEF_NO_RLE_Decompression": r"$\mathrm{B^*-GEF}$",
     }
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     json_files = glob.glob(os.path.join(directory, '*.json'))
@@ -110,10 +110,14 @@ def parse_gef_data(directory, target_partition_size=None):
                 # Note: The JSON key says _MBs, but in these files (see values like 1.24e+08), it is actually Bytes/s.
                 # We divide by 1e6 to get MB/s.
                 data['comp_throughput'][dataset_name][compressor_base][strategy] = bench['compression_throughput_MBs'] / 1e6
-            if 'items_per_second' in bench:
+            if 'decompression_throughput_MBs' in bench:
+                # Same as compression throughput - value is actually in Bytes/s, divide by 1e6 for MB/s.
+                data['decomp_throughput'][dataset_name][compressor_base][strategy] = bench['decompression_throughput_MBs'] / 1e6
+            # Only use items_per_second from Lookup benchmarks for random access speed.
+            # Both Lookup and Decompression benchmarks have items_per_second, but only
+            # Lookup benchmarks measure true random access performance.
+            if 'items_per_second' in bench and compressor_raw.endswith('_Lookup'):
                 # Calculate MB/s: items_per_second * 8 bytes / 1e6 (for MB)
-                # If the input is already in MB/s, we need to check.
-                # The benchmark code outputs items_per_second. 
                 # Assuming each item is 64-bit (8 bytes).
                 data['random_access_speed'][dataset_name][compressor_base][strategy] = (bench['items_per_second'] * 8) / 1e6
 
@@ -124,10 +128,13 @@ def parse_gef_data(directory, target_partition_size=None):
     comp_records = [{'dataset': ds, 'compressor': c, 'strategy': s, 'value': v} for ds, comps in data['comp_throughput'].items() for c, strats in comps.items() for s, v in strats.items()]
     comp_df = pd.DataFrame(comp_records).pivot_table(index='dataset', columns=['compressor', 'strategy'], values='value') if comp_records else pd.DataFrame()
 
+    decomp_records = [{'dataset': ds, 'compressor': c, 'strategy': s, 'value': v} for ds, comps in data['decomp_throughput'].items() for c, strats in comps.items() for s, v in strats.items()]
+    decomp_df = pd.DataFrame(decomp_records).pivot_table(index='dataset', columns=['compressor', 'strategy'], values='value') if decomp_records else pd.DataFrame()
+
     access_records = [{'dataset': ds, 'compressor': c, 'strategy': s, 'value': v} for ds, comps in data['random_access_speed'].items() for c, strats in comps.items() for s, v in strats.items()]
     access_df = pd.DataFrame(access_records).pivot_table(index='dataset', columns=['compressor', 'strategy'], values='value') if access_records else pd.DataFrame()
 
-    return ratio_df, comp_df, access_df
+    return ratio_df, comp_df, decomp_df, access_df
 
 def generate_gef_table(df, caption, label, unit_name, highlight_best=None, compressor_order=None):
     """Generates a more compact LaTeX table for GEF variants using table* with font and spacing adjustments."""
@@ -273,7 +280,7 @@ if __name__ == "__main__":
 
     # --- PART 1: Generate GEF-only tables ---
     # All GEF tables should rely on partition size 32000 for consistency across metrics.
-    gef_ratio_df, gef_comp_df, gef_access_df = parse_gef_data(benchmark_dir, target_partition_size)
+    gef_ratio_df, gef_comp_df, gef_decomp_df, gef_access_df = parse_gef_data(benchmark_dir, target_partition_size)
     
     gef_compressor_order = ["RLE-GEF", "U-GEF", "B-GEF", r"$\mathrm{B^*-GEF}$"]
 
@@ -282,6 +289,8 @@ if __name__ == "__main__":
         f.write(generate_gef_table(gef_ratio_df, "GEF Variants: Compression ratio (\\%). Lower is better.", "tab:gef_ratio", "\\%", 'min', gef_compressor_order))
     with open(os.path.join(gef_output_dir, "table_compression_throughput.tex"), 'w') as f:
         f.write(generate_gef_table(gef_comp_df, "GEF Variants: Compression throughput (MB/s). Higher is better.", "tab:gef_comp_throughput", "MB/s", 'max', gef_compressor_order))
+    with open(os.path.join(gef_output_dir, "table_decompression_throughput.tex"), 'w') as f:
+        f.write(generate_gef_table(gef_decomp_df, "GEF Variants: Decompression throughput (MB/s). Higher is better.", "tab:gef_decomp_throughput", "MB/s", 'max', gef_compressor_order))
     with open(os.path.join(gef_output_dir, "table_random_access.tex"), 'w') as f:
         f.write(generate_gef_table(gef_access_df, "GEF Variants: Random access speed (MB/s). Higher is better.", "tab:gef_access", "MB/s", 'max', gef_compressor_order))
     print(f"-> GEF-only tables saved in '{gef_output_dir}'.")
@@ -295,6 +304,7 @@ if __name__ == "__main__":
         best_gef_variants = gef_ratio_df.idxmin(axis=1)
         
         best_gef_ratio = []
+        best_gef_decomp = []
         best_gef_access = []
         
         for dataset in gef_ratio_df.index:
@@ -306,6 +316,13 @@ if __name__ == "__main__":
                 val_ratio = gef_ratio_df.loc[dataset, variant]
                 best_gef_ratio.append(val_ratio)
                 
+                # Get Decompression Speed
+                if variant in gef_decomp_df.columns and dataset in gef_decomp_df.index:
+                    val_decomp = gef_decomp_df.loc[dataset, variant]
+                else:
+                    val_decomp = np.nan
+                best_gef_decomp.append(val_decomp)
+                
                 # Get Access Speed
                 # Ensure we look up the exact same variant in the access dataframe
                 if variant in gef_access_df.columns and dataset in gef_access_df.index:
@@ -315,11 +332,12 @@ if __name__ == "__main__":
                 best_gef_access.append(val_access)
             else:
                 best_gef_ratio.append(np.nan)
+                best_gef_decomp.append(np.nan)
                 best_gef_access.append(np.nan)
 
         best_gef_ratio = pd.Series(best_gef_ratio, index=gef_ratio_df.index)
+        best_gef_decomp = pd.Series(best_gef_decomp, index=gef_ratio_df.index)
         best_gef_access = pd.Series(best_gef_access, index=gef_ratio_df.index)
-        best_gef_decomp = pd.Series(np.nan, index=gef_ratio_df.index) # Decompression not available yet
 
         comp_ratio_df = pd.DataFrame(competitor_benchmarks['compression_ratio'])
         comp_decomp_df = pd.DataFrame(competitor_benchmarks['decompression_speed'])
