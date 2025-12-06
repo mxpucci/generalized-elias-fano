@@ -13,13 +13,7 @@
 #include "split_point_utils.hpp"
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
-template<typename T>
-struct get_value_type;
-
-template<template<typename> class C, typename T>
-struct get_value_type<C<T>> {
-    using type = T;
-};
+// (Moved to gef_test_utils.hpp)
 
 // Helper trait to check if a type is a specialization of B_GEF_NO_RLE.
 template <typename T>
@@ -40,6 +34,7 @@ protected:
     }
 };
 
+namespace {
 // Define the list of implementations and types to test with.
 using Implementations = ::testing::Types<
     gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
@@ -47,6 +42,7 @@ using Implementations = ::testing::Types<
     gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
     gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_STAR<uint32_t>
 >;
+}
 
 TYPED_TEST_CASE(GEF_SplitPointStrategyComparison_TypedTest, Implementations);
 

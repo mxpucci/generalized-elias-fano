@@ -12,15 +12,7 @@
 #include "gef/B_GEF_STAR.hpp"
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
-// e.g., get_value_type<gef::RLE_GEF<int32_t>>::type will be int32_t.
-template<typename T>
-struct get_value_type;
-
-template<template<typename> class C, typename T>
-struct get_value_type<C<T>> {
-    using type = T;
-};
-
+// (Moved to gef_test_utils.hpp)
 
 // Test fixture for typed tests. This allows us to run the same tests
 // for different GEF implementations and integral types.
@@ -36,6 +28,7 @@ protected:
     }
 };
 
+namespace {
 // Define the list of all implementations and types we want to test with.
 using Implementations = ::testing::Types<
     gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_STAR<int8_t>,
@@ -47,6 +40,7 @@ using Implementations = ::testing::Types<
     gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_GEF_STAR<int64_t>,
     gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_GEF_STAR<uint64_t>
 >;
+}
 
 TYPED_TEST_CASE(GEF_SplitPointStrategy_TypedTest, Implementations);
 
