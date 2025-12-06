@@ -61,10 +61,10 @@ public:
     // ---- Constructors ----
 
     explicit PastaBitVectorT(size_t size)
-        : bv_(size) {}
+        : bv_(size, false) {}
 
     explicit PastaBitVectorT(const std::vector<bool>& bits)
-        : bv_(bits.size()) {
+        : bv_(bits.size(), false) {
         for (size_t i = 0; i < bits.size(); ++i) {
             bv_[i] = bits[i];
         }

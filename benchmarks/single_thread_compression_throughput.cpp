@@ -40,9 +40,9 @@ struct ProgramOptions {
     bool verbose = false;
 };
 
-template<typename T, typename BitVectorType = SDSLBitVector>
-struct BGEFStarWrapper : public gef::B_GEF<T, BitVectorType> {
-    using Base = gef::B_GEF<T, BitVectorType>;
+template<typename T>
+struct BGEFStarWrapper : public gef::B_GEF_STAR<T> {
+    using Base = gef::B_GEF_STAR<T>;
 
     BGEFStarWrapper(gef::Span<const T> data,
                     const std::shared_ptr<IBitVectorFactory>& factory,
@@ -171,7 +171,7 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     std::vector<double> elapsed_seconds;
     elapsed_seconds.reserve(iterations);
 
-    using Compressor = BGEFStarWrapper<int64_t, BitVectorType>;
+    using Compressor = BGEFStarWrapper<int64_t>;
 
     for (size_t i = 0; i < iterations; ++i) {
         std::vector<int64_t> data_copy = data;

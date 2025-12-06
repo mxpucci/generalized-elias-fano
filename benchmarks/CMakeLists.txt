@@ -5,7 +5,9 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     
     # Skip compression_benchmark as we handle it separately below
     if(benchmark_name STREQUAL "compression_benchmark" OR
-       benchmark_name STREQUAL "single_thread_compression_throughput")
+       benchmark_name STREQUAL "single_thread_compression_throughput" OR
+       benchmark_name STREQUAL "single_thread_decompression_throughput" OR
+       benchmark_name STREQUAL "single_thread_random_access_latency")
         continue()
     endif()
     
@@ -117,6 +119,12 @@ endfunction()
 
 add_executable(single_thread_compression_throughput_simd single_thread_compression_throughput.cpp)
 configure_single_thread_target(single_thread_compression_throughput_simd)
+
+add_executable(single_thread_decompression_throughput single_thread_decompression_throughput.cpp)
+configure_single_thread_target(single_thread_decompression_throughput)
+
+add_executable(single_thread_random_access_latency single_thread_random_access_latency.cpp)
+configure_single_thread_target(single_thread_random_access_latency)
 
 add_executable(single_thread_compression_throughput single_thread_compression_throughput.cpp)
 configure_single_thread_target(single_thread_compression_throughput)

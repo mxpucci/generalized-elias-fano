@@ -17,6 +17,7 @@
 #include <type_traits> // Required for std::make_unsigned
 #include <stdexcept>
 #include <tuple>
+#include <utility>
 #include "IGEF.hpp"
 #include "RLE_GEF.hpp"
 #include "FastBitWriter.hpp"
@@ -520,7 +521,8 @@ namespace gef {
                 G->enable_select0();
         }
 
-        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, std::vector<T>& output) const {
             if (count == 0 || startIndex >= size()) {
                 return 0;
             }
@@ -534,12 +536,48 @@ namespace gef {
             
             using U = std::make_unsigned_t<T>;
 
+            // L vector streaming setup
+            const uint64_t* l_raw_data = nullptr;
+            uint64_t l_buffer_curr = 0;
+            size_t l_word_idx = 0;
+            uint32_t l_bit_offset = 0;
+
+            if constexpr (SPLIT_POINT > 0) {
+                l_raw_data = L.data();
+                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
+                l_word_idx = l_bit_global_pos >> 6;
+                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
+                l_buffer_curr = l_raw_data[l_word_idx];
+            }
+            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
+
+            auto read_L_val = [&]() -> U {
+                if constexpr (SPLIT_POINT == 0) return 0;
+                
+                uint64_t l_val = 0;
+                uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                
+                if (l_bit_offset + SPLIT_POINT > 64) {
+                    l_word_idx++;
+                    l_buffer_curr = l_raw_data[l_word_idx];
+                    uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                    l_val = (word0 | word1) & l_mask;
+                } else {
+                    l_val = word0 & l_mask;
+                    if (l_bit_offset + SPLIT_POINT == 64) {
+                        l_word_idx++;
+                        l_buffer_curr = l_raw_data[l_word_idx]; 
+                    }
+                }
+                l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
+                return static_cast<U>(l_val);
+            };
+
             // Fast path: h == 0, all data in L
-            if (h == 0) {
+            if (h == 0) [[unlikely]] {
                 for (size_t i = startIndex; i < endIndex; ++i) {
-                    U low = 0;
-                    if (b > 0) low = static_cast<U>(L[i]);
-                    output[write_index++] = base_value + low;
+                    U low = read_L_val();
+                    output[write_index++] = base_value + static_cast<T>(low);
                 }
                 return write_index;
             }
@@ -599,8 +637,12 @@ namespace gef {
                     if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                     else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
-                const U low = (b > 0) ? static_cast<U>(L[i]) : 0;
-                output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                const U low = read_L_val();
+                U high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(U) * 8) {
+                    high_shifted = current_high << SPLIT_POINT;
+                }
+                output[write_index++] = base_value + static_cast<T>(low | high_shifted);
                 ++i;
             }
 
@@ -622,12 +664,12 @@ namespace gef {
                         if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                         else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         
-                        U low = 0;
-                        if (b > 0) {
-                            low = static_cast<U>(L[i + k]);
-                        }
-                        
-                        output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                        U low = read_L_val();
+                        U high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(U) * 8) {
+                    high_shifted = current_high << SPLIT_POINT;
+                }
+                output[write_index++] = base_value + static_cast<T>(low | high_shifted);
                     }
                 } else { // Slow path: mixed exceptions
                      for (int k = 0; k < 64; ++k) {
@@ -647,12 +689,12 @@ namespace gef {
                             else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                         }
                         
-                        U low = 0;
-                        if (b > 0) {
-                            low = static_cast<U>(L[i + k]);
-                        }
-
-                        output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                        U low = read_L_val();
+                        U high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(U) * 8) {
+                    high_shifted = current_high << SPLIT_POINT;
+                }
+                output[write_index++] = base_value + static_cast<T>(low | high_shifted);
                      }
                 }
                 i += 64;
@@ -674,12 +716,30 @@ namespace gef {
                     if (reversed) current_high -= static_cast<U>(gap_buffer[buffer_index++]);
                     else current_high += static_cast<U>(gap_buffer[buffer_index++]);
                 }
-                const U low = (b > 0) ? static_cast<U>(L[i]) : 0;
-                output[write_index++] = base_value + static_cast<T>(low | (current_high << b));
+                const U low = read_L_val();
+                U high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(U) * 8) {
+                    high_shifted = current_high << SPLIT_POINT;
+                }
+                output[write_index++] = base_value + static_cast<T>(low | high_shifted);
                 ++i;
             }
 
             return write_index;
+        }
+
+        template <size_t... Is>
+        size_t dispatch_worker(size_t b, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
+            using WorkerPtr = size_t (U_GEF::*)(size_t, size_t, std::vector<T>&) const;
+            static constexpr WorkerPtr table[] = { &U_GEF::get_elements_worker<Is>... };
+            if (b >= sizeof...(Is)) {
+                throw std::invalid_argument("Invalid b value");
+            }
+            return (this->*table[b])(start, count, out);
+        }
+
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
+            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
         T operator[](size_t index) const override {
