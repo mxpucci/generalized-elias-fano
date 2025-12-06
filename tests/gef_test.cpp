@@ -31,7 +31,7 @@ protected:
 
 namespace {
 // Define the list of all implementations and types we want to test with.
-using Implementations = ::testing::Types<
+using GEF_Core_Implementations = ::testing::Types<
     gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_STAR<int8_t>,
     gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_GEF_STAR<uint8_t>,
     gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
@@ -43,7 +43,7 @@ using Implementations = ::testing::Types<
 >;
 }
 
-TYPED_TEST_CASE(GEF_Implementation_TypedTest, Implementations);
+TYPED_TEST_CASE(GEF_Implementation_TypedTest, GEF_Core_Implementations);
 
 // --- Constructor and Rule of Five Tests ---
 

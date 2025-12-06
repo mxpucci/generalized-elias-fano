@@ -36,7 +36,7 @@ protected:
 
 namespace {
 // Define the list of implementations and types to test with.
-using Implementations = ::testing::Types<
+using GEF_SplitStrategyComparison_Implementations = ::testing::Types<
     gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
     gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_STAR<uint16_t>,
     gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
@@ -44,7 +44,7 @@ using Implementations = ::testing::Types<
 >;
 }
 
-TYPED_TEST_CASE(GEF_SplitPointStrategyComparison_TypedTest, Implementations);
+TYPED_TEST_CASE(GEF_SplitPointStrategyComparison_TypedTest, GEF_SplitStrategyComparison_Implementations);
 
 TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
     using GEF_Class = TypeParam;
