@@ -85,6 +85,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sdsl-lite)
 
+if(TARGET sdsl)
+    # GCC 15 introduces -Wtemplate-body which catches latent bugs in uninstantiated templates.
+    # sdsl-lite has a bug in louds_tree::swap (referencing m_select1 instead of m_bv_select1).
+    # Since we don't use louds_tree::swap, we can silence this error.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-Wno-template-body" CXX_HAS_WNO_TEMPLATE_BODY)
+    if(CXX_HAS_WNO_TEMPLATE_BODY)
+        target_compile_options(sdsl PRIVATE "-Wno-template-body")
+    endif()
+endif()
+
 # --- Secondary Dependency: SUX (Header-only library) ---
 FetchContent_Declare(
     sux
@@ -155,4 +166,5 @@ if(GEF_BUILD_BENCHMARKS)
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable benchmark testing" FORCE)
     FetchContent_MakeAvailable(googlebenchmark)
     add_subdirectory(benchmarks)
-endif() 
+endif()
+
