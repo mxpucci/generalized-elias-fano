@@ -20,6 +20,9 @@ foreach(benchmark_file ${BENCHMARK_FILES})
         target_link_libraries(${benchmark_name} PRIVATE gef::gef benchmark::benchmark)
     endif()
     
+    # Reuse PCH from gef to speed up compilation
+    target_precompile_headers(${benchmark_name} REUSE_FROM gef)
+    
     # Ensure benchmarks are always compiled with maximum optimization
     target_compile_options(${benchmark_name} PRIVATE 
         -O3 -march=native -ffast-math -funroll-loops
@@ -46,6 +49,7 @@ endforeach()
 # Version 1: WITH OpenMP (default)
 add_executable(compression_benchmark compression_benchmark.cpp)
 target_link_libraries(compression_benchmark PRIVATE gef::gef benchmark::benchmark)
+target_precompile_headers(compression_benchmark REUSE_FROM gef)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(compression_benchmark PRIVATE OpenMP::OpenMP_CXX)
 endif()

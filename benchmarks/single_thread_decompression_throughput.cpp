@@ -1,5 +1,6 @@
 #include "gef/B_GEF_STAR.hpp"
 #include "gef/B_GEF.hpp"
+#include "gef/U_GEF.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
@@ -68,7 +69,7 @@ std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
             std::string value(arg.substr(13));
             std::transform(value.begin(), value.end(), value.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (value != "bgef" && value != "bgef_star") {
+            if (value != "bgef" && value != "bgef_star" && value != "ugef") {
                 throw std::invalid_argument("Unsupported compressor: " + value);
             }
             opts.compressor = std::move(value);
@@ -191,7 +192,7 @@ int main(int argc, char** argv) {
                       << "Options:\n"
                       << "  --iterations=<N>       Number of measurement iterations (default: 5)\n"
                       << "  --strategy=<approx|optimal>  Split point strategy (default: optimal)\n"
-                      << "  --compressor=<bgef|bgef_star> Compressor implementation (default: bgef_star)\n"
+                      << "  --compressor=<bgef|bgef_star|ugef> Compressor implementation (default: bgef_star)\n"
                       << "  --verbose              Print per-iteration timings\n"
                       << std::endl;
             return maybe_opts.has_value() ? 0 : 1;
@@ -214,6 +215,8 @@ int main(int argc, char** argv) {
 
         if (opts.compressor == "bgef_star") {
             run_benchmark<gef::B_GEF_STAR<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
+        } else if (opts.compressor == "ugef") {
+            run_benchmark<gef::U_GEF<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
         } else { // bgef
             run_benchmark<gef::B_GEF<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
         }

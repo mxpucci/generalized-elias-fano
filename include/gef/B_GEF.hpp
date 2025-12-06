@@ -300,8 +300,8 @@ namespace gef {
             long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
             const uint64_t* b_data = B->raw_data_ptr();
             auto read_bit = [b_data](size_t pos) -> bool { return (b_data[pos >> 6] >> (pos & 63)) & 1; };
-            const bool start_is_exception = read_bit(startIndex);
-            if (!start_is_exception && zero_before > 0) {
+            
+            if (zero_before > 0 && !read_bit(startIndex)) {
                 size_t gap_run_start = 0;
                 if (exception_rank > 0) {
                     const size_t last_exc_pos = B->select(exception_rank);
@@ -313,9 +313,6 @@ namespace gef {
                 const size_t neg_gap_end = G_minus->select0_unchecked(zero_before) - (zero_before - 1);
                 high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
                 high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
-            } else if (start_is_exception) {
-                ++exception_rank;
-                high_signed = static_cast<long long>(H[exception_rank - 1]);
             }
             const size_t plus_bits = G_plus->size();
             const size_t minus_bits = G_minus->size();

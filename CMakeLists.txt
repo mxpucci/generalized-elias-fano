@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.16)
 project(gef 
     VERSION 1.0.0
     DESCRIPTION "GEF - A C++ library"
@@ -94,6 +94,16 @@ if(TARGET sdsl)
     if(CXX_HAS_WNO_TEMPLATE_BODY)
         target_compile_options(sdsl PRIVATE "-Wno-template-body")
     endif()
+endif()
+
+# Use ccache if available to speed up repeated builds
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+else()
+    message(STATUS "ccache not found. Install it for faster builds.")
 endif()
 
 # --- Secondary Dependency: SUX (Header-only library) ---
