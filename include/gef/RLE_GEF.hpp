@@ -10,6 +10,7 @@
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
+#include <utility>
 #include <stdexcept>
 #include "IGEF.hpp"
 #include "FastBitWriter.hpp"
@@ -308,206 +309,158 @@ namespace gef {
             }
         }
 
-        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            if (count == 0 || startIndex >= size()) {
+    private:
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, std::vector<T>& output) const {
+            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] {
                 return 0;
             }
-            if (output.size() < count) {
+            if (output.size() < count) [[unlikely]] {
                 throw std::invalid_argument("output buffer is smaller than requested count");
             }
-            
-            const size_t endIndex = std::min(startIndex + count, size());
-            size_t write_index = 0;
-            
-            using U = std::make_unsigned_t<T>;
 
-            // Precompute constants for L reading
-            const uint64_t* l_data = L.data();
-            const uint64_t mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
-            
-            // Prepare optimized L pointers if possible
-            // (Removed specialized pointers based on user request)
+            const size_t endIndex = std::min(startIndex + count, m_num_elements);
+            size_t produced_count = 0;
 
-            // Fast path: h == 0, all data in L
+            // L vector setup
+            const uint64_t* l_raw_data = nullptr;
+            uint64_t l_buffer_curr = 0;
+            size_t l_word_idx = 0;
+            uint32_t l_bit_offset = 0;
+
+            if constexpr (SPLIT_POINT > 0) {
+                l_raw_data = L.data();
+                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
+                l_word_idx = l_bit_global_pos >> 6;
+                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
+                l_buffer_curr = l_raw_data[l_word_idx];
+            }
+
+            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
+
+            // Fast path: h == 0
             if (h == 0) [[unlikely]] {
-                // [Fast path logic for h=0 omitted for brevity, same as previous step]
-                const T base_val = base;
-                size_t i = startIndex;
-#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
-                using simd_t = stdx::native_simd<U>;
-                const size_t simd_width = simd_t::size();
-                if constexpr (std::is_arithmetic_v<T>) {
-                    while (i + simd_width <= endIndex) {
-                        simd_t low_vec;
-                        if (b == 0) {
-                            low_vec = 0;
+                T* out_ptr = output.data();
+                size_t current_pos = startIndex;
+                while (current_pos < endIndex) {
+                     uint64_t l_val = 0;
+                     if constexpr (SPLIT_POINT > 0) {
+                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                        if (l_bit_offset + SPLIT_POINT > 64) {
+                            l_word_idx++;
+                            l_buffer_curr = l_raw_data[l_word_idx];
+                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                            l_val = (word0 | word1) & l_mask;
                         } else {
-                            // Fallback
-                            for(size_t k=0; k<simd_width; ++k) {
-                                uint64_t val = (l_data[(i+k)*b/64] >> ((i+k)*b%64));
-                                if (((i+k)*b%64) + b > 64) val |= (l_data[(i+k)*b/64 + 1] << (64 - ((i+k)*b%64)));
-                                low_vec[k] = static_cast<U>(val & mask);
+                            l_val = word0 & l_mask;
+                            if (l_bit_offset + SPLIT_POINT == 64) {
+                                l_word_idx++;
+                                l_buffer_curr = l_raw_data[l_word_idx];
                             }
                         }
-                        simd_t sum_vec = simd_t(static_cast<U>(base_val)) + low_vec;
-                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
-                        write_index += simd_width;
-                        i += simd_width;
-                    }
+                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
+                     }
+                     out_ptr[produced_count++] = base + static_cast<T>(l_val);
+                     current_pos++;
                 }
-#endif
-                if (b > 0) {
-                    // Initialize bit reader state for L for remaining
-                    size_t l_bit_pos = i * b;
-                    size_t word_idx = l_bit_pos / 64;
-                    size_t bit_off = l_bit_pos % 64;
-
-                    for (; i < endIndex; ++i) {
-                        uint64_t val = (l_data[word_idx] >> bit_off);
-                        if (bit_off + b > 64) {
-                            val |= (l_data[word_idx + 1] << (64 - bit_off));
-                        }
-                        val &= mask;
-                        
-                        output[write_index++] = base_val + static_cast<T>(val);
-                        
-                        bit_off += b;
-                        if (bit_off >= 64) {
-                            bit_off -= 64;
-                            word_idx++;
-                        }
-                    }
-                } else {
-                    for (; i < endIndex; ++i) {
-                        output[write_index++] = base_val;
-                    }
-                }
-                return write_index;
+                return produced_count;
             }
-            
-            // --- Optimization Start ---
-        
-            // 1. Single Rank Call
-            size_t current_rank_idx = B->rank_unchecked(startIndex + 1);
-            if (current_rank_idx == 0) current_rank_idx = 1;
-            
+
+            // Normal path: h > 0
+            size_t current_rank_idx = 0;
+            if (startIndex < m_num_elements) {
+                current_rank_idx = B->rank_unchecked(startIndex + 1);
+                if (current_rank_idx == 0) current_rank_idx = 1;
+            }
+
             T current_high = H[current_rank_idx - 1];
-            T current_base_plus_high = base + (current_high << b);
-        
-            // Access raw data for fast bit scanning
+            T current_base_plus_high;
+             if constexpr (SPLIT_POINT < sizeof(T) * 8) {
+                 current_base_plus_high = base + (current_high << SPLIT_POINT);
+             } else {
+                 current_base_plus_high = base;
+             }
+
             const uint64_t* b_data = B->raw_data_ptr();
-            size_t current_pos = startIndex;
             const size_t b_size = B->size();
-            
-            // Initialize bit reader state for L
-            size_t l_bit_pos = startIndex * b;
-            size_t word_idx = l_bit_pos / 64;
-            size_t bit_off = l_bit_pos % 64;
-        
+            size_t current_pos = startIndex;
+            T* out_ptr = output.data();
+
             while (current_pos < endIndex) {
                 size_t next_one_pos = b_size;
-        
-                // --- Fast Bit Scan Logic ---
                 size_t search_start = current_pos + 1;
+                
                 size_t b_word_idx = search_start / 64;
                 size_t b_bit_offset = search_start % 64;
                 size_t max_words = (b_size + 63) / 64;
-        
+                
                 if (b_word_idx < max_words) {
-                    uint64_t word = b_data[b_word_idx];
-                    uint64_t b_mask = (~0ULL) << b_bit_offset;
-                    uint64_t masked_word = word & b_mask;
-        
-                    if (masked_word != 0) {
-                        next_one_pos = b_word_idx * 64 + __builtin_ctzll(masked_word);
-                    } else {
-                        // Scan subsequent words
-                        for (size_t w = b_word_idx + 1; w < max_words; ++w) {
-                            if (b_data[w] != 0) {
-                                next_one_pos = w * 64 + __builtin_ctzll(b_data[w]);
-                                break;
-                            }
-                        }
-                    }
+                     uint64_t word = b_data[b_word_idx];
+                     uint64_t b_mask = (~0ULL) << b_bit_offset;
+                     uint64_t masked_word = word & b_mask;
+                     
+                     if (masked_word != 0) {
+                         next_one_pos = b_word_idx * 64 + __builtin_ctzll(masked_word);
+                     } else {
+                         for (size_t w = b_word_idx + 1; w < max_words; ++w) {
+                             if (b_data[w] != 0) {
+                                 next_one_pos = w * 64 + __builtin_ctzll(b_data[w]);
+                                 break;
+                             }
+                         }
+                     }
                 }
-                // --- End Fast Bit Scan ---
-        
+
                 size_t run_limit = std::min(endIndex, next_one_pos);
-        
-#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
-                using simd_t = stdx::native_simd<U>;
-                const size_t simd_width = simd_t::size();
-                if constexpr (std::is_arithmetic_v<T>) {
-                    while (current_pos + simd_width <= run_limit) {
-                        simd_t low_vec;
-                        if (b == 0) {
-                            low_vec = 0;
+                size_t count_in_run = run_limit - current_pos;
+                
+                for(size_t i=0; i<count_in_run; ++i) {
+                    uint64_t l_val = 0;
+                    if constexpr (SPLIT_POINT > 0) {
+                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                        if (l_bit_offset + SPLIT_POINT > 64) {
+                            l_word_idx++;
+                            l_buffer_curr = l_raw_data[l_word_idx];
+                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                            l_val = (word0 | word1) & l_mask;
                         } else {
-                            // Fallback extraction for packed bits
-                            // Recalculate positions for current_pos
-                            size_t local_bit_pos = current_pos * b;
-                            size_t local_word_idx = local_bit_pos / 64;
-                            size_t local_bit_off = local_bit_pos % 64;
-                            
-                            for(size_t k=0; k<simd_width; ++k) {
-                                uint64_t val = (l_data[local_word_idx] >> local_bit_off);
-                                if (local_bit_off + b > 64) {
-                                    val |= (l_data[local_word_idx + 1] << (64 - local_bit_off));
-                                }
-                                low_vec[k] = static_cast<U>(val & mask);
-                                local_bit_off += b;
-                                if (local_bit_off >= 64) {
-                                    local_bit_off -= 64;
-                                    local_word_idx++;
-                                }
+                            l_val = word0 & l_mask;
+                             if (l_bit_offset + SPLIT_POINT == 64) {
+                                l_word_idx++;
+                                l_buffer_curr = l_raw_data[l_word_idx];
                             }
                         }
-                        // Vectorized combine: high part is CONSTANT for the run!
-                        simd_t sum_vec = simd_t(static_cast<U>(current_base_plus_high)) + low_vec;
-                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
-                        
-                        write_index += simd_width;
-                        current_pos += simd_width;
-                        
-                        // Sync scalar pointers
-                        if (b > 0) {
-                             l_bit_pos = current_pos * b;
-                             word_idx = l_bit_pos / 64;
-                             bit_off = l_bit_pos % 64;
-                        }
+                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
                     }
+                    out_ptr[produced_count++] = current_base_plus_high + static_cast<T>(l_val);
                 }
-#endif
+                current_pos = run_limit;
 
-                // Tight scalar loop
-                for (; current_pos < run_limit; ++current_pos) {
-                    uint64_t val = 0;
-                    if (b > 0) {
-                        val = (l_data[word_idx] >> bit_off);
-                        if (bit_off + b > 64) {
-                            val |= (l_data[word_idx + 1] << (64 - bit_off));
-                        }
-                        val &= mask;
-                        bit_off += b;
-                        if (bit_off >= 64) {
-                            bit_off -= 64;
-                            word_idx++;
-                        }
-                    }
-
-                    output[write_index++] = current_base_plus_high + static_cast<T>(val);
-                }
-        
-                if (current_pos == next_one_pos && current_pos < endIndex) {
+                if (current_pos == next_one_pos && current_pos < m_num_elements) {
                     current_rank_idx++;
                     if (current_rank_idx <= H.size()) {
                         current_high = H[current_rank_idx - 1];
-                        current_base_plus_high = base + (current_high << b);
+                         if constexpr (SPLIT_POINT < sizeof(T) * 8) {
+                             current_base_plus_high = base + (current_high << SPLIT_POINT);
+                         }
                     }
                 }
             }
-            
-            return write_index;
+            return produced_count;
+        }
+
+        template <size_t... Is>
+        size_t dispatch_worker(size_t b_val, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
+             using WorkerPtr = size_t (RLE_GEF::*)(size_t, size_t, std::vector<T>&) const;
+             static constexpr WorkerPtr table[] = { &RLE_GEF::get_elements_worker<Is>... };
+             if (b_val >= sizeof...(Is)) throw std::invalid_argument("Invalid b value");
+             return (this->*table[b_val])(start, count, out);
+        }
+
+    public:
+        size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
+            // 65 is the number of cases (0 to 64)
+            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
         T operator[](size_t index) const override {
@@ -640,3 +593,5 @@ namespace gef {
 } // namespace gef
 
 #endif
+
+

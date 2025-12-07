@@ -33,7 +33,7 @@ struct ProgramOptions {
     size_t num_queries = 1000000;
     size_t iterations = 5;
     gef::SplitPointStrategy strategy = gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT;
-    std::string bitvector = "sdsl";
+
     std::string compressor = "bgef_star";
     bool verbose = false;
 };
@@ -67,15 +67,8 @@ std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
             } else {
                 throw std::invalid_argument("Unknown strategy: " + value);
             }
-        } else if (arg.rfind("--bitvector=", 0) == 0) {
-            std::string value(arg.substr(12));
-            std::transform(value.begin(), value.end(), value.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (value != "sdsl" && value != "sux" && value != "pasta") {
-                throw std::invalid_argument("Unsupported bitvector implementation: " + value);
-            }
-            opts.bitvector = std::move(value);
-        } else if (arg.rfind("--compressor=", 0) == 0) {
+        }
+        else if (arg.rfind("--compressor=", 0) == 0) {
             std::string value(arg.substr(13));
             std::transform(value.begin(), value.end(), value.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -200,6 +193,7 @@ void run_benchmark(const std::vector<int64_t>& data,
     std::cout << "Average total time:     " << (avg_ns / 1e6) << " ms\n";
     std::cout << "Min / Max total time:   " << (min_ns / 1e6) << " ms / " << (max_ns / 1e6) << " ms\n";
     std::cout << "Average Latency:        " << avg_latency_ns << " ns/query\n";
+    std::cout << "Throughput:             " << (num_queries * sizeof(int64_t) / 1e6) / (avg_ns / 1e9) << " (MB/s)\n";
 }
 
 int main(int argc, char** argv) {
@@ -230,28 +224,15 @@ int main(int argc, char** argv) {
                   << "Iterations:          " << opts.iterations << "\n"
                   << "Queries:             " << opts.num_queries << "\n"
                   << "Strategy:            " << to_string(opts.strategy) << "\n"
-                  << "Bitvector factory:   " << opts.bitvector << "\n"
                   << "Compressor:          " << opts.compressor << "\n"
                   << "Number of integers:  " << data.size() << "\n";
 
-        auto factory = make_factory(opts.bitvector);
+        auto factory = make_factory("pasta");
 
         if (opts.compressor == "bgef_star") {
-            if (opts.bitvector == "sux") {
-                run_benchmark<gef::B_GEF_STAR<int64_t, SUXBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            } else if (opts.bitvector == "pasta") {
-                run_benchmark<gef::B_GEF_STAR<int64_t, PastaBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            } else {
-                run_benchmark<gef::B_GEF_STAR<int64_t, SDSLBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            }
+            run_benchmark<gef::B_GEF_STAR<int64_t>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
         } else { // bgef
-            if (opts.bitvector == "sux") {
-                run_benchmark<gef::B_GEF<int64_t, SUXBitVector, SUXBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            } else if (opts.bitvector == "pasta") {
-                run_benchmark<gef::B_GEF<int64_t, PastaBitVector, PastaBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            } else {
-                run_benchmark<gef::B_GEF<int64_t, SDSLBitVector, SDSLBitVector>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
-            }
+            run_benchmark<gef::B_GEF<int64_t>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
         }
 
         return 0;

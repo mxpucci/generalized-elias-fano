@@ -30,7 +30,7 @@ if(GEF_DISABLE_SIMD)
 endif()
 
 # Add high-performance compiler flags for Release builds
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=${GEF_TARGET_ARCH} -ffast-math -funroll-loops")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O0 -g -march=${GEF_TARGET_ARCH} -ffast-math -funroll-loops")
 
 # Additional optimization flags for better vectorization
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
