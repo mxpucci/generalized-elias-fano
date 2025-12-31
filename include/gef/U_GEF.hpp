@@ -519,19 +519,6 @@ namespace gef {
             B->enable_rank();
             G->enable_rank();
             G->enable_select0();
-            
-            // Verify state integrity after construction
-            if (L.size() > 0 && L.size() != N) [[unlikely]] {
-                throw std::runtime_error("U_GEF constructor: L.size()=" + std::to_string(L.size()) + 
-                    " != N=" + std::to_string(N));
-            }
-            if (L.width() > 64) [[unlikely]] {
-                throw std::runtime_error("U_GEF constructor: L.width()=" + std::to_string(L.width()) + " > 64");
-            }
-            if (H.size() != exceptions) [[unlikely]] {
-                throw std::runtime_error("U_GEF constructor: H.size()=" + std::to_string(H.size()) + 
-                    " != exceptions=" + std::to_string(exceptions));
-            }
         }
 
         template<uint8_t SPLIT_POINT>
@@ -861,56 +848,12 @@ namespace gef {
 
         [[nodiscard]] size_t size_in_bytes() const override {
             size_t total_bytes = 0;
-            
-            // Sanity check member variables for corruption
-            // For a 32k partition, even with 64-bit ints, max should be ~256KB
-            // Use 100MB as a generous upper bound for any single U_GEF instance
-            constexpr size_t MAX_SANE_SIZE = 100ULL << 20; // 100MB per component
-            
             if (B) {
-                size_t b_size = B->size_in_bytes();
-                size_t g_size = G->size_in_bytes();
-                if (b_size > MAX_SANE_SIZE || g_size > MAX_SANE_SIZE) [[unlikely]] {
-                    throw std::runtime_error("U_GEF::size_in_bytes: corrupted B/G sizes: B=" + 
-                        std::to_string(b_size) + ", G=" + std::to_string(g_size) +
-                        ", h=" + std::to_string(static_cast<int>(h)) + 
-                        ", b=" + std::to_string(static_cast<int>(b)) +
-                        ", m_num_elements=" + std::to_string(m_num_elements));
-                }
-                total_bytes += b_size;
-                total_bytes += g_size;
+                total_bytes += B->size_in_bytes();
+                total_bytes += G->size_in_bytes();
             }
-            
-            // Pre-check L and H vector state before calling size_in_bytes
-            // to catch corruption before it causes issues
-            if (L.size() > 1ULL << 40 || L.width() > 64) [[unlikely]] {
-                throw std::runtime_error("U_GEF::size_in_bytes: L vector state corrupted: "
-                    "L.size()=" + std::to_string(L.size()) + ", L.width()=" + std::to_string(L.width()) +
-                    ", expected size~=" + std::to_string(m_num_elements) +
-                    ", h=" + std::to_string(static_cast<int>(h)) + 
-                    ", b=" + std::to_string(static_cast<int>(b)));
-            }
-            if (H.size() > 1ULL << 40 || H.width() > 64) [[unlikely]] {
-                throw std::runtime_error("U_GEF::size_in_bytes: H vector state corrupted: "
-                    "H.size()=" + std::to_string(H.size()) + ", H.width()=" + std::to_string(H.width()) +
-                    ", h=" + std::to_string(static_cast<int>(h)) + 
-                    ", b=" + std::to_string(static_cast<int>(b)));
-            }
-            
-            size_t l_size = sdsl::size_in_bytes(L);
-            size_t h_size = sdsl::size_in_bytes(H);
-            if (l_size > MAX_SANE_SIZE || h_size > MAX_SANE_SIZE) [[unlikely]] {
-                throw std::runtime_error("U_GEF::size_in_bytes: corrupted L/H sizes: L=" + 
-                    std::to_string(l_size) + ", H=" + std::to_string(h_size) +
-                    ", L.size()=" + std::to_string(L.size()) + ", L.width()=" + std::to_string(L.width()) +
-                    ", H.size()=" + std::to_string(H.size()) + ", H.width()=" + std::to_string(H.width()) +
-                    ", h=" + std::to_string(static_cast<int>(h)) + 
-                    ", b=" + std::to_string(static_cast<int>(b)) +
-                    ", m_num_elements=" + std::to_string(m_num_elements));
-            }
-            
-            total_bytes += l_size;
-            total_bytes += h_size;
+            total_bytes += sdsl::size_in_bytes(L);
+            total_bytes += sdsl::size_in_bytes(H);
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);

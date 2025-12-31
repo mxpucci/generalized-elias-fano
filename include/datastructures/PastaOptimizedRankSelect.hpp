@@ -17,7 +17,6 @@
 #include <pasta/utils/debug_asserts.hpp>
 
 #include <limits>
-#include <stdexcept>
 #include <tlx/container/simple_vector.hpp>
 #include <vector>
 #include <bit>
@@ -280,24 +279,9 @@ public:
 
   size_t space_usage() const final {
     // Include base class's l12_ array + our samples vectors
-    size_t base_usage = pasta::FlatRank<optimized_for, VectorType>::space_usage();
-    size_t samples0_bytes = samples0_.size() * sizeof(uint32_t);
-    size_t samples1_bytes = samples1_.size() * sizeof(uint32_t);
-    
-    // Sanity check - samples should not be larger than 100MB each
-    constexpr size_t MAX_SANE = 100ULL << 20;
-    if (base_usage > MAX_SANE || samples0_bytes > MAX_SANE || samples1_bytes > MAX_SANE) [[unlikely]] {
-        throw std::runtime_error("OptimizedFlatRankSelect::space_usage corruption: "
-            "base_usage=" + std::to_string(base_usage) +
-            ", samples0_bytes=" + std::to_string(samples0_bytes) + 
-            " (size=" + std::to_string(samples0_.size()) + ")" +
-            ", samples1_bytes=" + std::to_string(samples1_bytes) +
-            " (size=" + std::to_string(samples1_.size()) + ")" +
-            ", l12_.size()=" + std::to_string(l12_.size()) +
-            ", data_size_=" + std::to_string(data_size_));
-    }
-    
-    return base_usage + samples0_bytes + samples1_bytes;
+    return pasta::FlatRank<optimized_for, VectorType>::space_usage() +
+           samples0_.size() * sizeof(uint32_t) +
+           samples1_.size() * sizeof(uint32_t);
   }
 
 private:

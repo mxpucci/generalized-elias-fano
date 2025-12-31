@@ -202,21 +202,7 @@ public:
     size_t size() const override { return bv_.size(); }
     
     size_t size_in_bytes() const override {
-        size_t bv_usage = bv_.space_usage();
-        size_t support_usage = support_ ? support_->space_usage() : 0;
-        
-        // Sanity check: bit vector usage should be roughly size/8 + overhead
-        // Support usage should be at most a few percent of bv_usage
-        constexpr size_t MAX_SANE_SIZE = 100ULL << 20; // 100MB
-        if (bv_usage > MAX_SANE_SIZE || support_usage > MAX_SANE_SIZE) [[unlikely]] {
-            throw std::runtime_error("PastaBitVector::size_in_bytes corruption: "
-                "bv_usage=" + std::to_string(bv_usage) + 
-                ", support_usage=" + std::to_string(support_usage) +
-                ", bv_.size()=" + std::to_string(bv_.size()) +
-                ", has_support=" + std::to_string(support_ != nullptr));
-        }
-        
-        return bv_usage + support_usage;
+        return bv_.space_usage() + (support_ ? support_->space_usage() : 0);
     }
     
     size_t support_size_in_bytes() const override {
