@@ -302,7 +302,9 @@ public:
 
 private:
   void init() {
-    size_t const l12_end = l12_.size();
+    // CRITICAL: Use l12_end_ (populated count) not l12_.size() (allocated count)
+    // l12_ uses NoInitNoDestroy mode so entries beyond l12_end_ contain garbage
+    size_t const l12_end = l12_end_;
     size_t next_sample0_value = 1;
     size_t next_sample1_value = 1;
     
