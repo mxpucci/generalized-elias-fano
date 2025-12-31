@@ -194,16 +194,21 @@ public:
         // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
+        // Max sane size: 10x the raw data size (compression should make it smaller, not larger!)
+        const size_t max_partition_bytes = 10 * m_block_size * sizeof(T);
+        
         for (size_t i = 0; i < num_partitions; ++i) {
             if (!m_partitions[i].has_value()) [[unlikely]] {
                 throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(i) + 
                     " of " + std::to_string(num_partitions) + " is not initialized");
             }
             size_t partition_bytes = partition(i).size_in_bytes();
-            // Sanity check: a single partition should not exceed 1GB
-            if (partition_bytes > 1ULL << 30) [[unlikely]] {
+            // Sanity check: compressed size > 10x raw size is clearly corruption
+            if (partition_bytes > max_partition_bytes) [[unlikely]] {
                 throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(i) + 
-                    " has suspicious size_in_bytes=" + std::to_string(partition_bytes));
+                    " has suspicious size_in_bytes=" + std::to_string(partition_bytes) +
+                    " (max_sane=" + std::to_string(max_partition_bytes) + 
+                    ", block_size=" + std::to_string(m_block_size) + ")");
             }
             total_bytes += partition_bytes;
         }

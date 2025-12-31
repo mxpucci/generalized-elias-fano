@@ -863,7 +863,9 @@ namespace gef {
             size_t total_bytes = 0;
             
             // Sanity check member variables for corruption
-            constexpr size_t MAX_SANE_SIZE = 1ULL << 32; // 4GB per component is insane
+            // For a 32k partition, even with 64-bit ints, max should be ~256KB
+            // Use 100MB as a generous upper bound for any single U_GEF instance
+            constexpr size_t MAX_SANE_SIZE = 100ULL << 20; // 100MB per component
             
             if (B) {
                 size_t b_size = B->size_in_bytes();
