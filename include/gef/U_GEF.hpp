@@ -13,6 +13,7 @@
 #include <memory>
 #include <filesystem>
 #include "sdsl/int_vector.hpp"
+#include <string>
 #include <vector>
 #include <type_traits> // Required for std::make_unsigned
 #include <stdexcept>
@@ -848,12 +849,38 @@ namespace gef {
 
         [[nodiscard]] size_t size_in_bytes() const override {
             size_t total_bytes = 0;
+            
+            // Sanity check member variables for corruption
+            constexpr size_t MAX_SANE_SIZE = 1ULL << 32; // 4GB per component is insane
+            
             if (B) {
-                total_bytes += B->size_in_bytes();
-                total_bytes += G->size_in_bytes();
+                size_t b_size = B->size_in_bytes();
+                size_t g_size = G->size_in_bytes();
+                if (b_size > MAX_SANE_SIZE || g_size > MAX_SANE_SIZE) [[unlikely]] {
+                    throw std::runtime_error("U_GEF::size_in_bytes: corrupted B/G sizes: B=" + 
+                        std::to_string(b_size) + ", G=" + std::to_string(g_size) +
+                        ", h=" + std::to_string(static_cast<int>(h)) + 
+                        ", b=" + std::to_string(static_cast<int>(b)) +
+                        ", m_num_elements=" + std::to_string(m_num_elements));
+                }
+                total_bytes += b_size;
+                total_bytes += g_size;
             }
-            total_bytes += sdsl::size_in_bytes(L);
-            total_bytes += sdsl::size_in_bytes(H);
+            
+            size_t l_size = sdsl::size_in_bytes(L);
+            size_t h_size = sdsl::size_in_bytes(H);
+            if (l_size > MAX_SANE_SIZE || h_size > MAX_SANE_SIZE) [[unlikely]] {
+                throw std::runtime_error("U_GEF::size_in_bytes: corrupted L/H sizes: L=" + 
+                    std::to_string(l_size) + ", H=" + std::to_string(h_size) +
+                    ", L.size()=" + std::to_string(L.size()) + ", L.width()=" + std::to_string(L.width()) +
+                    ", H.size()=" + std::to_string(H.size()) + ", H.width()=" + std::to_string(H.width()) +
+                    ", h=" + std::to_string(static_cast<int>(h)) + 
+                    ", b=" + std::to_string(static_cast<int>(b)) +
+                    ", m_num_elements=" + std::to_string(m_num_elements));
+            }
+            
+            total_bytes += l_size;
+            total_bytes += h_size;
             total_bytes += sizeof(base);
             total_bytes += sizeof(h);
             total_bytes += sizeof(b);
