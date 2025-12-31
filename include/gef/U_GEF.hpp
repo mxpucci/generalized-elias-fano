@@ -516,10 +516,22 @@ namespace gef {
             assert(g_writer.position() == g_bits);
 
             // Enable rank/select support
-                B->enable_rank();
-
-                G->enable_rank();
-                G->enable_select0();
+            B->enable_rank();
+            G->enable_rank();
+            G->enable_select0();
+            
+            // Verify state integrity after construction
+            if (L.size() > 0 && L.size() != N) [[unlikely]] {
+                throw std::runtime_error("U_GEF constructor: L.size()=" + std::to_string(L.size()) + 
+                    " != N=" + std::to_string(N));
+            }
+            if (L.width() > 64) [[unlikely]] {
+                throw std::runtime_error("U_GEF constructor: L.width()=" + std::to_string(L.width()) + " > 64");
+            }
+            if (H.size() != exceptions) [[unlikely]] {
+                throw std::runtime_error("U_GEF constructor: H.size()=" + std::to_string(H.size()) + 
+                    " != exceptions=" + std::to_string(exceptions));
+            }
         }
 
         template<uint8_t SPLIT_POINT>
@@ -865,6 +877,22 @@ namespace gef {
                 }
                 total_bytes += b_size;
                 total_bytes += g_size;
+            }
+            
+            // Pre-check L and H vector state before calling size_in_bytes
+            // to catch corruption before it causes issues
+            if (L.size() > 1ULL << 40 || L.width() > 64) [[unlikely]] {
+                throw std::runtime_error("U_GEF::size_in_bytes: L vector state corrupted: "
+                    "L.size()=" + std::to_string(L.size()) + ", L.width()=" + std::to_string(L.width()) +
+                    ", expected size~=" + std::to_string(m_num_elements) +
+                    ", h=" + std::to_string(static_cast<int>(h)) + 
+                    ", b=" + std::to_string(static_cast<int>(b)));
+            }
+            if (H.size() > 1ULL << 40 || H.width() > 64) [[unlikely]] {
+                throw std::runtime_error("U_GEF::size_in_bytes: H vector state corrupted: "
+                    "H.size()=" + std::to_string(H.size()) + ", H.width()=" + std::to_string(H.width()) +
+                    ", h=" + std::to_string(static_cast<int>(h)) + 
+                    ", b=" + std::to_string(static_cast<int>(b)));
             }
             
             size_t l_size = sdsl::size_in_bytes(L);
