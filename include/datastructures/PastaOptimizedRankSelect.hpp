@@ -17,6 +17,7 @@
 #include <pasta/utils/debug_asserts.hpp>
 
 #include <limits>
+#include <stdexcept>
 #include <tlx/container/simple_vector.hpp>
 #include <vector>
 #include <bit>
@@ -278,8 +279,25 @@ public:
   }
 
   size_t space_usage() const final {
-    return samples0_.size() * sizeof(uint32_t) +
-           samples1_.size() * sizeof(uint32_t) + sizeof(*this);
+    // Include base class's l12_ array + our samples vectors
+    size_t base_usage = pasta::FlatRank<optimized_for, VectorType>::space_usage();
+    size_t samples0_bytes = samples0_.size() * sizeof(uint32_t);
+    size_t samples1_bytes = samples1_.size() * sizeof(uint32_t);
+    
+    // Sanity check - samples should not be larger than 100MB each
+    constexpr size_t MAX_SANE = 100ULL << 20;
+    if (base_usage > MAX_SANE || samples0_bytes > MAX_SANE || samples1_bytes > MAX_SANE) [[unlikely]] {
+        throw std::runtime_error("OptimizedFlatRankSelect::space_usage corruption: "
+            "base_usage=" + std::to_string(base_usage) +
+            ", samples0_bytes=" + std::to_string(samples0_bytes) + 
+            " (size=" + std::to_string(samples0_.size()) + ")" +
+            ", samples1_bytes=" + std::to_string(samples1_bytes) +
+            " (size=" + std::to_string(samples1_.size()) + ")" +
+            ", l12_.size()=" + std::to_string(l12_.size()) +
+            ", data_size_=" + std::to_string(data_size_));
+    }
+    
+    return base_usage + samples0_bytes + samples1_bytes;
   }
 
 private:
@@ -289,84 +307,41 @@ private:
     size_t next_sample1_value = 1;
     
     for (size_t l12_pos = 0; l12_pos < l12_end; ++l12_pos) {
+      // CRITICAL: Use l12_pos when l12_pos == 0 to avoid SIZE_MAX underflow
+      size_t sample_pos = (l12_pos > 0) ? (l12_pos - 1) : 0;
+      
       if constexpr (pasta::optimize_one_or_dont_care(optimized_for)) {
          if constexpr (optimized_for != pasta::OptimizedFor::DONT_CARE) {
              while ((l12_pos * OptimizedFlatRankSelectConfig::L1_BIT_SIZE) -
                     l12_[l12_pos].l1() >=
                 next_sample0_value) {
-              samples0_.push_back(l12_pos - 1);
+              samples0_.push_back(sample_pos);
               next_sample0_value += OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
             }
             while (l12_[l12_pos].l1() >= next_sample1_value) {
-              samples1_.push_back(l12_pos - 1);
+              samples1_.push_back(sample_pos);
               next_sample1_value += OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
             }
          }
       } else if constexpr (optimized_for == pasta::OptimizedFor::ZERO_QUERIES) {
         // Optimized for Zero Queries (select0)
         while (l12_[l12_pos].l1() >= next_sample0_value) {
-          samples0_.push_back(l12_pos - 1);
+          samples0_.push_back(sample_pos);
           next_sample0_value += OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
         }
         
         // Skip building samples1_ when optimized for ZERO_QUERIES to save space.
       } else {
-         // OptimizedFor::DONT_CARE (e.g., RankOnly) or ONE_QUERIES
-         // If we don't care, we might as well build both for safety unless we want to be strict.
-         // But for RankOnly (DONT_CARE), we actually want to build NEITHER if possible?
-         // FlatRankSelect builds both by default for DONT_CARE.
-         
-         // If we are in DONT_CARE, we should check if we really need select support.
-         // But "OptimizedFor" doesn't strictly imply "Enabled".
-         // However, standard pasta implementation builds both for DONT_CARE.
-         
-         // Let's stick to standard behavior for DONT_CARE to avoid breaking RankOnly unless we are sure.
-         // Wait, PastaRankBitVector uses DONT_CARE (via the new logic).
-         // If we build both, we waste space for RankOnly.
-         
-         // Let's modify logic:
-         // If we are RankOnly (OptSelect0=false, OptSelect1=false), we want NO samples.
-         // But OptimizedFlatRankSelect is designed for Select. 
-         // If we want RankOnly, maybe we shouldn't use OptimizedFlatRankSelect?
-         // PastaBitVectorT uses support_type = OptimizedFlatRankSelect.
-         
-         // If we want to optimize RankOnly, we should not populate samples at all.
-         // But DONT_CARE is also used for "General Purpose" (OptSelect0=true, OptSelect1=true)?
-         // No, "General Purpose" usually maps to ONE_QUERIES or DONT_CARE.
-         // In my logic: (OptSelect0 && !OptSelect1) -> ZERO
-         //              (!OptSelect0 && !OptSelect1) -> DONT_CARE
-         //              Else -> ONE_QUERIES
-         
-         // So:
-         // PastaGapBitVector -> ZERO_QUERIES (builds samples0 only) -> GOOD.
-         // PastaRankBitVector -> DONT_CARE (builds both?) -> BAD.
-         
-         // We should change DONT_CARE behavior OR allow explicitly disabling samples.
-         // Since I can't easily change the template params of PastaBitVectorT without breaking API,
-         // I will rely on the fact that if optimized_for == DONT_CARE, it might mean "RankOnly" in this specific context 
-         // OR it might mean "balanced".
-         
-         // Actually, PastaBitVectorT maps general purpose (Select0+Select1) to ONE_QUERIES in the original code?
-         // Original: (OptSelect0 && !OptSelect1) ? ZERO : ONE.
-         // So General (True, True) -> ONE.
-         // RankOnly (False, False) -> ONE.
-         
-         // So previously RankOnly was building "ONE_QUERIES" index (samples1).
-         
-         // With my change:
-         // RankOnly -> DONT_CARE.
-         
-         // I should make DONT_CARE build NOTHING.
-         
+         // OptimizedFor::DONT_CARE builds nothing (for RankOnly use case)
          if constexpr (optimized_for != pasta::OptimizedFor::DONT_CARE) {
              while ((l12_pos * OptimizedFlatRankSelectConfig::L1_BIT_SIZE) -
                     l12_[l12_pos].l1() >=
                 next_sample0_value) {
-              samples0_.push_back(l12_pos - 1);
+              samples0_.push_back(sample_pos);
               next_sample0_value += OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
             }
             while (l12_[l12_pos].l1() >= next_sample1_value) {
-              samples1_.push_back(l12_pos - 1);
+              samples1_.push_back(sample_pos);
               next_sample1_value += OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
             }
          }

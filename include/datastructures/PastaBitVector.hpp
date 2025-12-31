@@ -38,7 +38,8 @@ private:
         (!OptSelect0 && !OptSelect1) ? pasta::OptimizedFor::DONT_CARE : // Case for RankOnly
         pasta::OptimizedFor::ONE_QUERIES;
 
-    #if defined(__x86_64__) || defined(_M_X64)
+    // Use INTRINSICS only if on x86_64 AND SIMD is not disabled
+    #if (defined(__x86_64__) || defined(_M_X64)) && !defined(GEF_DISABLE_SIMD)
         static constexpr pasta::FindL2FlatWith search_strategy = pasta::FindL2FlatWith::INTRINSICS;
     #else
         static constexpr pasta::FindL2FlatWith search_strategy = pasta::FindL2FlatWith::LINEAR_SEARCH;
