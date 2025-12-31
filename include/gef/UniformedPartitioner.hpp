@@ -15,8 +15,9 @@
 #include <utility>
 #include <optional>
 
-#if _OPENMP
+#if defined(_OPENMP) && !defined(GEF_DISABLE_OPENMP)
 #include <omp.h>
+#define GEF_USE_OPENMP 1
 #endif
 
 namespace gef {
@@ -109,7 +110,7 @@ public:
             }
         };
 
-    #if _OPENMP
+    #if GEF_USE_OPENMP
         // resize() on vector<optional<T>> creates N empty optionals - trivially cheap!
         // No Compressor default construction. Each thread then constructs via emplace().
         // This gives constant throughput regardless of partition count.
@@ -249,7 +250,7 @@ public:
         // Parallelize only when the overhead is justified:
         // - Need enough total elements to decompress (amortize thread overhead)
         // - Need enough partitions to distribute work effectively
-        #if _OPENMP
+        #if GEF_USE_OPENMP
         constexpr size_t MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS = 100000;
         constexpr size_t MIN_PARTITIONS_FOR_PARALLEL = 4;
         const bool use_parallel = (total_requested >= MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS) &&
