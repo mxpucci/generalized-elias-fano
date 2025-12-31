@@ -11,6 +11,7 @@
 #include <numeric>
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <optional>
@@ -153,6 +154,14 @@ public:
                 }
             }
         }
+        
+        // Verify all partitions are initialized after parallel construction
+        for (size_t p = 0; p < num_partitions; ++p) {
+            if (!m_partitions[p].has_value()) {
+                throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(p) + 
+                    " was not initialized after parallel construction");
+            }
+        }
     #else
         build_sequential();
     #endif
@@ -186,7 +195,17 @@ public:
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
-            total_bytes += partition(i).size_in_bytes();
+            if (!m_partitions[i].has_value()) [[unlikely]] {
+                throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(i) + 
+                    " of " + std::to_string(num_partitions) + " is not initialized");
+            }
+            size_t partition_bytes = partition(i).size_in_bytes();
+            // Sanity check: a single partition should not exceed 1GB
+            if (partition_bytes > 1ULL << 30) [[unlikely]] {
+                throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(i) + 
+                    " has suspicious size_in_bytes=" + std::to_string(partition_bytes));
+            }
+            total_bytes += partition_bytes;
         }
         return total_bytes;
     }
