@@ -265,7 +265,7 @@ public:
 // 1. General Purpose (All features enabled)
 using PastaBitVector = PastaBitVectorT<true, true, true>;
 
-// 2. Select-0 Optimized (For Gap Encoding / B_GEF_STAR)
+// 2. Select-0 Optimized (For Gap Encoding / B_STAR_GEF)
 //    Enables Rank1 (needed for internal select logic) and Select0. 
 //    Disables Select1 index to save space.
 using PastaGapBitVector = PastaBitVectorT<true, false, true>;

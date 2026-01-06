@@ -1,6 +1,6 @@
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/UniformedPartitioner.hpp"
+#include "gef/UniformPartitioning.hpp"
 #include "gef/CompressionProfile.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
@@ -41,8 +41,8 @@ struct ProgramOptions {
 };
 
 template<typename T>
-struct BGEFStarWrapper : public gef::B_GEF_STAR<T> {
-    using Base = gef::B_GEF_STAR<T>;
+struct BGEFStarWrapper : public gef::B_STAR_GEF<T> {
+    using Base = gef::B_STAR_GEF<T>;
 
     BGEFStarWrapper(gef::Span<const T> data,
                     const std::shared_ptr<IBitVectorFactory>& factory,
@@ -176,7 +176,7 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     for (size_t i = 0; i < iterations; ++i) {
         std::vector<int64_t> data_copy = data;
         auto t0 = steady_clock::now();
-        gef::UniformedPartitioner<int64_t,
+        gef::UniformPartitioning<int64_t,
                                   Compressor,
                                   std::shared_ptr<IBitVectorFactory>,
                                   gef::SplitPointStrategy> compressor(
@@ -199,7 +199,7 @@ MeasurementResult measure(const std::vector<int64_t>& data,
     const double throughput_mb_s = (bytes_processed / avg) / (1024.0 * 1024.0);
 
     gef::CompressionBuildMetrics build_metrics;
-    gef::UniformedPartitioner<int64_t,
+    gef::UniformPartitioning<int64_t,
                               Compressor,
                               std::shared_ptr<IBitVectorFactory>,
                               gef::SplitPointStrategy,

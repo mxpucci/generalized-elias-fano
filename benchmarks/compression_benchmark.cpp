@@ -2,8 +2,8 @@
 #include "gef/B_GEF.hpp"
 #include "gef/U_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
-#include "gef/B_GEF_STAR.hpp"
-#include "gef/UniformedPartitioner.hpp"
+#include "gef/B_STAR_GEF.hpp"
+#include "gef/UniformPartitioning.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "datastructures/SUXBitVectorFactory.hpp"
 #include "datastructures/PastaBitVectorFactory.hpp"
@@ -69,18 +69,18 @@ struct B_GEF_Wrapper : public gef::B_GEF<T> {
 };
 
 template<typename T>
-struct B_GEF_NO_RLE_Wrapper : public gef::B_GEF_STAR<T> {
+struct B_GEF_NO_RLE_Wrapper : public gef::B_STAR_GEF<T> {
     B_GEF_NO_RLE_Wrapper(const std::vector<T>& data,
                          const std::shared_ptr<IBitVectorFactory>& factory,
                          gef::SplitPointStrategy strategy)
-        : gef::B_GEF_STAR<T>(factory, data, strategy) {}
+        : gef::B_STAR_GEF<T>(factory, data, strategy) {}
 
     B_GEF_NO_RLE_Wrapper(gef::Span<const T> data,
                          const std::shared_ptr<IBitVectorFactory>& factory,
                          gef::SplitPointStrategy strategy)
-        : gef::B_GEF_STAR<T>(factory, data, strategy) {}
+        : gef::B_STAR_GEF<T>(factory, data, strategy) {}
 
-    B_GEF_NO_RLE_Wrapper() : gef::B_GEF_STAR<T>() {}
+    B_GEF_NO_RLE_Wrapper() : gef::B_STAR_GEF<T>() {}
 };
 
 std::vector<std::string> g_input_files;
@@ -129,7 +129,7 @@ void setFactory(BitVectorImplementation impl) {
 #pragma endregion
 
 #pragma region Benchmark Fixture
-class UniformedPartitionerBenchmark : public benchmark::Fixture {
+class UniformPartitioningBenchmark : public benchmark::Fixture {
 public:
     std::vector<int64_t> input_data;
     std::string current_file_path;
@@ -185,7 +185,7 @@ const std::vector<size_t> GET_ELEMENTS_RANGES = {
 //     20480, 40960, 81920, 163840, 327680, 655360, 1000000
 // };
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Compression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_Compression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
@@ -194,12 +194,12 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Compression)(benchmark::
         state.PauseTiming();
         std::vector<int64_t> data_copy = input_data;
         state.ResumeTiming();
-        gef::UniformedPartitioner<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
+        gef::UniformPartitioning<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
             data_copy, partition_size, g_factory, strategy);
         benchmark::DoNotOptimize(compressor);
     }
 
-    gef::UniformedPartitioner<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
+    gef::UniformPartitioning<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
         input_data, partition_size, g_factory, strategy);
     state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
     state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
@@ -208,7 +208,7 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Compression)(benchmark::
     state.counters["compression_throughput_MBs"] = benchmark::Counter(bytes_processed, benchmark::Counter::kIsRate, benchmark::Counter::kIs1024);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Compression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Compression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
@@ -217,35 +217,12 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Compression)(benc
         state.PauseTiming();
         std::vector<int64_t> data_copy = input_data;
         state.ResumeTiming();
-        gef::UniformedPartitioner<int64_t, B_GEF_NO_RLE_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
+        gef::UniformPartitioning<int64_t, B_GEF_NO_RLE_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
             data_copy, partition_size, g_factory, strategy);
         benchmark::DoNotOptimize(compressor);
     }
 
-    gef::UniformedPartitioner<int64_t, B_GEF_NO_RLE_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
-        input_data, partition_size, g_factory, strategy);
-    state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
-    state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
-
-
-    double bytes_processed = static_cast<double>(state.iterations() * input_data.size() * sizeof(int64_t));
-    state.counters["compression_throughput_MBs"] = benchmark::Counter(bytes_processed, benchmark::Counter::kIsRate, benchmark::Counter::kIs1024);
-}
-
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_Compression)(benchmark::State& state) {
-    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
-    size_t partition_size = state.range(2);
-    state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
-
-    for (auto _ : state) {
-        state.PauseTiming();
-        std::vector<int64_t> data_copy = input_data;
-        state.ResumeTiming();
-        gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
-            data_copy, partition_size, g_factory, strategy);
-        benchmark::DoNotOptimize(compressor);
-    }
-    gef::UniformedPartitioner<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
+    gef::UniformPartitioning<int64_t, B_GEF_NO_RLE_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
         input_data, partition_size, g_factory, strategy);
     state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
     state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
@@ -255,18 +232,41 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_Compression)(benchmark::
     state.counters["compression_throughput_MBs"] = benchmark::Counter(bytes_processed, benchmark::Counter::kIsRate, benchmark::Counter::kIs1024);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_Compression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, U_GEF_Compression)(benchmark::State& state) {
+    gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
+    size_t partition_size = state.range(2);
+    state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        std::vector<int64_t> data_copy = input_data;
+        state.ResumeTiming();
+        gef::UniformPartitioning<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> compressor(
+            data_copy, partition_size, g_factory, strategy);
+        benchmark::DoNotOptimize(compressor);
+    }
+    gef::UniformPartitioning<int64_t, U_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>, gef::SplitPointStrategy> final_compressor(
+        input_data, partition_size, g_factory, strategy);
+    state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
+    state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
+
+
+    double bytes_processed = static_cast<double>(state.iterations() * input_data.size() * sizeof(int64_t));
+    state.counters["compression_throughput_MBs"] = benchmark::Counter(bytes_processed, benchmark::Counter::kIsRate, benchmark::Counter::kIs1024);
+}
+
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, RLE_GEF_Compression)(benchmark::State& state) {
     size_t partition_size = state.range(1);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
     for (auto _ : state) {
         state.PauseTiming();
         std::vector<int64_t> data_copy = input_data;
         state.ResumeTiming();
-        gef::UniformedPartitioner<int64_t, RLE_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> compressor(
+        gef::UniformPartitioning<int64_t, RLE_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> compressor(
             data_copy, partition_size, g_factory);
         benchmark::DoNotOptimize(compressor);
     }
-    gef::UniformedPartitioner<int64_t, RLE_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> final_compressor(
+    gef::UniformPartitioning<int64_t, RLE_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> final_compressor(
         input_data, partition_size, g_factory);
     state.counters["size_in_bytes"] = final_compressor.size_in_bytes();
     state.counters["bpi"] = static_cast<double>(final_compressor.size_in_bytes() * 8) / input_data.size();
@@ -287,7 +287,7 @@ void LookupBenchmark(benchmark::State& state, const std::vector<int64_t>& data, 
         state.SkipWithError("Input data is empty for lookup benchmark.");
         return;
     }
-    gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
+    gef::UniformPartitioning<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
     std::vector<size_t> random_indices(NUM_LOOKUPS);
     std::mt19937 gen(1337);
     std::uniform_int_distribution<size_t> distrib(0, data.size() - 1);
@@ -319,7 +319,7 @@ void SizeInBytesBenchmark(benchmark::State& state, const std::vector<int64_t>& d
         return;
     }
 
-    gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
+    gef::UniformPartitioning<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
     size_t bytes_used = compressor.size_in_bytes();
     for (auto _ : state) {
         benchmark::DoNotOptimize(bytes_used);
@@ -340,7 +340,7 @@ void DecompressionThroughputBenchmark(benchmark::State& state, const std::vector
     }
     
     // Build the compressor once outside the timing loop
-    gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
+    gef::UniformPartitioning<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
     const size_t total = data.size();
     std::vector<int64_t> decompressed(total);
     for (auto _ : state) {
@@ -382,7 +382,7 @@ void GetElementsRangeBenchmark(benchmark::State& state,
         return;
     }
 
-    gef::UniformedPartitioner<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
+    gef::UniformPartitioning<int64_t, CompressorWrapper<int64_t>, Args...> compressor(data, partition_size, args...);
     std::vector<int64_t> buffer(range);
     
     // Precompute start indices to avoid RNG overhead during measurement
@@ -419,90 +419,90 @@ void GetElementsRangeBenchmark(benchmark::State& state,
 
 #pragma region Lookup Definitions and Registration
 // ... [Rest of registration code remains same] ...
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Lookup)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_Lookup)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     LookupBenchmark<B_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Lookup)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Lookup)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     LookupBenchmark<B_GEF_NO_RLE_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_Lookup)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, U_GEF_Lookup)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     LookupBenchmark<U_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_Lookup)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, RLE_GEF_Lookup)(benchmark::State& state) {
     size_t partition_size = state.range(1);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
     LookupBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_SizeInBytes)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_SizeInBytes)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     SizeInBytesBenchmark<B_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_SizeInBytes)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_SizeInBytes)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     SizeInBytesBenchmark<B_GEF_NO_RLE_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_SizeInBytes)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, U_GEF_SizeInBytes)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     SizeInBytesBenchmark<U_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_SizeInBytes)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, RLE_GEF_SizeInBytes)(benchmark::State& state) {
     size_t partition_size = state.range(1);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
     SizeInBytesBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
 }
 
 // Decompression Throughput Benchmark Definitions
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_Decompression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_Decompression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     DecompressionThroughputBenchmark<B_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Decompression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Decompression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     DecompressionThroughputBenchmark<B_GEF_NO_RLE_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_Decompression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, U_GEF_Decompression)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + strategyToString(strategy) + "/" + std::to_string(partition_size));
     DecompressionThroughputBenchmark<U_GEF_Wrapper>(state, input_data, partition_size, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_Decompression)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, RLE_GEF_Decompression)(benchmark::State& state) {
     size_t partition_size = state.range(1);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size));
     DecompressionThroughputBenchmark<RLE_GEF_Wrapper>(state, input_data, partition_size, g_factory);
 }
 
 // Partial get_elements throughput
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_GetElements)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_GetElements)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     size_t range = state.range(3);
@@ -511,7 +511,7 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_GetElements)(benchmark::
     GetElementsRangeBenchmark<B_GEF_Wrapper>(state, input_data, partition_size, range, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_GetElements)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_GetElements)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     size_t range = state.range(3);
@@ -520,7 +520,7 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_GetElements)(benc
     GetElementsRangeBenchmark<B_GEF_NO_RLE_Wrapper>(state, input_data, partition_size, range, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_GetElements)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, U_GEF_GetElements)(benchmark::State& state) {
     gef::SplitPointStrategy strategy = static_cast<gef::SplitPointStrategy>(state.range(1));
     size_t partition_size = state.range(2);
     size_t range = state.range(3);
@@ -529,7 +529,7 @@ BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, U_GEF_GetElements)(benchmark::
     GetElementsRangeBenchmark<U_GEF_Wrapper>(state, input_data, partition_size, range, g_factory, strategy);
 }
 
-BENCHMARK_DEFINE_F(UniformedPartitionerBenchmark, RLE_GEF_GetElements)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(UniformPartitioningBenchmark, RLE_GEF_GetElements)(benchmark::State& state) {
     size_t partition_size = state.range(1);
     size_t range = state.range(2);
     state.SetLabel(current_basename + "/" + g_factory_name + "/" + std::to_string(partition_size) +
@@ -604,19 +604,19 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     };
 
     // Compression - Run on ALL partition sizes
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Compression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_Compression)
         ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Compression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Compression)
         ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Compression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, U_GEF_Compression)
         ->ArgsProduct(throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Compression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, RLE_GEF_Compression)
         ->ArgsProduct(partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
@@ -627,28 +627,28 @@ void RegisterBenchmarksForFile(size_t file_idx) {
     // =========================================================================
 #if !GEF_BENCHMARK_WITH_OPENMP
     // Lookup - Run only on FIXED partition size
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Lookup)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_Lookup)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Lookup)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Lookup)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Lookup)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, U_GEF_Lookup)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Lookup)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, RLE_GEF_Lookup)
         ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
 
     // Size benchmarks - Run only on FIXED partition size
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_SizeInBytes)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_SizeInBytes)
         ->ArgsProduct({
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
@@ -658,7 +658,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
     
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_SizeInBytes)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_SizeInBytes)
         ->ArgsProduct({
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
@@ -668,7 +668,7 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
     
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_SizeInBytes)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, U_GEF_SizeInBytes)
         ->ArgsProduct({
             file_idx_args,
             {static_cast<int64_t>(gef::SplitPointStrategy::APPROXIMATE_SPLIT_POINT),
@@ -678,42 +678,42 @@ void RegisterBenchmarksForFile(size_t file_idx) {
         ->ArgNames({"file_idx", "strategy", "partition_size"})
         ->Iterations(1);
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_SizeInBytes)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, RLE_GEF_SizeInBytes)
         ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"})
         ->Iterations(1);
 
     // Decompression Throughput - Run only on FIXED partition size
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_Decompression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_Decompression)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_Decompression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_Decompression)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_Decompression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, U_GEF_Decompression)
         ->ArgsProduct(fixed_throughput_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_Decompression)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, RLE_GEF_Decompression)
         ->ArgsProduct(fixed_partition_arg_lists)
         ->ArgNames({"file_idx", "partition_size"});
 
     // Partial get_elements throughput - Run only on FIXED partition size
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_GetElements)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_GetElements)
         ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, B_GEF_NO_RLE_GetElements)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, B_GEF_NO_RLE_GetElements)
         ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, U_GEF_GetElements)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, U_GEF_GetElements)
         ->ArgsProduct(fixed_get_elements_strategy_lists)
         ->ArgNames({"file_idx", "strategy", "partition_size", "range"});
 
-    BENCHMARK_REGISTER_F(UniformedPartitionerBenchmark, RLE_GEF_GetElements)
+    BENCHMARK_REGISTER_F(UniformPartitioningBenchmark, RLE_GEF_GetElements)
         ->ArgsProduct(fixed_get_elements_partition_lists)
         ->ArgNames({"file_idx", "partition_size", "range"});
 #endif // !GEF_BENCHMARK_WITH_OPENMP

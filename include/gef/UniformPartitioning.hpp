@@ -2,8 +2,8 @@
 // Created by Michelangelo Pucci on 17/07/25.
 //
 
-#ifndef UNIFORMED_PARTITIONER_HPP
-#define UNIFORMED_PARTITIONER_HPP
+#ifndef UNIFORM_PARTITIONING_HPP
+#define UNIFORM_PARTITIONING_HPP
 
 #include "IGEF.hpp"
 #include <vector>
@@ -42,17 +42,17 @@ template<IntegralType T, class Compressor, typename... CompressorArgs>
 #else
 template<typename T, class Compressor, typename... CompressorArgs>
 #endif
-class UniformedPartitioner : public IGEF<T> {
+class UniformPartitioning : public IGEF<T> {
     static_assert(std::is_base_of_v<IGEF<T>, Compressor>, "Compressor must be a subclass of IGEF<T>");
 
 public:
     /**
-     * @brief Constructs a UniformedPartitioner by compressing data in blocks.
+     * @brief Constructs a UniformPartitioning by compressing data in blocks.
      * @param data The input vector to compress.
      * @param k The size of each block. The last block may be smaller.
      * @param args Additional arguments to be forwarded to the Compressor's constructor for each block.
      */
-    UniformedPartitioner(const std::vector<T>& data, size_t k, CompressorArgs... args)
+    UniformPartitioning(const std::vector<T>& data, size_t k, CompressorArgs... args)
     : m_original_size(data.size()), m_block_size(k) {
         if (k == 0) throw std::invalid_argument("Block size k cannot be zero.");
 
@@ -71,7 +71,7 @@ public:
         constexpr bool can_use_vector = accepts_vector_value || accepts_vector_constref || accepts_vector_ref;
 
         static_assert(can_use_view || can_use_vector,
-                      "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformedPartitioner");
+                      "Compressor must be constructible with Span<const T> or std::vector<T> when used by UniformPartitioning");
 
         // Sequential implementation - used when OpenMP is disabled
         auto build_sequential = [&]() {
@@ -158,7 +158,7 @@ public:
         // Verify all partitions are initialized after parallel construction
         for (size_t p = 0; p < num_partitions; ++p) {
             if (!m_partitions[p].has_value()) {
-                throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(p) + 
+                throw std::runtime_error("UniformPartitioning: partition " + std::to_string(p) + 
                     " was not initialized after parallel construction");
             }
         }
@@ -171,14 +171,14 @@ public:
     /**
      * @brief Default constructor. Used for loading from a stream.
      */
-    UniformedPartitioner() : m_original_size(0), m_block_size(0) {}
+    UniformPartitioning() : m_original_size(0), m_block_size(0) {}
 
-    ~UniformedPartitioner() override = default;
+    ~UniformPartitioning() override = default;
 
-    UniformedPartitioner(const UniformedPartitioner&) = delete;
-    UniformedPartitioner& operator=(const UniformedPartitioner&) = delete;
-    UniformedPartitioner(UniformedPartitioner&&) = default;
-    UniformedPartitioner& operator=(UniformedPartitioner&&) = default;
+    UniformPartitioning(const UniformPartitioning&) = delete;
+    UniformPartitioning& operator=(const UniformPartitioning&) = delete;
+    UniformPartitioning(UniformPartitioning&&) = default;
+    UniformPartitioning& operator=(UniformPartitioning&&) = default;
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // IGEF interface implementation
@@ -311,7 +311,7 @@ public:
 
     T operator[](size_t index) const override {
         if (index >= m_original_size) [[unlikely]] {
-             throw std::out_of_range("index out of range in UniformedPartitioner");
+             throw std::out_of_range("index out of range in UniformPartitioning");
         }
         
         // Division and modulo are expensive - but necessary here
@@ -355,7 +355,7 @@ public:
         ifs.read(reinterpret_cast<char*>(&m_block_size), sizeof(m_block_size));
 
         if (ifs.fail() || m_block_size == 0) {
-            throw std::runtime_error("Failed to read or invalid data from stream during UniformedPartitioner load.");
+            throw std::runtime_error("Failed to read or invalid data from stream during UniformPartitioning load.");
         }
 
         size_t num_partitions;
@@ -387,4 +387,4 @@ private:
 
 } // namespace gef
 
-#endif // UNIFORMED_PARTITIONER_HPP
+#endif // UNIFORM_PARTITIONING_HPP

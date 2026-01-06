@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
@@ -26,14 +26,14 @@ protected:
 namespace {
 // Define the list of implementations and types to test with.
 using GEF_Overhead_Implementations = ::testing::Types<
-    gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_STAR<int8_t>,
-    gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_GEF_STAR<uint8_t>,
-    gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
-    gef::RLE_GEF<uint16_t>, gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_STAR<uint16_t>,
-    gef::RLE_GEF<int32_t>, gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
-    gef::RLE_GEF<uint32_t>, gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_STAR<uint32_t>,
-    gef::RLE_GEF<int64_t>, gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_GEF_STAR<int64_t>,
-    gef::RLE_GEF<uint64_t>, gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_GEF_STAR<uint64_t>
+    gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_STAR_GEF<int8_t>,
+    gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_STAR_GEF<uint8_t>,
+    gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_STAR_GEF<int16_t>,
+    gef::RLE_GEF<uint16_t>, gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_STAR_GEF<uint16_t>,
+    gef::RLE_GEF<int32_t>, gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_STAR_GEF<int32_t>,
+    gef::RLE_GEF<uint32_t>, gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_STAR_GEF<uint32_t>,
+    gef::RLE_GEF<int64_t>, gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_STAR_GEF<int64_t>,
+    gef::RLE_GEF<uint64_t>, gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_STAR_GEF<uint64_t>
 >;
 }
 

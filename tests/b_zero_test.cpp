@@ -4,7 +4,7 @@
 #include <iostream>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
 #include "../include/datastructures/SDSLBitVectorFactory.hpp"
 
@@ -78,8 +78,8 @@ TEST(BZeroTest, B_GEF_Linear) {
     check_b_zero_behavior<B_GEF<uint64_t>>("B_GEF");
 }
 
-TEST(BZeroTest, B_GEF_STAR_Linear) {
-    check_b_zero_behavior<B_GEF_STAR<uint64_t>>("B_GEF_STAR");
+TEST(BZeroTest, B_STAR_GEF_Linear) {
+    check_b_zero_behavior<B_STAR_GEF<uint64_t>>("B_STAR_GEF");
 }
 
 TEST(BZeroTest, RLE_GEF_Linear) {

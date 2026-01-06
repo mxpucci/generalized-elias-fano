@@ -51,7 +51,7 @@ def parse_compressor_and_strategy(benchmark_name: str) -> str | None:
     parts = benchmark_name.split("/")
     compressor_type = None
     for part in parts:
-        if "B_GEF_NO_RLE" in part or "B_GEF_STAR" in part:
+        if "B_GEF_NO_RLE" in part or "B_STAR_GEF" in part:
             compressor_type = "B*_GEF"
             break
         if "B_GEF" in part:

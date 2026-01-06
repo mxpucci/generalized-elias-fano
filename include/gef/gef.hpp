@@ -3,5 +3,7 @@
 #include <iostream>
 
 namespace gef {
-    void hello();
-} 
+    inline void hello() {
+        std::cout << "Hello from GEF!" << std::endl;
+    }
+}

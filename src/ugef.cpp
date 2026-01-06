@@ -9,12 +9,12 @@
 #include <cstdint> // For uint32_t
 #include "gef/U_GEF.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
-#include "gef/UniformedPartitioner.hpp"
+#include "gef/UniformPartitioning.hpp"
 #include "gef/utils.hpp"
 #include "datastructures/IBitVectorFactory.hpp"
 
 
-// Wrapper to adapt U_GEF constructor for UniformedPartitioner
+// Wrapper to adapt U_GEF constructor for UniformPartitioning
 template<typename T>
 struct B_GEF_Wrapper : public gef::U_GEF<T> {
     // Constructor for compression
@@ -52,7 +52,7 @@ int main(const int argc, char* argv[]) {
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
-            gef::UniformedPartitioner<int64_t,
+            gef::UniformPartitioning<int64_t,
                                       B_GEF_Wrapper<int64_t>,
                                       std::shared_ptr<IBitVectorFactory>,
                                       gef::SplitPointStrategy>

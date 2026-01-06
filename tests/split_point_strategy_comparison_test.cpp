@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
@@ -20,7 +20,7 @@ template <typename T>
 struct is_b_gef_no_rle : std::false_type {};
 
 template <typename ValType>
-struct is_b_gef_no_rle<gef::B_GEF_STAR<ValType>> : std::true_type {};
+struct is_b_gef_no_rle<gef::B_STAR_GEF<ValType>> : std::true_type {};
 
 
 // Test fixture for typed tests.
@@ -37,10 +37,10 @@ protected:
 namespace {
 // Define the list of implementations and types to test with.
 using GEF_SplitStrategyComparison_Implementations = ::testing::Types<
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_GEF_STAR<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_GEF_STAR<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_GEF_STAR<uint32_t>
+    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_STAR_GEF<int16_t>,
+    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_STAR_GEF<uint16_t>,
+    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_STAR_GEF<int32_t>,
+    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_STAR_GEF<uint32_t>
 >;
 }
 
@@ -124,7 +124,7 @@ void assert_optimal_not_exceeded(const std::shared_ptr<IBitVectorFactory>& facto
                                  const std::string& label) {
     ASSERT_FALSE(sequence.empty()) << "Sequence should not be empty for " << label;
 
-    gef::B_GEF_STAR<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+    gef::B_STAR_GEF<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
     const size_t optimal_size = optimal.theoretical_size_in_bytes();
 
     auto [min_it, max_it] = std::minmax_element(sequence.begin(), sequence.end());
@@ -185,7 +185,7 @@ void run_full_sweep_assertions(const std::shared_ptr<IBitVectorFactory>& factory
 
 } // namespace
 
-TEST(B_GEF_STAR_SplitPointStrategy, OptimalDominatesAllSplitPoints) {
+TEST(B_STAR_GEF_SplitPointStrategy, OptimalDominatesAllSplitPoints) {
     auto factory = std::make_shared<SDSLBitVectorFactory>();
     run_full_sweep_assertions<int32_t>(factory);
     run_full_sweep_assertions<uint32_t>(factory);
@@ -213,8 +213,8 @@ void expect_split_point_variation() {
             continue;
         }
 
-        gef::B_GEF_STAR<T> approx(factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
-        gef::B_GEF_STAR<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+        gef::B_STAR_GEF<T> approx(factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
+        gef::B_STAR_GEF<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
 
         if (approx.split_point() != optimal.split_point()) {
             difference_observed = true;
@@ -229,7 +229,7 @@ void expect_split_point_variation() {
 }
 
 /*
-TEST(B_GEF_STAR_SplitPointStrategy, ApproximateOccasionallyDiffers) {
+TEST(B_STAR_GEF_SplitPointStrategy, ApproximateOccasionallyDiffers) {
     expect_split_point_variation<int32_t>();
     expect_split_point_variation<uint32_t>();
     expect_split_point_variation<int64_t>();

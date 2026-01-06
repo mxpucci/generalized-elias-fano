@@ -64,7 +64,7 @@ if(OpenMP_CXX_FOUND)
     message(STATUS "OpenMP found - parallel processing enabled")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 else()
-    message(WARNING "OpenMP not found - UniformedPartitioner will run sequentially")
+    message(WARNING "OpenMP not found - UniformPartitioning will run sequentially")
 endif()
 
 include(FetchContent)
@@ -127,9 +127,9 @@ add_subdirectory(src)
 
 # Link Pasta bit-vector implementation
 if(TARGET pasta_bit_vector)
-    target_link_libraries(gef PUBLIC pasta_bit_vector)
+    target_link_libraries(gef INTERFACE pasta_bit_vector)
 elseif(EXISTS "${PASTA_INCLUDE_DIR}")
-    target_include_directories(gef PUBLIC ${PASTA_INCLUDE_DIR})
+    target_include_directories(gef INTERFACE ${PASTA_INCLUDE_DIR})
 endif()
 
 # --- Tests Configuration ---

@@ -2,8 +2,8 @@
 // Created by Michelangelo Pucci on 03/08/25.
 //
 
-#ifndef B_GEF_NO_RLE_NO_RLE_HPP
-#define B_GEF_NO_RLE_NO_RLE_HPP
+#ifndef B_STAR_GEF_HPP
+#define B_STAR_GEF_HPP
 
 #include <algorithm>
 #include <cmath>
@@ -48,7 +48,7 @@ namespace stdx = std::experimental;
 namespace gef {
 
     template<typename T, typename GapBitVectorType = PastaGapBitVector>
-    class B_GEF_STAR : public IGEF<T> {
+    class B_STAR_GEF : public IGEF<T> {
     private:
         /*
          * Bit-vector that store the gaps between consecutive high-parts
@@ -399,14 +399,14 @@ namespace gef {
         using IGEF<T>::serialize;
         using IGEF<T>::load;
 
-        ~B_GEF_STAR() override = default;
+        ~B_STAR_GEF() override = default;
 
         // Default constructor
-        B_GEF_STAR() : h(0), b(0), m_num_elements(0), base(0) {
+        B_STAR_GEF() : h(0), b(0), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
-        B_GEF_STAR(const B_GEF_STAR &other)
+        B_STAR_GEF(const B_STAR_GEF &other)
             : IGEF<T>(other), // Slicing is not an issue here as IGEF has no data
               L(other.L),
               h(other.h),
@@ -426,7 +426,7 @@ namespace gef {
         }
 
         // Friend swap function for copy-and-swap idiom
-        friend void swap(B_GEF_STAR &first, B_GEF_STAR &second) noexcept {
+        friend void swap(B_STAR_GEF &first, B_STAR_GEF &second) noexcept {
             using std::swap;
             swap(first.L, second.L);
             swap(first.h, second.h);
@@ -438,16 +438,16 @@ namespace gef {
         }
 
         // 3. Copy Assignment Operator (using copy-and-swap idiom)
-        B_GEF_STAR &operator=(const B_GEF_STAR &other) {
+        B_STAR_GEF &operator=(const B_STAR_GEF &other) {
             if (this != &other) {
-                B_GEF_STAR temp(other);
+                B_STAR_GEF temp(other);
                 swap(*this, temp);
             }
             return *this;
         }
 
         // 4. Move Constructor
-        B_GEF_STAR(B_GEF_STAR &&other) noexcept
+        B_STAR_GEF(B_STAR_GEF &&other) noexcept
             : IGEF<T>(std::move(other)),
               G_plus(std::move(other.G_plus)),
               G_minus(std::move(other.G_minus)),
@@ -466,7 +466,7 @@ namespace gef {
 
 
         // 5. Move Assignment Operator
-        B_GEF_STAR &operator=(B_GEF_STAR &&other) noexcept {
+        B_STAR_GEF &operator=(B_STAR_GEF &&other) noexcept {
             if (this != &other) {
                 G_plus = std::move(other.G_plus);
                 G_minus = std::move(other.G_minus);
@@ -482,7 +482,7 @@ namespace gef {
 
         // Constructor
         template<typename C>
-        B_GEF_STAR(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
+        B_STAR_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
                    const C &S,
                    SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT,
                    CompressionBuildMetrics* metrics = nullptr) {
@@ -693,10 +693,10 @@ namespace gef {
 
         template <size_t... Is>
         size_t dispatch_worker(size_t b, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
-            using WorkerPtr = size_t (B_GEF_STAR::*)(size_t, size_t, std::vector<T>&) const;
+            using WorkerPtr = size_t (B_STAR_GEF::*)(size_t, size_t, std::vector<T>&) const;
 
             // Create the table
-            static constexpr WorkerPtr table[] = { &B_GEF_STAR::get_elements_worker<Is>... };
+            static constexpr WorkerPtr table[] = { &B_STAR_GEF::get_elements_worker<Is>... };
 
             if (b >= sizeof...(Is)) {
                 throw std::invalid_argument("Invalid b value");

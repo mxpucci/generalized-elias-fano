@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef/utils.hpp"
 
@@ -74,8 +74,8 @@ void run_dataset_comparison(const DatasetOptions& opts) {
     auto data = read_data_binary<T, T>(opts.dataset_path, opts.first_is_size, opts.max_elements);
     ASSERT_FALSE(data.empty()) << "Dataset " << opts.dataset_path << " is empty";
 
-    gef::B_GEF_STAR<T> approx(factory, data, gef::APPROXIMATE_SPLIT_POINT);
-    gef::B_GEF_STAR<T> optimal(factory, data, gef::OPTIMAL_SPLIT_POINT);
+    gef::B_STAR_GEF<T> approx(factory, data, gef::APPROXIMATE_SPLIT_POINT);
+    gef::B_STAR_GEF<T> optimal(factory, data, gef::OPTIMAL_SPLIT_POINT);
 
     const size_t approx_size = approx.theoretical_size_in_bytes();
     const size_t optimal_size = optimal.theoretical_size_in_bytes();

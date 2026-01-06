@@ -20,7 +20,7 @@
 using namespace gef;
 
 enum class ExceptionRule : uint8_t {
-    None  = 0,  // Rule #0  (B_GEF_STAR): never an exception
+    None  = 0,  // Rule #0  (B_STAR_GEF): never an exception
     BGEF  = 1,  // Rule #1  (B_GEF):      i==0 || abs(gap)+2 > total_bits - b
     UGEF  = 2   // Rule #2  (U_GEF):      i==0 || abs(gap)+1 > total_bits - b (Symmetric magnitude check)
 };

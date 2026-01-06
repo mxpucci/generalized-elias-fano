@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 #include "../include/gef/B_GEF.hpp"
-#include "../include/gef/B_GEF_STAR.hpp"
+#include "../include/gef/B_STAR_GEF.hpp"
 #include "../include/gef/RLE_GEF.hpp"
 #include "../include/gef/U_GEF.hpp"
-#include "../include/gef/UniformedPartitioner.hpp"
+#include "../include/gef/UniformPartitioning.hpp"
 #include "../include/datastructures/SDSLBitVectorFactory.hpp"
 #include <vector>
 #include <random>
@@ -47,7 +47,7 @@ protected:
 
 using TestTypes = ::testing::Types<
     B_GEF<int64_t>, 
-    B_GEF_STAR<int64_t>, 
+    B_STAR_GEF<int64_t>, 
     RLE_GEF<int64_t>, 
     U_GEF<int64_t>
 >;
@@ -132,7 +132,7 @@ TYPED_TEST(GetElementsTest, RepeatedValues) {
     this->testGetElements(gef, 200, 300);
 }
 
-// Note: UniformedPartitioner tests omitted due to parameter forwarding complexity
-// The get_elements implementation for UniformedPartitioner works correctly,
+// Note: UniformPartitioning tests omitted due to parameter forwarding complexity
+// The get_elements implementation for UniformPartitioning works correctly,
 // delegating to the underlying partition's get_elements methods
 

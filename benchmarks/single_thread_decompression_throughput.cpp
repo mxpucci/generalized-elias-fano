@@ -1,4 +1,4 @@
-#include "gef/B_GEF_STAR.hpp"
+#include "gef/B_STAR_GEF.hpp"
 #include "gef/B_GEF.hpp"
 #include "gef/U_GEF.hpp"
 #include "gef/utils.hpp"
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
         auto factory = make_factory(opts.bitvector);
 
         if (opts.compressor == "bgef_star") {
-            run_benchmark<gef::B_GEF_STAR<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
+            run_benchmark<gef::B_STAR_GEF<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
         } else if (opts.compressor == "ugef") {
             run_benchmark<gef::U_GEF<int64_t>>(data, factory, opts.strategy, opts.iterations, opts.verbose);
         } else { // bgef
