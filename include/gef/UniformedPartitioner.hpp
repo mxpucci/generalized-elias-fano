@@ -11,12 +11,14 @@
 #include <numeric>
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <optional>
 
-#if _OPENMP
+#if defined(_OPENMP) && !defined(GEF_DISABLE_OPENMP)
 #include <omp.h>
+#define GEF_USE_OPENMP 1
 #endif
 
 namespace gef {
@@ -109,7 +111,7 @@ public:
             }
         };
 
-    #if _OPENMP
+    #if GEF_USE_OPENMP
         // resize() on vector<optional<T>> creates N empty optionals - trivially cheap!
         // No Compressor default construction. Each thread then constructs via emplace().
         // This gives constant throughput regardless of partition count.
@@ -152,6 +154,14 @@ public:
                 }
             }
         }
+        
+        // Verify all partitions are initialized after parallel construction
+        for (size_t p = 0; p < num_partitions; ++p) {
+            if (!m_partitions[p].has_value()) {
+                throw std::runtime_error("UniformedPartitioner: partition " + std::to_string(p) + 
+                    " was not initialized after parallel construction");
+            }
+        }
     #else
         build_sequential();
     #endif
@@ -180,8 +190,6 @@ public:
 
     size_t size_in_bytes() const override {
         size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
-
-        // Store number of partitions to facilitate loading
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
@@ -249,7 +257,7 @@ public:
         // Parallelize only when the overhead is justified:
         // - Need enough total elements to decompress (amortize thread overhead)
         // - Need enough partitions to distribute work effectively
-        #if _OPENMP
+        #if GEF_USE_OPENMP
         constexpr size_t MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS = 100000;
         constexpr size_t MIN_PARTITIONS_FOR_PARALLEL = 4;
         const bool use_parallel = (total_requested >= MIN_ELEMENTS_FOR_PARALLEL_DECOMPRESS) &&

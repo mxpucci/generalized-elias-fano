@@ -2,6 +2,7 @@
 #define PASTABITVECTOR_HPP
 
 #include "IBitVector.hpp"
+#include "PastaOptimizedRankSelect.hpp"
 #include <pasta/bit_vector/bit_vector.hpp>
 #include <pasta/bit_vector/support/flat_rank_select.hpp>
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 
 /**
  * @brief Parametric BitVector wrapper for PASTA Toolbox.
@@ -32,15 +34,18 @@ private:
     // We keep Rank0 false as it is rarely used in GEF/Elias-Fano.
     // Rank1 is almost always required as a prerequisite for rank-based Select.
     static constexpr pasta::OptimizedFor opt_target = 
-        (OptSelect0 && !OptSelect1) ? pasta::OptimizedFor::ZERO_QUERIES : pasta::OptimizedFor::ONE_QUERIES;
+        (OptSelect0 && !OptSelect1) ? pasta::OptimizedFor::ZERO_QUERIES : 
+        (!OptSelect0 && !OptSelect1) ? pasta::OptimizedFor::DONT_CARE : // Case for RankOnly
+        pasta::OptimizedFor::ONE_QUERIES;
 
-    #if defined(__x86_64__) || defined(_M_X64)
+    // Use INTRINSICS only if on x86_64 AND SIMD is not disabled
+    #if (defined(__x86_64__) || defined(_M_X64)) && !defined(GEF_DISABLE_SIMD)
         static constexpr pasta::FindL2FlatWith search_strategy = pasta::FindL2FlatWith::INTRINSICS;
     #else
         static constexpr pasta::FindL2FlatWith search_strategy = pasta::FindL2FlatWith::LINEAR_SEARCH;
     #endif
 
-    using support_type = pasta::FlatRankSelect<
+    using support_type = OptimizedFlatRankSelect<
         opt_target, 
         search_strategy, 
         bv_type
@@ -61,10 +66,10 @@ public:
     // ---- Constructors ----
 
     explicit PastaBitVectorT(size_t size)
-        : bv_(size) {}
+        : bv_(size, false) {}
 
     explicit PastaBitVectorT(const std::vector<bool>& bits)
-        : bv_(bits.size()) {
+        : bv_(bits.size(), false) {
         for (size_t i = 0; i < bits.size(); ++i) {
             bv_[i] = bits[i];
         }

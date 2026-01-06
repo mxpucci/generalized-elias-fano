@@ -14,6 +14,7 @@
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits>
+#include <utility>
 #include <chrono>
 #include <stdexcept>
 #include "IGEF.hpp"
@@ -229,6 +230,204 @@ namespace gef {
             if (lowBits >= sizeof(T) * 8) return x;
             const std::make_unsigned_t<T> mask = (static_cast<std::make_unsigned_t<T>>(1) << lowBits) - 1;
             return static_cast<std::make_unsigned_t<T>>(x & mask);
+        }
+
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, std::vector<T>& output) const {
+            if (count == 0 || startIndex >= size()) {
+                return 0;
+            }
+            if (output.size() < count) {
+                throw std::invalid_argument("output buffer is smaller than requested count");
+            }
+
+            const size_t endIndex = std::min(startIndex + count, size());
+            size_t write_index = 0;
+
+            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+            using U = std::make_unsigned_t<T>;
+
+            // L vector streaming setup
+            const uint64_t* l_raw_data = nullptr;
+            uint64_t l_buffer_curr = 0;
+            size_t l_word_idx = 0;
+            uint32_t l_bit_offset = 0;
+
+            if constexpr (SPLIT_POINT > 0) {
+                l_raw_data = L.data();
+                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
+                l_word_idx = l_bit_global_pos >> 6;
+                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
+                l_buffer_curr = l_raw_data[l_word_idx];
+            }
+            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
+
+            auto read_L_val = [&]() -> Wide {
+                if constexpr (SPLIT_POINT == 0) return 0;
+                
+                uint64_t l_val = 0;
+                uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                
+                if (l_bit_offset + SPLIT_POINT > 64) {
+                    l_word_idx++;
+                    l_buffer_curr = l_raw_data[l_word_idx];
+                    uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                    l_val = (word0 | word1) & l_mask;
+                } else {
+                    l_val = word0 & l_mask;
+                    if (l_bit_offset + SPLIT_POINT == 64) {
+                        l_word_idx++;
+                        l_buffer_curr = l_raw_data[l_word_idx]; 
+                    }
+                }
+                l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
+                return static_cast<Wide>(l_val);
+            };
+
+            if (h == 0) [[unlikely]] {
+                T* out_ptr = output.data();
+                for (size_t i = startIndex; i < endIndex; ++i) {
+                    Wide low = read_L_val();
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    out_ptr[write_index++] = static_cast<T>(sum);
+                }
+                return write_index;
+            }
+            
+            size_t exception_rank = B->rank_unchecked(startIndex);
+            const size_t zero_before = startIndex - exception_rank;
+            long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
+            const uint64_t* b_data = B->raw_data_ptr();
+            auto read_bit = [b_data](size_t pos) -> bool { return (b_data[pos >> 6] >> (pos & 63)) & 1; };
+            
+            if (zero_before > 0 && !read_bit(startIndex)) {
+                size_t gap_run_start = 0;
+                if (exception_rank > 0) {
+                    const size_t last_exc_pos = B->select(exception_rank);
+                    gap_run_start = last_exc_pos - exception_rank + 1;
+                }
+                const size_t pos_gap_start = gap_run_start > 0 ? G_plus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t pos_gap_end = G_plus->select0_unchecked(zero_before) - (zero_before - 1);
+                const size_t neg_gap_start = gap_run_start > 0 ? G_minus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
+                const size_t neg_gap_end = G_minus->select0_unchecked(zero_before) - (zero_before - 1);
+                high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
+                high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
+            }
+            const size_t plus_bits = G_plus->size();
+            const size_t minus_bits = G_minus->size();
+            const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0_unchecked(zero_before) + 1, plus_bits) : 0;
+            const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0_unchecked(zero_before) + 1, minus_bits) : 0;
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
+            
+            constexpr size_t GAP_BATCH = 64;
+            uint32_t pos_buffer[GAP_BATCH];
+            uint32_t neg_buffer[GAP_BATCH];
+            size_t pos_size = 0, pos_index = 0;
+            size_t neg_size = 0, neg_index = 0;
+            
+            size_t i = startIndex;
+            T* out_ptr = output.data();
+
+            // Loop 1: Alignment to 64
+            while (i < endIndex && (i & 63)) {
+                if (read_bit(i)) [[unlikely]] {
+                    ++exception_rank;
+                    high_signed = static_cast<long long>(H[exception_rank - 1]);
+                } else [[likely]] {
+                    if (pos_index >= pos_size) [[unlikely]] { 
+                        pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); 
+                        pos_index = 0; 
+                        if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } 
+                    }
+                    if (neg_index >= neg_size) [[unlikely]] { 
+                        neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); 
+                        neg_index = 0; 
+                        if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } 
+                    }
+                    high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                    high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                }
+                const U high_val = static_cast<U>(high_signed);
+                const Wide low = read_L_val();
+                Wide high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(Wide) * 8) {
+                    high_shifted = static_cast<Wide>(high_val) << SPLIT_POINT;
+                }
+                const Wide offset = low | high_shifted;
+                out_ptr[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                ++i;
+            }
+
+            const uint64_t* b_blocks = b_data + (i >> 6);
+            while (i + 64 <= endIndex) {
+                uint64_t block = *b_blocks++;
+                if (block == 0) {
+                    // Fast path: 64 non-exceptions
+                    int k = 0;
+                    for (; k < 64; ++k) {
+                         if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                        if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
+                        high_signed += static_cast<long long>(pos_buffer[pos_index++]);
+                        high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                        U high_val = static_cast<U>(high_signed);
+                        Wide low = read_L_val();
+                        Wide high_shifted = 0;
+                        if constexpr (SPLIT_POINT < sizeof(Wide) * 8) {
+                            high_shifted = static_cast<Wide>(high_val) << SPLIT_POINT;
+                        }
+                        const Wide offset = low | high_shifted;
+                        out_ptr[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                    }
+                } else { 
+                     for (int k = 0; k < 64; ++k) {
+                        if ((block >> k) & 1) { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
+                        else {
+                             if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                            if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
+                            high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                        }
+                        U high_val = static_cast<U>(high_signed);
+                        Wide low = read_L_val();
+                        Wide high_shifted = 0;
+                        if constexpr (SPLIT_POINT < sizeof(Wide) * 8) {
+                            high_shifted = static_cast<Wide>(high_val) << SPLIT_POINT;
+                        }
+                        const Wide offset = low | high_shifted;
+                        out_ptr[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                     }
+                }
+                i += 64;
+            }
+            while (i < endIndex) {
+                if (read_bit(i)) [[unlikely]] { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
+                else [[likely]] {
+                    if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
+                    if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
+                    high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
+                }
+                const U high_val = static_cast<U>(high_signed);
+                const Wide low = read_L_val();
+                Wide high_shifted = 0;
+                if constexpr (SPLIT_POINT < sizeof(Wide) * 8) {
+                    high_shifted = static_cast<Wide>(high_val) << SPLIT_POINT;
+                }
+                const Wide offset = low | high_shifted;
+                out_ptr[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
+                ++i;
+            }
+            return write_index;
+        }
+
+        template <size_t... Is>
+        size_t dispatch_worker(size_t b, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
+            using WorkerPtr = size_t (B_GEF::*)(size_t, size_t, std::vector<T>&) const;
+            static constexpr WorkerPtr table[] = { &B_GEF::get_elements_worker<Is>... };
+            if (b >= sizeof...(Is)) {
+                throw std::invalid_argument("Invalid b value");
+            }
+            return (this->*table[b])(start, count, out);
         }
 
     public:
@@ -523,143 +722,7 @@ namespace gef {
       }
 
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            if (count == 0 || startIndex >= size()) {
-                return 0;
-            }
-            if (output.size() < count) {
-                throw std::invalid_argument("output buffer is smaller than requested count");
-            }
-            
-            const size_t endIndex = std::min(startIndex + count, size());
-            size_t write_index = 0;
-
-            using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
-            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
-            using U = std::make_unsigned_t<T>;
-
-            if (h == 0) {
-                for (size_t i = startIndex; i < endIndex; ++i) {
-                    Wide low;
-                    if (b == 0) low = 0;
-                    else low = static_cast<Wide>(L[i]);
-                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
-                    output[write_index++] = static_cast<T>(sum);
-                }
-                return write_index;
-            }
-            
-            size_t exception_rank = B->rank_unchecked(startIndex);
-            const size_t zero_before = startIndex - exception_rank;
-            long long high_signed = (exception_rank == 0) ? 0LL : static_cast<long long>(H[exception_rank - 1]);
-            const uint64_t* b_data = B->raw_data_ptr();
-            auto read_bit = [b_data](size_t pos) -> bool { return (b_data[pos >> 6] >> (pos & 63)) & 1; };
-            const bool start_is_exception = read_bit(startIndex);
-            if (!start_is_exception && zero_before > 0) {
-                size_t gap_run_start = 0;
-                if (exception_rank > 0) {
-                    const size_t last_exc_pos = B->select(exception_rank);
-                    gap_run_start = last_exc_pos - exception_rank + 1;
-                }
-                const size_t pos_gap_start = gap_run_start > 0 ? G_plus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
-                const size_t pos_gap_end = G_plus->select0_unchecked(zero_before) - (zero_before - 1);
-                const size_t neg_gap_start = gap_run_start > 0 ? G_minus->select0_unchecked(gap_run_start) - (gap_run_start - 1) : 0;
-                const size_t neg_gap_end = G_minus->select0_unchecked(zero_before) - (zero_before - 1);
-                high_signed += static_cast<long long>(pos_gap_end - pos_gap_start);
-                high_signed -= static_cast<long long>(neg_gap_end - neg_gap_start);
-            } else if (start_is_exception) {
-                ++exception_rank;
-                high_signed = static_cast<long long>(H[exception_rank - 1]);
-            }
-            const size_t plus_bits = G_plus->size();
-            const size_t minus_bits = G_minus->size();
-            const size_t plus_start_bit = zero_before > 0 ? std::min(G_plus->select0_unchecked(zero_before) + 1, plus_bits) : 0;
-            const size_t minus_start_bit = zero_before > 0 ? std::min(G_minus->select0_unchecked(zero_before) + 1, minus_bits) : 0;
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
-            constexpr size_t GAP_BATCH = 64;
-            uint32_t pos_buffer[GAP_BATCH];
-            uint32_t neg_buffer[GAP_BATCH];
-            size_t pos_size = 0, pos_index = 0;
-            size_t neg_size = 0, neg_index = 0;
-            size_t i = startIndex;
-            while (i < endIndex && (i & 63)) {
-                if (read_bit(i)) [[unlikely]] {
-                    ++exception_rank;
-                    high_signed = static_cast<long long>(H[exception_rank - 1]);
-                } else [[likely]] {
-                    if (pos_index >= pos_size) [[unlikely]] {
-                        pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH);
-                        pos_index = 0;
-                        if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; }
-                    }
-                    if (neg_index >= neg_size) [[unlikely]] {
-                        neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH);
-                        neg_index = 0;
-                        if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; }
-                    }
-                    high_signed += static_cast<long long>(pos_buffer[pos_index++]);
-                    high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
-                }
-                const U high_val = static_cast<U>(high_signed);
-                const Wide low = (b > 0) ? static_cast<Wide>(L[i]) : 0;
-                const Wide high_shifted = static_cast<Wide>(high_val) << b;
-                const Wide offset = low | high_shifted;
-                output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
-                ++i;
-            }
-            const uint64_t* b_blocks = b_data + (i >> 6);
-            while (i + 64 <= endIndex) {
-                uint64_t block = *b_blocks++;
-                if (block == 0) {
-                    // Fast path: 64 non-exceptions
-                    int k = 0;
-                    for (; k < 64; ++k) {
-                         if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
-                        if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
-                        high_signed += static_cast<long long>(pos_buffer[pos_index++]);
-                        high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
-                        U high_val = static_cast<U>(high_signed);
-                        Wide low;
-                        if (b == 0) low = 0;
-                        else low = static_cast<Wide>(L[i + k]);
-                        const Wide high_shifted = static_cast<Wide>(high_val) << b;
-                        const Wide offset = low | high_shifted;
-                        output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
-                    }
-                } else { 
-                     for (int k = 0; k < 64; ++k) {
-                        if ((block >> k) & 1) { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
-                        else {
-                             if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
-                            if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
-                            high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
-                        }
-                        U high_val = static_cast<U>(high_signed);
-                        Wide low;
-                        if (b == 0) low = 0;
-                        else low = static_cast<Wide>(L[i + k]);
-                        const Wide high_shifted = static_cast<Wide>(high_val) << b;
-                        const Wide offset = low | high_shifted;
-                        output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
-                     }
-                }
-                i += 64;
-            }
-            while (i < endIndex) {
-                if (read_bit(i)) [[unlikely]] { ++exception_rank; high_signed = static_cast<long long>(H[exception_rank - 1]); }
-                else [[likely]] {
-                    if (pos_index >= pos_size) [[unlikely]] { pos_size = plus_decoder.next_batch(pos_buffer, GAP_BATCH); pos_index = 0; if (pos_size == 0) [[unlikely]] { pos_buffer[0] = static_cast<uint32_t>(plus_decoder.next()); pos_size = 1; } }
-                    if (neg_index >= neg_size) [[unlikely]] { neg_size = minus_decoder.next_batch(neg_buffer, GAP_BATCH); neg_index = 0; if (neg_size == 0) [[unlikely]] { neg_buffer[0] = static_cast<uint32_t>(minus_decoder.next()); neg_size = 1; } }
-                    high_signed += static_cast<long long>(pos_buffer[pos_index++]); high_signed -= static_cast<long long>(neg_buffer[neg_index++]);
-                }
-                const U high_val = static_cast<U>(high_signed);
-                const Wide low = (b > 0) ? static_cast<Wide>(L[i]) : 0;
-                const Wide high_shifted = static_cast<Wide>(high_val) << b;
-                const Wide offset = low | high_shifted;
-                output[write_index++] = static_cast<T>(static_cast<Acc>(base) + static_cast<Acc>(offset));
-                ++i;
-            }
-            return write_index;
+            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
         T operator[](size_t index) const override {

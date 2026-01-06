@@ -16,6 +16,8 @@
 #include <chrono>
 #include <stdexcept>
 
+#include <sys/mman.h>
+
 
 // SIMD intrinsics for optimized bit operations
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
@@ -243,6 +245,156 @@ namespace gef {
             return static_cast<T>(static_cast<std::make_unsigned_t<T>>(x) & mask);
         }
 
+
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, std::vector<T>& output) const {
+            constexpr size_t MAX_BATCH = 512;
+            
+            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] {
+                return 0;
+            }
+            if (output.size() < count) [[unlikely]] {
+                throw std::invalid_argument("output buffer is smaller than requested count");
+            }
+
+            const size_t endIndex = std::min(startIndex + count, m_num_elements);
+            size_t write_index = startIndex;
+            size_t produced_count = 0;
+
+
+            const uint64_t* l_raw_data = nullptr;
+            uint64_t l_buffer_curr = 0;
+            size_t l_word_idx = 0;
+            uint32_t l_bit_offset = 0;
+
+            if constexpr (SPLIT_POINT > 0) {
+                l_raw_data = L.data();
+                // Calculate initial bit position in L
+                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
+                l_word_idx = l_bit_global_pos >> 6;
+                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
+                l_buffer_curr = l_raw_data[l_word_idx];
+            }
+
+            // Mask for low bits
+            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
+
+
+            /* --- Fast Path: No High Bits (h=0) --- */
+            if (h == 0) [[unlikely]] {
+                T* out_ptr = output.data(); 
+                
+                while (write_index < endIndex) {
+                    const size_t remaining = endIndex - write_index;
+                    for (size_t i = 0; i < remaining; ++i) {
+                        uint64_t l_val = 0;
+                        if constexpr (SPLIT_POINT > 0) {
+                            // Extract 'b' bits
+                            uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                            
+                            if (l_bit_offset + SPLIT_POINT > 64) {
+                                // Crossing boundary
+                                l_word_idx++;
+                                l_buffer_curr = l_raw_data[l_word_idx]; // Load next
+                                uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                                l_val = (word0 | word1) & l_mask;
+                            } else {
+                                l_val = word0 & l_mask;
+                                if (l_bit_offset + SPLIT_POINT == 64) {
+                                    l_word_idx++;
+                                    l_buffer_curr = l_raw_data[l_word_idx]; 
+                                }
+                            }
+                            
+                            // Advance offset
+                            l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
+                        }
+                        
+                        out_ptr[produced_count++] = base + static_cast<T>(l_val);
+                    }
+                    write_index += remaining;
+                }
+                return produced_count;
+            }
+
+            // --- Standard Path: High Bits Present ---
+            
+            // 1. Setup High-Part State
+            size_t plusGapStart = 0;
+            size_t minusGapStart = 0;
+            
+            using U = std::make_unsigned_t<T>;
+            U running_high = 0;
+
+            if (startIndex > 0) [[unlikely]] {
+                plusGapStart = G_plus->select0(startIndex) + 1;
+                minusGapStart = G_minus->select0(startIndex) + 1;
+                const size_t pos_gaps = (plusGapStart - 1) - startIndex;
+                const size_t neg_gaps = (minusGapStart - 1) - startIndex;
+                running_high = static_cast<U>(static_cast<int64_t>(pos_gaps) - static_cast<int64_t>(neg_gaps));
+            }
+
+            // 2. Initialize Decoders
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), plusGapStart);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), minusGapStart);
+
+            uint32_t plus_gaps[MAX_BATCH];
+            uint32_t minus_gaps[MAX_BATCH];
+            
+            T* out_ptr = output.data();
+
+            while (write_index < endIndex) {
+                const size_t remaining = endIndex - write_index;
+                const size_t batch_size = std::min(remaining, MAX_BATCH);
+                
+                // Batch Decode Gaps
+                plus_decoder.prefetch();
+                minus_decoder.prefetch();
+
+                plus_decoder.next_batch(plus_gaps, batch_size);
+                minus_decoder.next_batch(minus_gaps, batch_size);
+
+                // Hot Loop: Merge L extraction + H update + Write
+                for (size_t i = 0; i < batch_size; ++i) {
+                    // --- 1. Extract Low Part (Inline Stream Reader) ---
+                    uint64_t l_val = 0;
+                    if constexpr (SPLIT_POINT > 0) {
+                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
+                        
+                        if (l_bit_offset + SPLIT_POINT > 64) {
+                            l_word_idx++;
+                            l_buffer_curr = l_raw_data[l_word_idx]; 
+                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
+                            l_val = (word0 | word1) & l_mask;
+                        } else {
+                            l_val = word0 & l_mask;
+                            if (l_bit_offset + SPLIT_POINT == 64) {
+                                l_word_idx++;
+                                l_buffer_curr = l_raw_data[l_word_idx];
+                            }
+                        }
+                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
+                    }
+
+                    // --- 2. Update High Part ---
+                    const int32_t delta = static_cast<int32_t>(plus_gaps[i]) - static_cast<int32_t>(minus_gaps[i]);
+                    running_high = static_cast<U>(running_high + delta);
+
+                    // --- 3. Fuse and Write ---
+                    T high_shifted = 0;
+                    if constexpr (SPLIT_POINT < sizeof(T) * 8) {
+                         high_shifted = static_cast<T>(running_high << SPLIT_POINT);
+                    }
+                    const T val = base + static_cast<T>(l_val) + high_shifted;
+                    out_ptr[produced_count++] = val;
+                }
+
+                write_index += batch_size;
+            }
+
+            return produced_count;
+        }
+
     public:
         using IGEF<T>::serialize;
         using IGEF<T>::load;
@@ -445,6 +597,9 @@ namespace gef {
 
             G_plus = std::make_unique<GapBitVectorType>(g_plus_bits);
             G_minus = std::make_unique<GapBitVectorType>(g_minus_bits);
+            
+            // advise_huge_pages(G_plus->raw_data_ptr(), G_plus->size());
+            // advise_huge_pages(G_minus->raw_data_ptr(), G_minus->size());
 
             double allocation_seconds = 0.0;
             if (metrics) {
@@ -536,173 +691,30 @@ namespace gef {
             }
         }
 
+        template <size_t... Is>
+        size_t dispatch_worker(size_t b, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
+            using WorkerPtr = size_t (B_GEF_STAR::*)(size_t, size_t, std::vector<T>&) const;
+
+            // Create the table
+            static constexpr WorkerPtr table[] = { &B_GEF_STAR::get_elements_worker<Is>... };
+
+            if (b >= sizeof...(Is)) {
+                throw std::invalid_argument("Invalid b value");
+            }
+
+            // Call the function
+            return (this->*table[b])(start, count, out);
+        }
+
+        // 2. Your actual function implementation
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            if (count == 0 || startIndex >= size()) return 0;
-            
-            if (output.size() < count)
-                throw std::invalid_argument("output buffer is smaller than requested count");
-
-            const size_t endIndex = std::min(startIndex + count, size());
-            const size_t actual_count = endIndex - startIndex;
-            T* out_ptr = output.data();
-
-            if (h == 0) [[unlikely]] {
-                const uint64_t* l_data = L.data();
-                size_t current_bit = startIndex * b;
-                
-                // Local bit buffer state
-                uint64_t bit_buffer = 0;
-                size_t bits_in_buffer = 0;
-                size_t word_idx = current_bit >> 6;
-                size_t bit_offset = current_bit & 63;
-                
-                // Prime buffer
-                if (b > 0) {
-                    bit_buffer = l_data[word_idx];
-                    bit_buffer >>= bit_offset; // Align
-                    bits_in_buffer = 64 - bit_offset;
-                }
-
-                const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
-
-                for (size_t i = 0; i < actual_count; ++i) {
-                    if (b == 0) {
-                        out_ptr[i] = base; 
-                        continue;
-                    }
-
-                    uint64_t val;
-                    if (bits_in_buffer >= b) {
-                        // Happy path: bits are in the buffer
-                        val = bit_buffer & l_mask;
-                        bit_buffer >>= b;
-                        bits_in_buffer -= b;
-                    } else {
-                        // Refill path: Split the read across words
-                        // 1. Take remaining bits from current buffer
-                        val = bit_buffer; 
-                        
-                        // 2. Get the rest from the next word
-                        size_t needed = b - bits_in_buffer;
-                        word_idx++;
-                        uint64_t next_word = l_data[word_idx];
-                        
-                        // Mask carefully to avoid UB if needed==64
-                        uint64_t next_part = next_word & ((needed == 64) ? ~0ULL : ((1ULL << needed) - 1));
-                        
-                        val |= (next_part << bits_in_buffer);
-                        
-                        // 3. Update buffer to hold only what's left of next_word
-                        bit_buffer = next_word >> needed;
-                        bits_in_buffer = 64 - needed;
-                    }
-
-                    out_ptr[i] = base + static_cast<T>(val);
-                }
-                return actual_count;
-            }
-
-            // 1. Prefix Sum Calculation (Jump to startIndex)
-            size_t pos_prefix = 0;
-            size_t neg_prefix = 0;
-            size_t plus_start_bit = 0;
-            size_t minus_start_bit = 0;
-
-            if (startIndex > 0) {
-                // select0(k) returns the position of the k-th zero.
-                size_t p_sel = G_plus->select0_unchecked(startIndex);
-                size_t n_sel = G_minus->select0_unchecked(startIndex);
-                
-                pos_prefix = p_sel - (startIndex - 1);
-                neg_prefix = n_sel - (startIndex - 1);
-                plus_start_bit = p_sel + 1;
-                minus_start_bit = n_sel + 1;
-            }
-            
-            // Signed accumulator
-            long long current_high = static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
-
-            // 2. Setup Decoders
-            using DecoderType = FastUnaryDecoder<GapBitVectorType::reverse_bit_order>;
-            DecoderType plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), std::min(plus_start_bit, G_plus->size()));
-            DecoderType minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), std::min(minus_start_bit, G_minus->size()));
-
-            // 3. Setup Low Bit Reader
-            const uint64_t* l_data = L.data();
-            size_t current_l_bit = startIndex * b;
-            size_t l_word_idx = current_l_bit >> 6;
-            size_t l_bit_offset = current_l_bit & 63;
-            
-            uint64_t l_buffer = 0;
-            size_t l_bits_available = 0;
-
-            if (b > 0) {
-                l_buffer = l_data[l_word_idx];
-                l_buffer >>= l_bit_offset;
-                l_bits_available = 64 - l_bit_offset;
-            }
-            const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
-
-            // 4. Batch Loop
-            size_t processed = 0;
-            constexpr size_t BATCH_SIZE = 128;
-            uint32_t p_gaps[BATCH_SIZE];
-            uint32_t n_gaps[BATCH_SIZE];
-
-            while (processed < actual_count) {
-                size_t batch_len = std::min(BATCH_SIZE, actual_count - processed);
-
-                // Bulk Decode
-                size_t p_fetched = plus_decoder.next_batch(p_gaps, batch_len);
-                size_t n_fetched = minus_decoder.next_batch(n_gaps, batch_len);
-                
-                // Zero-fill remainder (safety)
-                for(; p_fetched < batch_len; ++p_fetched) p_gaps[p_fetched] = 0;
-                for(; n_fetched < batch_len; ++n_fetched) n_gaps[n_fetched] = 0;
-
-                // Inner Combination Loop
-                for (size_t k = 0; k < batch_len; ++k) {
-                    current_high += p_gaps[k];
-                    current_high -= n_gaps[k];
-                    
-                    uint64_t low_val = 0;
-                    if (b > 0) {
-                        if (l_bits_available >= b) {
-                            low_val = l_buffer & l_mask;
-                            l_buffer >>= b;
-                            l_bits_available -= b;
-                        } else {
-                            // Split read logic
-                            low_val = l_buffer; // Take what we have
-                            
-                            size_t needed = b - l_bits_available;
-                            l_word_idx++;
-                            uint64_t next_w = l_data[l_word_idx];
-                            
-                            uint64_t next_part = next_w & ((needed == 64) ? ~0ULL : ((1ULL << needed) - 1));
-                            
-                            low_val |= (next_part << l_bits_available);
-                            
-                            l_buffer = next_w >> needed;
-                            l_bits_available = 64 - needed;
-                        }
-                    }
-
-                    using U = std::make_unsigned_t<T>;
-                    U high_part = static_cast<U>(current_high);
-                    U combined = static_cast<U>(low_val) | (high_part << b);
-                    
-                    out_ptr[processed + k] = base + static_cast<T>(combined);
-                }
-                processed += batch_len;
-            }
-
-            return actual_count;
+            // 65 is the number of cases (0 to 64)
+            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
         T operator[](size_t index) const override {
             if (h == 0) [[unlikely]]
-                return base + L[index];
+                return base + (b > 0 ? L[index] : 0);
             
             using U = std::make_unsigned_t<T>;
 

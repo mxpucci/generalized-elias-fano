@@ -10,13 +10,7 @@
 #include <type_traits>
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
-template<typename T>
-struct get_value_type;
-
-template<template<typename> class C, typename T>
-struct get_value_type<C<T>> {
-    using type = T;
-};
+// (Moved to gef_test_utils.hpp)
 
 // Test fixture for typed tests.
 template <typename T>
@@ -29,8 +23,9 @@ protected:
     }
 };
 
+namespace {
 // Define the list of implementations and types to test with.
-using Implementations = ::testing::Types<
+using GEF_Overhead_Implementations = ::testing::Types<
     gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_GEF_STAR<int8_t>,
     gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_GEF_STAR<uint8_t>,
     gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_GEF_STAR<int16_t>,
@@ -40,8 +35,9 @@ using Implementations = ::testing::Types<
     gef::RLE_GEF<int64_t>, gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_GEF_STAR<int64_t>,
     gef::RLE_GEF<uint64_t>, gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_GEF_STAR<uint64_t>
 >;
+}
 
-TYPED_TEST_CASE(GEF_Overhead_TypedTest, Implementations);
+TYPED_TEST_CASE(GEF_Overhead_TypedTest, GEF_Overhead_Implementations);
 
 TYPED_TEST(GEF_Overhead_TypedTest, SDSLOverheadIsReasonable) {
     using GEF_Class = TypeParam;

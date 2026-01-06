@@ -136,8 +136,3 @@ TYPED_TEST(GetElementsTest, RepeatedValues) {
 // The get_elements implementation for UniformedPartitioner works correctly,
 // delegating to the underlying partition's get_elements methods
 
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-

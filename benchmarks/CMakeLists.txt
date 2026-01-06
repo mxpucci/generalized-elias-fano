@@ -5,7 +5,9 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     
     # Skip compression_benchmark as we handle it separately below
     if(benchmark_name STREQUAL "compression_benchmark" OR
-       benchmark_name STREQUAL "single_thread_compression_throughput")
+       benchmark_name STREQUAL "single_thread_compression_throughput" OR
+       benchmark_name STREQUAL "single_thread_decompression_throughput" OR
+       benchmark_name STREQUAL "single_thread_random_access_latency")
         continue()
     endif()
     
@@ -17,6 +19,9 @@ foreach(benchmark_file ${BENCHMARK_FILES})
     else()
         target_link_libraries(${benchmark_name} PRIVATE gef::gef benchmark::benchmark)
     endif()
+    
+    # Reuse PCH from gef to speed up compilation
+    target_precompile_headers(${benchmark_name} REUSE_FROM gef)
     
     # Ensure benchmarks are always compiled with maximum optimization
     target_compile_options(${benchmark_name} PRIVATE 
@@ -44,6 +49,7 @@ endforeach()
 # Version 1: WITH OpenMP (default)
 add_executable(compression_benchmark compression_benchmark.cpp)
 target_link_libraries(compression_benchmark PRIVATE gef::gef benchmark::benchmark)
+target_precompile_headers(compression_benchmark REUSE_FROM gef)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(compression_benchmark PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -117,6 +123,12 @@ endfunction()
 
 add_executable(single_thread_compression_throughput_simd single_thread_compression_throughput.cpp)
 configure_single_thread_target(single_thread_compression_throughput_simd)
+
+add_executable(single_thread_decompression_throughput single_thread_decompression_throughput.cpp)
+configure_single_thread_target(single_thread_decompression_throughput)
+
+add_executable(single_thread_random_access_latency single_thread_random_access_latency.cpp)
+configure_single_thread_target(single_thread_random_access_latency)
 
 add_executable(single_thread_compression_throughput single_thread_compression_throughput.cpp)
 configure_single_thread_target(single_thread_compression_throughput)

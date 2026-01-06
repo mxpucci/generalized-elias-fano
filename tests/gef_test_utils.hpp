@@ -12,6 +12,16 @@
 #include <numeric>
 #include <random>
 
+// Helper trait to extract the underlying value_type from a GEF implementation class.
+// Defined here to avoid redefinition errors in Unity Builds.
+template<typename T>
+struct get_value_type;
+
+template<template<typename> class C, typename T>
+struct get_value_type<C<T>> {
+    using type = T;
+};
+
 namespace gef::test {
 
 /**

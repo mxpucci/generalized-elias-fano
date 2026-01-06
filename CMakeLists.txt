@@ -58,10 +58,11 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find and enable OpenMP for parallel processing when available
+# Find and enable OpenMP for parallel processing
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
     message(STATUS "OpenMP found - parallel processing enabled")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 else()
     message(WARNING "OpenMP not found - UniformedPartitioner will run sequentially")
 endif()
@@ -129,11 +130,6 @@ if(TARGET pasta_bit_vector)
     target_link_libraries(gef PUBLIC pasta_bit_vector)
 elseif(EXISTS "${PASTA_INCLUDE_DIR}")
     target_include_directories(gef PUBLIC ${PASTA_INCLUDE_DIR})
-endif()
-
-# Propagate OpenMP usage through the gef target so dependants can opt-in
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(gef PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
 # --- Tests Configuration ---
