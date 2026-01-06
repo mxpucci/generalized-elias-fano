@@ -3,10 +3,8 @@
 #include "gef/B_GEF.hpp"
 #include "gef/B_STAR_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
-#include <memory>
 #include <type_traits>
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
@@ -16,24 +14,22 @@
 template <typename T>
 class GEF_Overhead_TypedTest : public ::testing::Test {
 protected:
-    std::shared_ptr<IBitVectorFactory> factory;
-
     void SetUp() override {
-        factory = std::make_shared<SDSLBitVectorFactory>();
+        // no setup needed
     }
 };
 
 namespace {
 // Define the list of implementations and types to test with.
 using GEF_Overhead_Implementations = ::testing::Types<
-    gef::RLE_GEF<int8_t>, gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_STAR_GEF<int8_t>,
-    gef::RLE_GEF<uint8_t>, gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_STAR_GEF<uint8_t>,
-    gef::RLE_GEF<int16_t>, gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_STAR_GEF<int16_t>,
-    gef::RLE_GEF<uint16_t>, gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_STAR_GEF<uint16_t>,
-    gef::RLE_GEF<int32_t>, gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_STAR_GEF<int32_t>,
-    gef::RLE_GEF<uint32_t>, gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_STAR_GEF<uint32_t>,
-    gef::RLE_GEF<int64_t>, gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_STAR_GEF<int64_t>,
-    gef::RLE_GEF<uint64_t>, gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_STAR_GEF<uint64_t>
+    gef::internal::RLE_GEF<int8_t>, gef::internal::U_GEF<int8_t>, gef::internal::B_GEF<int8_t>, gef::internal::B_STAR_GEF<int8_t>,
+    gef::internal::RLE_GEF<uint8_t>, gef::internal::U_GEF<uint8_t>, gef::internal::B_GEF<uint8_t>, gef::internal::B_STAR_GEF<uint8_t>,
+    gef::internal::RLE_GEF<int16_t>, gef::internal::U_GEF<int16_t>, gef::internal::B_GEF<int16_t>, gef::internal::B_STAR_GEF<int16_t>,
+    gef::internal::RLE_GEF<uint16_t>, gef::internal::U_GEF<uint16_t>, gef::internal::B_GEF<uint16_t>, gef::internal::B_STAR_GEF<uint16_t>,
+    gef::internal::RLE_GEF<int32_t>, gef::internal::U_GEF<int32_t>, gef::internal::B_GEF<int32_t>, gef::internal::B_STAR_GEF<int32_t>,
+    gef::internal::RLE_GEF<uint32_t>, gef::internal::U_GEF<uint32_t>, gef::internal::B_GEF<uint32_t>, gef::internal::B_STAR_GEF<uint32_t>,
+    gef::internal::RLE_GEF<int64_t>, gef::internal::U_GEF<int64_t>, gef::internal::B_GEF<int64_t>, gef::internal::B_STAR_GEF<int64_t>,
+    gef::internal::RLE_GEF<uint64_t>, gef::internal::U_GEF<uint64_t>, gef::internal::B_GEF<uint64_t>, gef::internal::B_STAR_GEF<uint64_t>
 >;
 }
 
@@ -96,7 +92,7 @@ TYPED_TEST(GEF_Overhead_TypedTest, SDSLOverheadIsReasonable) {
     for (const auto& test : test_cases) {
         SCOPED_TRACE("Test Case: " + test.name);
 
-        GEF_Class gef(this->factory, test.sequence);
+        GEF_Class gef(test.sequence);
         
         size_t theoretical = gef.theoretical_size_in_bytes();
         size_t actual_without_supports = gef.size_in_bytes_without_supports();

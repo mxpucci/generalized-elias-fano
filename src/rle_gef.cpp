@@ -8,19 +8,16 @@
 #include <cerrno>  // For errno
 #include <cstdint> // For uint32_t
 #include "gef/RLE_GEF.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef/UniformPartitioning.hpp"
 #include "gef/utils.hpp"
-#include "datastructures/IBitVectorFactory.hpp"
-
 
 
 template<typename T>
-struct RLE_GEF_Wrapper : public gef::RLE_GEF<T> {
-    RLE_GEF_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::RLE_GEF<T>(factory, data) {}
+struct RLE_GEF_Wrapper : public gef::internal::RLE_GEF<T> {
+    RLE_GEF_Wrapper(gef::Span<const T> data)
+            : gef::internal::RLE_GEF<T>(data) {}
 
-    RLE_GEF_Wrapper() : gef::RLE_GEF<T>() {}
+    RLE_GEF_Wrapper() : gef::internal::RLE_GEF<T>() {}
 };
 
 /**
@@ -39,14 +36,14 @@ int main(const int argc, char* argv[]) {
         std::string input_filename = argv[arg_index];
         std::vector<int64_t> input_data = read_data_binary<int64_t, int64_t>(input_filename, true);
 
-        auto factory = std::make_shared<SDSLBitVectorFactory>();
         double input_size_mb = static_cast<double>(input_data.size() * sizeof(int64_t)) / (1024.0 * 1024.0);
 
         std::vector<size_t> k_values = {(size_t) 128e3};
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
-            gef::UniformPartitioning<int64_t, RLE_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> partitioned_gef(input_data, k, factory);
+            // Since k is fixed at 128000 in the vector, we use it as template argument
+            gef::UniformPartitioning<int64_t, RLE_GEF_Wrapper<int64_t>, 128000> partitioned_gef(input_data);
             double partitioned_size_mb = partitioned_gef.size_in_megabytes();
             best_compression = std::min(best_compression, (100 * partitioned_size_mb) / input_size_mb);
         }

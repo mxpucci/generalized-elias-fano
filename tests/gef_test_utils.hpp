@@ -17,8 +17,8 @@
 template<typename T>
 struct get_value_type;
 
-template<template<typename> class C, typename T>
-struct get_value_type<C<T>> {
+template<template<typename, typename...> class C, typename T, typename... Rest>
+struct get_value_type<C<T, Rest...>> {
     using type = T;
 };
 

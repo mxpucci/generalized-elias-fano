@@ -1,19 +1,11 @@
 #include "gef/B_STAR_GEF.hpp"
 #include "gef/B_GEF.hpp"
 #include "gef/utils.hpp"
-#include "datastructures/IBitVectorFactory.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
-#include "datastructures/SUXBitVectorFactory.hpp"
-#include "datastructures/PastaBitVectorFactory.hpp"
-#include "datastructures/SDSLBitVector.hpp"
-#include "datastructures/SUXBitVector.hpp"
-#include "datastructures/PastaBitVector.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <iostream>
 #include <vector>
-#include <memory>
 #include <filesystem>
 #include <numeric>
 #include <iomanip>
@@ -99,19 +91,6 @@ std::optional<ProgramOptions> parse_arguments(int argc, char** argv) {
     return opts;
 }
 
-std::shared_ptr<IBitVectorFactory> make_factory(const std::string& name) {
-    if (name == "sdsl") {
-        return std::make_shared<SDSLBitVectorFactory>();
-    }
-    if (name == "sux") {
-        return std::make_shared<SUXBitVectorFactory>();
-    }
-    if (name == "pasta") {
-        return std::make_shared<PastaBitVectorFactory>();
-    }
-    throw std::invalid_argument("Unsupported bitvector factory: " + name);
-}
-
 std::string to_string(gef::SplitPointStrategy strategy) {
     switch (strategy) {
         case gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT:
@@ -135,14 +114,13 @@ std::vector<size_t> generate_random_indices(size_t n, size_t num_queries, uint32
 
 template<typename CompressorType>
 void run_benchmark(const std::vector<int64_t>& data,
-                   const std::shared_ptr<IBitVectorFactory>& factory,
                    gef::SplitPointStrategy strategy,
                    size_t num_queries,
                    size_t iterations,
                    bool verbose) {
     
     std::cout << "Building compressor..." << std::endl;
-    CompressorType compressor(factory, data, strategy);
+    CompressorType compressor(data, strategy);
     
     std::cout << "Compressed size: " << (compressor.size_in_bytes() / (1024.0 * 1024.0)) << " MB" << std::endl;
     std::cout << "Bits per integer: " << (compressor.size_in_bytes() * 8.0) / data.size() << std::endl;
@@ -227,12 +205,10 @@ int main(int argc, char** argv) {
                   << "Compressor:          " << opts.compressor << "\n"
                   << "Number of integers:  " << data.size() << "\n";
 
-        auto factory = make_factory("pasta");
-
         if (opts.compressor == "bgef_star") {
-            run_benchmark<gef::B_STAR_GEF<int64_t>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
+            run_benchmark<gef::internal::B_STAR_GEF<int64_t>>(data, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
         } else { // bgef
-            run_benchmark<gef::B_GEF<int64_t>>(data, factory, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
+            run_benchmark<gef::internal::B_GEF<int64_t>>(data, opts.strategy, opts.num_queries, opts.iterations, opts.verbose);
         }
 
         return 0;

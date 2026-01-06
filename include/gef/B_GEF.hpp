@@ -22,8 +22,6 @@
 #include "FastBitWriter.hpp"
 #include "FastUnaryDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
-#include "../datastructures/IBitVectorFactory.hpp"
-#include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
 
@@ -34,6 +32,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
+    namespace internal {
     template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector>
     class B_GEF : public IGEF<T> {
     private:
@@ -526,8 +525,7 @@ namespace gef {
 
         // Constructor
         template<typename C>
-        B_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-            const C &S,
+        B_GEF(const C &S,
             SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT,
             CompressionBuildMetrics* metrics = nullptr) {
             // [Constructor implementation omitted for brevity, same as before]
@@ -814,7 +812,7 @@ namespace gef {
             }
         }
 
-        void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
+        void load(std::ifstream &ifs) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
@@ -919,6 +917,7 @@ namespace gef {
             return this->b;
         }
     };
+    } // namespace internal
 } // namespace gef
 
 #endif

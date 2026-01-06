@@ -27,7 +27,7 @@ namespace gef {
  * @brief A class that partitions a sequence and applies a given compressor to each partition.
  *
  * This class acts as a wrapper around another IGEF-compliant compressor. It takes a large
- * vector of data, splits it into smaller blocks of a specified size `k`, and then uses
+ * vector of data, splits it into smaller blocks of a specified size `K`, and then uses
  * the provided `Compressor` class to compress each block independently.
  *
  * This is useful for applying compressors that are efficient on smaller data sizes to a large
@@ -35,28 +35,27 @@ namespace gef {
  *
  * @tparam T The integral type of the data elements.
  * @tparam Compressor The IGEF-compliant compressor class to use for each partition.
+ * @tparam K The size of each block.
  * @tparam CompressorArgs The types of additional arguments to pass to the compressor's constructor.
  */
 #if __cplusplus >= 202002L
-template<IntegralType T, class Compressor, typename... CompressorArgs>
+template<IntegralType T, class Compressor, size_t K, typename... CompressorArgs>
 #else
-template<typename T, class Compressor, typename... CompressorArgs>
+template<typename T, class Compressor, size_t K, typename... CompressorArgs>
 #endif
 class UniformPartitioning : public IGEF<T> {
     static_assert(std::is_base_of_v<IGEF<T>, Compressor>, "Compressor must be a subclass of IGEF<T>");
+    static_assert(K > 0, "Block size K cannot be zero.");
 
 public:
     /**
      * @brief Constructs a UniformPartitioning by compressing data in blocks.
      * @param data The input vector to compress.
-     * @param k The size of each block. The last block may be smaller.
      * @param args Additional arguments to be forwarded to the Compressor's constructor for each block.
      */
-    UniformPartitioning(const std::vector<T>& data, size_t k, CompressorArgs... args)
-    : m_original_size(data.size()), m_block_size(k) {
-        if (k == 0) throw std::invalid_argument("Block size k cannot be zero.");
-
-        const size_t num_partitions = (data.size() + k - 1) / k;
+    UniformPartitioning(const std::vector<T>& data, CompressorArgs... args)
+    : m_original_size(data.size()) {
+        const size_t num_partitions = (data.size() + K - 1) / K;
         m_partitions.reserve(num_partitions);
 
         using PartitionView = Span<const T>;
@@ -82,18 +81,18 @@ public:
             // (just creates empty optionals, no Compressor construction)
             if constexpr (can_use_view) {
                 for (size_t p = 0; p < num_partitions; ++p) {
-                    const size_t start = p * k;
-                    const size_t end   = std::min(start + k, data.size());
+                    const size_t start = p * K;
+                    const size_t end   = std::min(start + K, data.size());
                     const size_t len   = end - start;
                     m_partitions[p].emplace(PartitionView(data.data() + start, len), args...);
                 }
             } else if constexpr (!accepts_vector_value) {
                 // Re-use buffer optimization
                 std::vector<T> buffer;
-                buffer.reserve(k);
+                buffer.reserve(K);
                 for (size_t p = 0; p < num_partitions; ++p) {
-                    const size_t start = p * k;
-                    const size_t end   = std::min(start + k, data.size());
+                    const size_t start = p * K;
+                    const size_t end   = std::min(start + K, data.size());
                     const size_t len   = end - start;
                     buffer.assign(data.data() + start, data.data() + start + len);
                     m_partitions[p].emplace(buffer, args...);
@@ -101,8 +100,8 @@ public:
             } else {
                 // Must pass by value (move)
                 for (size_t p = 0; p < num_partitions; ++p) {
-                    const size_t start = p * k;
-                    const size_t end   = std::min(start + k, data.size());
+                    const size_t start = p * K;
+                    const size_t end   = std::min(start + K, data.size());
                     const size_t len   = end - start;
                     PartitionView view(data.data() + start, len);
                     std::vector<T> buffer(view.data(), view.data() + view.size());
@@ -133,13 +132,13 @@ public:
             // Thread-local buffer to avoid repeated allocations in fallback cases
             std::vector<T> buffer;
             if constexpr (!can_use_view && !accepts_vector_value) {
-                buffer.reserve(k);
+                buffer.reserve(K);
             }
 
             // Construct directly at target indices - no merge needed!
             for (size_t p = my_start; p < my_end; ++p) {
-                const size_t start = p * k;
-                const size_t end   = std::min(start + k, data.size());
+                const size_t start = p * K;
+                const size_t end   = std::min(start + K, data.size());
                 const size_t len   = end - start;
 
                 Span<const T> view(data.data() + start, len);
@@ -171,7 +170,7 @@ public:
     /**
      * @brief Default constructor. Used for loading from a stream.
      */
-    UniformPartitioning() : m_original_size(0), m_block_size(0) {}
+    UniformPartitioning() : m_original_size(0) {}
 
     ~UniformPartitioning() override = default;
 
@@ -189,7 +188,7 @@ public:
     }
 
     size_t size_in_bytes() const override {
-        size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
+        size_t total_bytes = sizeof(m_original_size); // K is template param, not stored
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
@@ -199,7 +198,7 @@ public:
     }
 
     size_t theoretical_size_in_bytes() const override {
-        size_t total_bytes = sizeof(m_original_size) + sizeof(m_block_size);
+        size_t total_bytes = sizeof(m_original_size);
         size_t num_partitions = m_partitions.size();
         total_bytes += sizeof(num_partitions);
 
@@ -221,14 +220,14 @@ public:
         const size_t total_requested = endIndex - startIndex;
         
         // Identify which partitions we need to access
-        const size_t start_partition = startIndex / m_block_size;
-        const size_t end_partition = (endIndex - 1) / m_block_size;
+        const size_t start_partition = startIndex / K;
+        const size_t end_partition = (endIndex - 1) / K;
         
         auto fetch_partition_range = [&](size_t partition_index,
                                          size_t range_start,
                                          size_t range_end,
                                          std::vector<T>& buffer) -> size_t {
-            const size_t partition_start = partition_index * m_block_size;
+            const size_t partition_start = partition_index * K;
             const size_t offset_in_partition = range_start - partition_start;
             const size_t count_in_partition = range_end - range_start;
             if (count_in_partition == 0) {
@@ -246,7 +245,7 @@ public:
         if (start_partition == end_partition) {
             std::vector<T> partition_buffer(total_requested);
             const size_t written = partition(start_partition).get_elements(
-                startIndex % m_block_size, total_requested, partition_buffer);
+                startIndex % K, total_requested, partition_buffer);
             std::copy_n(partition_buffer.begin(), written, output.begin());
             return written;
         }
@@ -270,8 +269,8 @@ public:
             #pragma omp parallel for schedule(static)
             for (size_t i = 0; i < num_partitions_spanned; ++i) {
                 const size_t p = start_partition + i;
-                const size_t partition_start = p * m_block_size;
-                const size_t partition_end = std::min(partition_start + m_block_size, m_original_size);
+                const size_t partition_start = p * K;
+                const size_t partition_end = std::min(partition_start + K, m_original_size);
                 const size_t range_start = std::max(startIndex, partition_start);
                 const size_t range_end = std::min(endIndex, partition_end);
                 partition_written[i] = fetch_partition_range(p, range_start, range_end, partition_results[i]);
@@ -292,8 +291,8 @@ public:
         
         // Sequential fallback for small spans or no OpenMP
         for (size_t p = start_partition; p <= end_partition; ++p) {
-            const size_t partition_start = p * m_block_size;
-            const size_t partition_end = std::min(partition_start + m_block_size, m_original_size);
+            const size_t partition_start = p * K;
+            const size_t partition_end = std::min(partition_start + K, m_original_size);
             const size_t range_start = std::max(startIndex, partition_start);
             const size_t range_end = std::min(endIndex, partition_end);
             std::vector<T> partition_buffer;
@@ -315,9 +314,9 @@ public:
         }
         
         // Division and modulo are expensive - but necessary here
-        // Compiler will optimize to shift+mask if m_block_size is power of 2
-        const size_t partition_index = index / m_block_size;
-        const size_t index_in_partition = index % m_block_size;
+        // Compiler will optimize to shift+mask if K is power of 2
+        const size_t partition_index = index / K;
+        const size_t index_in_partition = index % K;
         
         // Direct object access - NO VIRTUAL CALL if Compressor type is final or compiler can devirtualize
         return partition(partition_index)[index_in_partition];
@@ -337,7 +336,7 @@ public:
             throw std::runtime_error("Output file stream is not open for serialization.");
         }
         ofs.write(reinterpret_cast<const char*>(&m_original_size), sizeof(m_original_size));
-        ofs.write(reinterpret_cast<const char*>(&m_block_size), sizeof(m_block_size));
+        // K is not serialized as it is a template parameter
 
         const size_t num_partitions = m_partitions.size();
         ofs.write(reinterpret_cast<const char*>(&num_partitions), sizeof(num_partitions));
@@ -347,14 +346,14 @@ public:
         }
     }
 
-    void load(std::ifstream& ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
+    void load(std::ifstream& ifs) override {
         if (!ifs.is_open()) {
             throw std::runtime_error("Input file stream is not open for loading.");
         }
         ifs.read(reinterpret_cast<char*>(&m_original_size), sizeof(m_original_size));
-        ifs.read(reinterpret_cast<char*>(&m_block_size), sizeof(m_block_size));
+        // K is not read
 
-        if (ifs.fail() || m_block_size == 0) {
+        if (ifs.fail()) {
             throw std::runtime_error("Failed to read or invalid data from stream during UniformPartitioning load.");
         }
 
@@ -368,7 +367,7 @@ public:
         m_partitions.resize(num_partitions);
         for (size_t i = 0; i < num_partitions; ++i) {
             m_partitions[i].emplace();  // Create empty Compressor
-            m_partitions[i]->load(ifs, bit_vector_factory);
+            m_partitions[i]->load(ifs);
         }
     }
 
@@ -378,7 +377,7 @@ private:
     // This enables true constant throughput regardless of partition count.
     std::vector<std::optional<Compressor>> m_partitions;
     size_t m_original_size;
-    size_t m_block_size;
+    // m_block_size is now K (template parameter)
     
     // Helper to access partition - handles the optional unwrapping
     const Compressor& partition(size_t i) const { return *m_partitions[i]; }

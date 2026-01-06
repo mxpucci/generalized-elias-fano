@@ -1,9 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/RLE_GEF.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
-#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <type_traits>
@@ -19,26 +17,22 @@
 template <typename T>
 class GEF_SplitPointStrategy_TypedTest : public ::testing::Test {
 protected:
-    // A shared factory for creating bit vectors in tests.
-    std::shared_ptr<IBitVectorFactory> factory;
-
     void SetUp() override {
-        // Initialize the factory before each test.
-        factory = std::make_shared<SDSLBitVectorFactory>();
+        // no setup needed
     }
 };
 
 namespace {
 // Define the list of all implementations and types we want to test with.
 using GEF_SplitStrategy_Implementations = ::testing::Types<
-    gef::U_GEF<int8_t>, gef::B_GEF<int8_t>, gef::B_STAR_GEF<int8_t>,
-    gef::U_GEF<uint8_t>, gef::B_GEF<uint8_t>, gef::B_STAR_GEF<uint8_t>,
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_STAR_GEF<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_STAR_GEF<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_STAR_GEF<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_STAR_GEF<uint32_t>,
-    gef::U_GEF<int64_t>, gef::B_GEF<int64_t>, gef::B_STAR_GEF<int64_t>,
-    gef::U_GEF<uint64_t>, gef::B_GEF<uint64_t>, gef::B_STAR_GEF<uint64_t>
+    gef::internal::U_GEF<int8_t>, gef::internal::B_GEF<int8_t>, gef::internal::B_STAR_GEF<int8_t>,
+    gef::internal::U_GEF<uint8_t>, gef::internal::B_GEF<uint8_t>, gef::internal::B_STAR_GEF<uint8_t>,
+    gef::internal::U_GEF<int16_t>, gef::internal::B_GEF<int16_t>, gef::internal::B_STAR_GEF<int16_t>,
+    gef::internal::U_GEF<uint16_t>, gef::internal::B_GEF<uint16_t>, gef::internal::B_STAR_GEF<uint16_t>,
+    gef::internal::U_GEF<int32_t>, gef::internal::B_GEF<int32_t>, gef::internal::B_STAR_GEF<int32_t>,
+    gef::internal::U_GEF<uint32_t>, gef::internal::B_GEF<uint32_t>, gef::internal::B_STAR_GEF<uint32_t>,
+    gef::internal::U_GEF<int64_t>, gef::internal::B_GEF<int64_t>, gef::internal::B_STAR_GEF<int64_t>,
+    gef::internal::U_GEF<uint64_t>, gef::internal::B_GEF<uint64_t>, gef::internal::B_STAR_GEF<uint64_t>
 >;
 }
 
@@ -54,7 +48,7 @@ TYPED_TEST(GEF_SplitPointStrategy_TypedTest, ApproximateSplitPoint) {
     }
     const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, max_val);
 
-    GEF_Class gef_impl(this->factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
+    GEF_Class gef_impl(sequence, gef::APPROXIMATE_SPLIT_POINT);
 
     for(size_t i = 0; i < sequence.size(); ++i) {
         ASSERT_EQ(gef_impl.at(i), sequence[i]);
@@ -71,7 +65,7 @@ TYPED_TEST(GEF_SplitPointStrategy_TypedTest, BruteForceSplitPoint) {
     }
     const std::vector<value_type> sequence = gef::test::generate_random_sequence<value_type>(1000, 0, max_val);
 
-    GEF_Class gef_impl(this->factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+    GEF_Class gef_impl(sequence, gef::OPTIMAL_SPLIT_POINT);
 
     for(size_t i = 0; i < sequence.size(); ++i) {
         ASSERT_EQ(gef_impl.at(i), sequence[i]);

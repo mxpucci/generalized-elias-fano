@@ -4,21 +4,19 @@
 #include <fstream>
 #include <cstdint>
 #include "gef/B_GEF.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef/UniformPartitioning.hpp"
 #include "gef/utils.hpp"
-#include "datastructures/IBitVectorFactory.hpp"
 #include "gef/IGEF.hpp"
 
 // Wrapper to adapt B_GEF constructor for UniformedPartitioner
 template<typename T>
-struct B_GEF_Wrapper : public gef::B_GEF<T> {
+struct B_GEF_Wrapper : public gef::internal::B_GEF<T> {
     // Constructor for compression
-    B_GEF_Wrapper(gef::Span<const T> data, std::shared_ptr<IBitVectorFactory> factory)
-            : gef::B_GEF<T>(factory, data, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
+    B_GEF_Wrapper(gef::Span<const T> data)
+            : gef::internal::B_GEF<T>(data, gef::SplitPointStrategy::OPTIMAL_SPLIT_POINT) {}
 
     // Default constructor for loading from stream
-    B_GEF_Wrapper() : gef::B_GEF<T>() {}
+    B_GEF_Wrapper() : gef::internal::B_GEF<T>() {}
 };
 
 /**
@@ -40,7 +38,6 @@ int main(const int argc, char* argv[]) {
         std::cout << input_filename << std::endl;
 
 
-        auto factory = std::make_shared<SDSLBitVectorFactory>();
         double input_size_mb = static_cast<double>(input_data.size() * sizeof(int64_t)) / (1024.0 * 1024.0);
 
 
@@ -48,7 +45,8 @@ int main(const int argc, char* argv[]) {
         double best_compression = 100;
         for (size_t k : k_values) {
             if (input_data.empty()) continue;
-            gef::UniformPartitioning<int64_t, B_GEF_Wrapper<int64_t>, std::shared_ptr<IBitVectorFactory>> partitioned_gef(input_data, k, factory);
+            // Since k is fixed at 8192 in the vector, we use it as template argument
+            gef::UniformPartitioning<int64_t, B_GEF_Wrapper<int64_t>, 8192> partitioned_gef(input_data);
             double partitioned_size_mb = partitioned_gef.size_in_megabytes();
             best_compression = std::min(best_compression, (100 * partitioned_size_mb) / input_size_mb);
         }

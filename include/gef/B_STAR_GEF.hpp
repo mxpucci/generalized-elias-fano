@@ -38,15 +38,13 @@ namespace stdx = std::experimental;
 #include "CompressionProfile.hpp"
 #include "FastUnaryDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
-#include "../datastructures/IBitVectorFactory.hpp"
-#include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
 #include "FastBitWriter.hpp"
 
 
 namespace gef {
-
+    namespace internal {
     template<typename T, typename GapBitVectorType = PastaGapBitVector>
     class B_STAR_GEF : public IGEF<T> {
     private:
@@ -482,8 +480,7 @@ namespace gef {
 
         // Constructor
         template<typename C>
-        B_STAR_GEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-                   const C &S,
+        B_STAR_GEF(const C &S,
                    SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT,
                    CompressionBuildMetrics* metrics = nullptr) {
             using clock = std::chrono::steady_clock;
@@ -751,7 +748,7 @@ namespace gef {
             }
         }
 
-        void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
+        void load(std::ifstream &ifs) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
@@ -833,6 +830,7 @@ namespace gef {
             return this->b;
         }
     };
+    } // namespace internal
 } // namespace gef
 
 #endif

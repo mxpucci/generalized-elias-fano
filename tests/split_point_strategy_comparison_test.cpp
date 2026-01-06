@@ -2,10 +2,8 @@
 #include "gef/U_GEF.hpp"
 #include "gef/B_GEF.hpp"
 #include "gef/B_STAR_GEF.hpp"
-#include "datastructures/SDSLBitVectorFactory.hpp"
 #include "gef_test_utils.hpp"
 #include <vector>
-#include <memory>
 #include <type_traits>
 #include <typeinfo>
 
@@ -20,27 +18,25 @@ template <typename T>
 struct is_b_gef_no_rle : std::false_type {};
 
 template <typename ValType>
-struct is_b_gef_no_rle<gef::B_STAR_GEF<ValType>> : std::true_type {};
+struct is_b_gef_no_rle<gef::internal::B_STAR_GEF<ValType>> : std::true_type {};
 
 
 // Test fixture for typed tests.
 template <typename T>
 class GEF_SplitPointStrategyComparison_TypedTest : public ::testing::Test {
 protected:
-    std::shared_ptr<IBitVectorFactory> factory;
-
     void SetUp() override {
-        factory = std::make_shared<SDSLBitVectorFactory>();
+        // no setup needed
     }
 };
 
 namespace {
 // Define the list of implementations and types to test with.
 using GEF_SplitStrategyComparison_Implementations = ::testing::Types<
-    gef::U_GEF<int16_t>, gef::B_GEF<int16_t>, gef::B_STAR_GEF<int16_t>,
-    gef::U_GEF<uint16_t>, gef::B_GEF<uint16_t>, gef::B_STAR_GEF<uint16_t>,
-    gef::U_GEF<int32_t>, gef::B_GEF<int32_t>, gef::B_STAR_GEF<int32_t>,
-    gef::U_GEF<uint32_t>, gef::B_GEF<uint32_t>, gef::B_STAR_GEF<uint32_t>
+    gef::internal::U_GEF<int16_t>, gef::internal::B_GEF<int16_t>, gef::internal::B_STAR_GEF<int16_t>,
+    gef::internal::U_GEF<uint16_t>, gef::internal::B_GEF<uint16_t>, gef::internal::B_STAR_GEF<uint16_t>,
+    gef::internal::U_GEF<int32_t>, gef::internal::B_GEF<int32_t>, gef::internal::B_STAR_GEF<int32_t>,
+    gef::internal::U_GEF<uint32_t>, gef::internal::B_GEF<uint32_t>, gef::internal::B_STAR_GEF<uint32_t>
 >;
 }
 
@@ -94,11 +90,11 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
         SCOPED_TRACE("Test Case: " + test.name);
 
         // Instantiate with Optimal strategy
-        GEF_Class gef_brute_force(this->factory, test.sequence, gef::OPTIMAL_SPLIT_POINT);
+        GEF_Class gef_brute_force(test.sequence, gef::OPTIMAL_SPLIT_POINT);
         size_t brute_force_size = gef_brute_force.theoretical_size_in_bytes();
 
         // Instantiate with Approximate strategy
-        GEF_Class gef_approximate(this->factory, test.sequence, gef::APPROXIMATE_SPLIT_POINT);
+        GEF_Class gef_approximate(test.sequence, gef::APPROXIMATE_SPLIT_POINT);
         size_t approximate_size = gef_approximate.theoretical_size_in_bytes();
 
 
@@ -119,12 +115,11 @@ TYPED_TEST(GEF_SplitPointStrategyComparison_TypedTest, BruteForceIsOptimal) {
 namespace {
 
 template<typename T>
-void assert_optimal_not_exceeded(const std::shared_ptr<IBitVectorFactory>& factory,
-                                 const std::vector<T>& sequence,
+void assert_optimal_not_exceeded(const std::vector<T>& sequence,
                                  const std::string& label) {
     ASSERT_FALSE(sequence.empty()) << "Sequence should not be empty for " << label;
 
-    gef::B_STAR_GEF<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+    gef::internal::B_STAR_GEF<T> optimal(sequence, gef::OPTIMAL_SPLIT_POINT);
     const size_t optimal_size = optimal.theoretical_size_in_bytes();
 
     auto [min_it, max_it] = std::minmax_element(sequence.begin(), sequence.end());
@@ -146,7 +141,7 @@ void assert_optimal_not_exceeded(const std::shared_ptr<IBitVectorFactory>& facto
 }
 
 template<typename T>
-void run_full_sweep_assertions(const std::shared_ptr<IBitVectorFactory>& factory) {
+void run_full_sweep_assertions() {
     struct TestCase {
         std::string name;
         std::vector<T> sequence;
@@ -179,24 +174,21 @@ void run_full_sweep_assertions(const std::shared_ptr<IBitVectorFactory>& factory
 
     for (const auto& test : test_cases) {
         SCOPED_TRACE("Full sweep test: " + test.name);
-        assert_optimal_not_exceeded(factory, test.sequence, test.name);
+        assert_optimal_not_exceeded(test.sequence, test.name);
     }
 }
 
 } // namespace
 
 TEST(B_STAR_GEF_SplitPointStrategy, OptimalDominatesAllSplitPoints) {
-    auto factory = std::make_shared<SDSLBitVectorFactory>();
-    run_full_sweep_assertions<int32_t>(factory);
-    run_full_sweep_assertions<uint32_t>(factory);
-    run_full_sweep_assertions<int64_t>(factory);
-    run_full_sweep_assertions<uint64_t>(factory);
+    run_full_sweep_assertions<int32_t>();
+    run_full_sweep_assertions<uint32_t>();
+    run_full_sweep_assertions<int64_t>();
+    run_full_sweep_assertions<uint64_t>();
 }
 
 template<typename T>
 void expect_split_point_variation() {
-    auto factory = std::make_shared<SDSLBitVectorFactory>();
-
     bool difference_observed = false;
     const size_t max_attempts = 200;
 
@@ -213,8 +205,8 @@ void expect_split_point_variation() {
             continue;
         }
 
-        gef::B_STAR_GEF<T> approx(factory, sequence, gef::APPROXIMATE_SPLIT_POINT);
-        gef::B_STAR_GEF<T> optimal(factory, sequence, gef::OPTIMAL_SPLIT_POINT);
+        gef::internal::B_STAR_GEF<T> approx(sequence, gef::APPROXIMATE_SPLIT_POINT);
+        gef::internal::B_STAR_GEF<T> optimal(sequence, gef::OPTIMAL_SPLIT_POINT);
 
         if (approx.split_point() != optimal.split_point()) {
             difference_observed = true;

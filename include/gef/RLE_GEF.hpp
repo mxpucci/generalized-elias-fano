@@ -16,8 +16,6 @@
 #include "FastBitWriter.hpp"
 
 #include "../datastructures/IBitVector.hpp"
-#include "../datastructures/IBitVectorFactory.hpp"
-#include "../datastructures/SDSLBitVectorFactory.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
 
@@ -28,6 +26,7 @@ namespace stdx = std::experimental;
 #endif
 
 namespace gef {
+    namespace internal {
     template<typename T, typename ExceptionBitVectorType = PastaRankBitVector>
     class RLE_GEF : public IGEF<T> {
     public:
@@ -211,9 +210,7 @@ namespace gef {
 
         // Constructor
         template<typename C>
-        RLE_GEF(std::shared_ptr<IBitVectorFactory> bit_vector_factory,
-                const C &S) {
-            // [Constructor implementation unchanged]
+        RLE_GEF(const C &S) {
             const size_t N = S.size();
             m_num_elements = N;
             if (S.size() == 0) {
@@ -509,7 +506,7 @@ namespace gef {
                 B->serialize(ofs);
         }
 
-        void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> bit_vector_factory) override {
+        void load(std::ifstream &ifs) override {
             ifs.read(reinterpret_cast<char *>(&h), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
@@ -590,6 +587,7 @@ namespace gef {
 
 
     };
+    } // namespace internal
 } // namespace gef
 
 #endif

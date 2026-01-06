@@ -3,8 +3,6 @@
 #include "../include/gef/B_STAR_GEF.hpp"
 #include "../include/gef/RLE_GEF.hpp"
 #include "../include/gef/U_GEF.hpp"
-#include "../include/gef/UniformPartitioning.hpp"
-#include "../include/datastructures/SDSLBitVectorFactory.hpp"
 #include <vector>
 #include <random>
 
@@ -14,12 +12,6 @@ using namespace gef;
 template<typename T>
 class GetElementsTest : public ::testing::Test {
 protected:
-    std::shared_ptr<IBitVectorFactory> factory;
-    
-    void SetUp() override {
-        factory = std::make_shared<SDSLBitVectorFactory>();
-    }
-    
     // Helper to generate random sequence
     std::vector<int64_t> generateSequence(size_t size, int64_t min, int64_t max) {
         std::vector<int64_t> data;
@@ -46,16 +38,16 @@ protected:
 };
 
 using TestTypes = ::testing::Types<
-    B_GEF<int64_t>, 
-    B_STAR_GEF<int64_t>, 
-    RLE_GEF<int64_t>, 
-    U_GEF<int64_t>
+    internal::B_GEF<int64_t>,
+    internal::B_STAR_GEF<int64_t>,
+    internal::RLE_GEF<int64_t>,
+    internal::U_GEF<int64_t>
 >;
 TYPED_TEST_CASE(GetElementsTest, TestTypes);
 
 TYPED_TEST(GetElementsTest, SmallRange) {
     auto data = this->generateSequence(1000, -500, 500);
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     // Test small range at beginning
     this->testGetElements(gef, 0, 10);
@@ -69,7 +61,7 @@ TYPED_TEST(GetElementsTest, SmallRange) {
 
 TYPED_TEST(GetElementsTest, LargeRange) {
     auto data = this->generateSequence(10000, -1000, 1000);
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     // Test large range
     this->testGetElements(gef, 1000, 5000);
@@ -77,7 +69,7 @@ TYPED_TEST(GetElementsTest, LargeRange) {
 
 TYPED_TEST(GetElementsTest, FullSequence) {
     auto data = this->generateSequence(1000, -500, 500);
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     // Get entire sequence
     std::vector<int64_t> buffer(data.size());
@@ -91,7 +83,7 @@ TYPED_TEST(GetElementsTest, FullSequence) {
 
 TYPED_TEST(GetElementsTest, EdgeCases) {
     auto data = this->generateSequence(100, -100, 100);
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     // Empty range
     std::vector<int64_t> empty_buffer;
@@ -116,7 +108,7 @@ TYPED_TEST(GetElementsTest, MonotonicData) {
     for (int64_t i = 0; i < 1000; ++i) {
         data.push_back(i);
     }
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     this->testGetElements(gef, 100, 500);
 }
@@ -127,7 +119,7 @@ TYPED_TEST(GetElementsTest, RepeatedValues) {
     for (size_t i = 0; i < 1000; ++i) {
         data.push_back(i / 10); // 10 repetitions of each value
     }
-    TypeParam gef(this->factory, data);
+    TypeParam gef(data);
     
     this->testGetElements(gef, 200, 300);
 }

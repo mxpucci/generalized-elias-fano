@@ -21,9 +21,6 @@
 #include "FastBitWriter.hpp"
 #include "FastUnaryDecoder.hpp"
 #include "../datastructures/IBitVector.hpp"
-#include "../datastructures/IBitVectorFactory.hpp"
-#include "../datastructures/SDSLBitVectorFactory.hpp"
-#include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
 
 #if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
@@ -151,8 +148,7 @@ namespace gef {
 
         // Main Constructor
         template<typename C>
-        MyEF(const std::shared_ptr<IBitVectorFactory> &bit_vector_factory,
-            const C &S,
+        MyEF(const C &S,
             SplitPointStrategy /*strategy*/ = OPTIMAL_SPLIT_POINT, // Ignored, logic is fixed
             CompressionBuildMetrics* metrics = nullptr) {
             
@@ -385,7 +381,7 @@ namespace gef {
             }
         }
 
-        void load(std::ifstream &ifs, const std::shared_ptr<IBitVectorFactory> /*bit_vector_factory*/) override {
+        void load(std::ifstream &ifs) override {
             ifs.read(reinterpret_cast<char *>(&b), sizeof(uint8_t));
             ifs.read(reinterpret_cast<char *>(&m_num_elements), sizeof(m_num_elements));
             ifs.read(reinterpret_cast<char *>(&base), sizeof(T));

@@ -6,7 +6,6 @@
 #include "gef/B_GEF.hpp"
 #include "gef/B_STAR_GEF.hpp"
 #include "gef/RLE_GEF.hpp"
-#include "../include/datastructures/SDSLBitVectorFactory.hpp"
 
 using namespace gef;
 
@@ -21,8 +20,7 @@ void check_b_zero_behavior(const std::string& name) {
     std::vector<uint64_t> data(N);
     std::iota(data.begin(), data.end(), 0);
 
-    auto factory = std::make_shared<SDSLBitVectorFactory>();
-    GEF_TYPE compressor(factory, data);
+    GEF_TYPE compressor(data);
 
     uint8_t b = compressor.split_point();
     std::cout << name << " chosen b: " << (int)b << std::endl;
@@ -52,8 +50,7 @@ void check_constant_behavior(const std::string& name) {
     size_t N = 1000;
     std::vector<uint64_t> data(N, 123);
 
-    auto factory = std::make_shared<SDSLBitVectorFactory>();
-    GEF_TYPE compressor(factory, data);
+    GEF_TYPE compressor(data);
 
     uint8_t b = compressor.split_point();
     std::cout << name << " (const) chosen b: " << (int)b << std::endl;
@@ -71,26 +68,26 @@ void check_constant_behavior(const std::string& name) {
 }
 
 TEST(BZeroTest, U_GEF_Linear) {
-    check_b_zero_behavior<U_GEF<uint64_t>>("U_GEF");
+    check_b_zero_behavior<gef::internal::U_GEF<uint64_t>>("U_GEF");
 }
 
 TEST(BZeroTest, B_GEF_Linear) {
-    check_b_zero_behavior<B_GEF<uint64_t>>("B_GEF");
+    check_b_zero_behavior<gef::internal::B_GEF<uint64_t>>("B_GEF");
 }
 
 TEST(BZeroTest, B_STAR_GEF_Linear) {
-    check_b_zero_behavior<B_STAR_GEF<uint64_t>>("B_STAR_GEF");
+    check_b_zero_behavior<gef::internal::B_STAR_GEF<uint64_t>>("B_STAR_GEF");
 }
 
 TEST(BZeroTest, RLE_GEF_Linear) {
     // RLE might not choose b=0 for linear data (no runs), but let's see
-    check_b_zero_behavior<RLE_GEF<uint64_t>>("RLE_GEF");
+    check_b_zero_behavior<gef::internal::RLE_GEF<uint64_t>>("RLE_GEF");
 }
 
 TEST(BZeroTest, RLE_GEF_Constant) {
-    check_constant_behavior<RLE_GEF<uint64_t>>("RLE_GEF");
+    check_constant_behavior<gef::internal::RLE_GEF<uint64_t>>("RLE_GEF");
 }
 
 TEST(BZeroTest, U_GEF_Constant) {
-    check_constant_behavior<U_GEF<uint64_t>>("U_GEF");
+    check_constant_behavior<gef::internal::U_GEF<uint64_t>>("U_GEF");
 }
