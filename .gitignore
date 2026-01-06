@@ -6,6 +6,12 @@ CMakeFiles/
 cmake_install.cmake
 compile_commands.json
 
+# CMake "Unix Makefiles" generator output (should not be committed)
+/Makefile
+/src/Makefile
+/tests/Makefile
+/benchmarks/Makefile
+
 # IDE
 .idea/
 *.swp
