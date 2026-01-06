@@ -72,6 +72,3 @@ add_executable(bgef_no_rle bgef_no_rle.cpp)
 target_compile_options(bgef_no_rle PRIVATE -D_FILE_OFFSET_BITS=64)
 target_link_libraries(bgef_no_rle PRIVATE gef)
 
-add_executable(graph_compress graph_compress.cpp)
-target_compile_options(graph_compress PRIVATE -D_FILE_OFFSET_BITS=64)
-target_link_libraries(graph_compress PRIVATE gef)
