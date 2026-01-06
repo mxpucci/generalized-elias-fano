@@ -1,4 +1,4 @@
-file(GLOB TEST_FILES "*.cpp")
+file(GLOB TEST_FILES CONFIGURE_DEPENDS "*.cpp")
 
 # Build a separate executable for each test file to avoid ODR violations
 # caused by the external 'pasta' library (which has non-inline definitions in headers).

@@ -40,6 +40,17 @@ namespace gef {
 
         B_STAR_GEF() = default;
     };
+    
+    template <typename T, size_t partition_size = 32000, bool random_access = true>
+    class B_STAR_GEF_APPROXIMATE : public UniformPartitioning<T, internal::B_STAR_GEF<T, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::B_STAR_GEF<T, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
+    public:
+        explicit B_STAR_GEF_APPROXIMATE(const std::vector<T>& data,
+                            SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT)
+            : Base(data, strategy) {}
+
+        B_STAR_GEF_APPROXIMATE() = default;
+    };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
     class RLE_GEF : public UniformPartitioning<T, internal::RLE_GEF<T, PastaRankBitVector, random_access>, partition_size> {
