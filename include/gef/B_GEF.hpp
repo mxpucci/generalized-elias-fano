@@ -21,6 +21,7 @@
 #include "CompressionProfile.hpp"
 #include "FastBitWriter.hpp"
 #include "FastUnaryDecoder.hpp"
+#include "NoRandomAccess.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
@@ -33,7 +34,7 @@ namespace stdx = std::experimental;
 
 namespace gef {
     namespace internal {
-    template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector>
+    template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector, bool RandomAccess = true>
     class B_GEF : public IGEF<T> {
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
@@ -450,16 +451,22 @@ namespace gef {
               base(other.base) {
             if (other.h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(*other.B);
-                B->enable_rank();
+                if constexpr (RandomAccess) {
+                    B->enable_rank();
+                }
 
 
                 G_plus = std::make_unique<GapBitVectorType>(*other.G_plus);
-                G_plus->enable_rank();
-                G_plus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_plus->enable_rank();
+                    G_plus->enable_select0();
+                }
 
                 G_minus = std::make_unique<GapBitVectorType>(*other.G_minus);
-                G_minus->enable_rank();
-                G_minus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_minus->enable_rank();
+                    G_minus->enable_select0();
+                }
             } else {
                 B = nullptr;
                 G_plus = nullptr;
@@ -701,12 +708,14 @@ namespace gef {
           assert(minus_writer.position() == g_minus_bits);
           assert(plus_writer.position() == g_plus_bits);
 
-          B->enable_rank();
+          if constexpr (RandomAccess) {
+              B->enable_rank();
 
-          G_plus->enable_rank();
-          G_plus->enable_select0();
-          G_minus->enable_rank();
-          G_minus->enable_select0();
+              G_plus->enable_rank();
+              G_plus->enable_select0();
+              G_minus->enable_rank();
+              G_minus->enable_select0();
+          }
 
           if (metrics) {
               double population_seconds = std::chrono::duration<double>(clock::now() - population_start).count();
@@ -719,11 +728,81 @@ namespace gef {
           }
       }
 
+    private:
+        size_t decode_prefix_no_support(size_t count, std::vector<T>& output) const {
+            if (count == 0 || m_num_elements == 0) return 0;
+            const size_t endIndex = std::min(count, m_num_elements);
+            // Caller guarantees output has at least 'count' slots.
+
+            // Fast path: h == 0 (no high bits)
+            if (h == 0) {
+                using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+                using Wide = std::conditional_t<(sizeof(T) < 4), uint32_t, std::make_unsigned_t<T>>;
+                if (b == 0) {
+                    for (size_t i = 0; i < endIndex; ++i) output[i] = base;
+                    return endIndex;
+                }
+                for (size_t i = 0; i < endIndex; ++i) {
+                    const Wide low = static_cast<Wide>(L[i]);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    output[i] = static_cast<T>(sum);
+                }
+                return endIndex;
+            }
+
+            // Sequential decode from 0 without rank/select supports
+            const uint64_t* b_data = B->raw_data_ptr();
+            auto bit_at = [b_data](size_t pos) -> bool {
+                return (b_data[pos >> 6] >> (pos & 63)) & 1ULL;
+            };
+
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), 0);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), 0);
+
+            using U = std::make_unsigned_t<T>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+
+            size_t exc_idx = 0;
+            long long current_high = 0;
+
+            for (size_t i = 0; i < endIndex; ++i) {
+                if (bit_at(i)) {
+                    // exception
+                    current_high = static_cast<long long>(H[exc_idx++]);
+                } else {
+                    current_high += static_cast<long long>(plus_decoder.next());
+                    current_high -= static_cast<long long>(minus_decoder.next());
+                }
+
+                const U low = (b > 0) ? static_cast<U>(L[i]) : U(0);
+                const U high_u = static_cast<U>(current_high);
+                const U offset = (b < sizeof(U) * 8) ? (low | (high_u << b)) : low;
+                const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);
+                output[i] = static_cast<T>(sum);
+            }
+
+            return endIndex;
+        }
+
+    public:
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            if constexpr (RandomAccess) {
+                return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            } else {
+                return ::gef::internal::no_support::get_elements_force_from_zero<T>(
+                    startIndex, count, m_num_elements, output,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
         }
 
         T operator[](size_t index) const override {
+            if constexpr (!RandomAccess) {
+                // Reuse a local scratch buffer (still O(index) decode by design).
+                std::vector<T> scratch;
+                return ::gef::internal::no_support::at_force_from_zero<T>(
+                    index, scratch,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
             // Case 1: No high bits are used (h=0).
             // The value is fully stored in the L vector.
             if (h == 0) [[unlikely]] {
@@ -827,15 +906,21 @@ namespace gef {
             H.load(ifs);
             if (h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
-                B->enable_rank();
+                if constexpr (RandomAccess) {
+                    B->enable_rank();
+                }
 
                 G_plus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                G_plus->enable_rank();
-                G_plus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_plus->enable_rank();
+                    G_plus->enable_select0();
+                }
 
                 G_minus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                G_minus->enable_rank();
-                G_minus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_minus->enable_rank();
+                    G_minus->enable_select0();
+                }
             } else {
                 B = nullptr;
                 G_plus = nullptr;

@@ -23,6 +23,7 @@
 #include "RLE_GEF.hpp"
 #include "FastBitWriter.hpp"
 #include "FastUnaryDecoder.hpp"
+#include "NoRandomAccess.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
@@ -43,7 +44,7 @@ namespace stdx = std::experimental;
 
 namespace gef {
     namespace internal {
-    template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector>
+    template<typename T, typename ExceptionBitVectorType = PastaExceptionBitVector, typename GapBitVectorType = PastaGapBitVector, bool RandomAccess = true>
     class U_GEF : public IGEF<T> {
     private:
         static uint8_t bits_for_range(const T min_val, const T max_val) {
@@ -309,11 +310,15 @@ namespace gef {
               base(other.base) {
             if (other.h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(*other.B);
-                B->enable_rank();
+                if constexpr (RandomAccess) {
+                    B->enable_rank();
+                }
 
                 G = std::make_unique<GapBitVectorType>(*other.G);
-                G->enable_rank();
-                G->enable_select0();
+                if constexpr (RandomAccess) {
+                    G->enable_rank();
+                    G->enable_select0();
+                }
             } else {
                 B = nullptr;
                 G = nullptr;
@@ -513,10 +518,14 @@ namespace gef {
             assert(b_writer.position() == N);
             assert(g_writer.position() == g_bits);
 
-            // Enable rank/select support
-            B->enable_rank();
-            G->enable_rank();
-            G->enable_select0();
+            if constexpr (RandomAccess) {
+                // Enable rank/select support
+            if constexpr (RandomAccess) {
+                B->enable_rank();
+                G->enable_rank();
+                G->enable_select0();
+            }
+            }
         }
 
         template<uint8_t SPLIT_POINT>
@@ -736,11 +745,73 @@ namespace gef {
             return (this->*table[b])(start, count, out);
         }
 
+    private:
+        size_t decode_prefix_no_support(size_t count, std::vector<T>& output) const {
+            if (count == 0 || m_num_elements == 0) return 0;
+            const size_t endIndex = std::min(count, m_num_elements);
+            // Caller guarantees output has at least 'count' slots.
+
+            using U = std::make_unsigned_t<T>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+
+            if (h == 0) [[unlikely]] {
+                if (b == 0) [[unlikely]] {
+                    for (size_t i = 0; i < endIndex; ++i) output[i] = base;
+                    return endIndex;
+                }
+                for (size_t i = 0; i < endIndex; ++i) {
+                    const U low = static_cast<U>(L[i]);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    output[i] = static_cast<T>(sum);
+                }
+                return endIndex;
+            }
+
+            const uint64_t* b_data = B->raw_data_ptr();
+            auto bit_at = [b_data](size_t pos) -> bool {
+                return (b_data[pos >> 6] >> (pos & 63)) & 1ULL;
+            };
+
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> gap_decoder(G->raw_data_ptr(), G->size(), 0);
+
+            size_t exc_idx = 0;
+            long long current_high = 0;
+            for (size_t i = 0; i < endIndex; ++i) {
+                if (bit_at(i)) {
+                    current_high = static_cast<long long>(H[exc_idx++]);
+                } else {
+                    const long long gap = static_cast<long long>(gap_decoder.next());
+                    current_high = reversed ? (current_high - gap) : (current_high + gap);
+                }
+
+                const U low = (b > 0) ? static_cast<U>(L[i]) : U(0);
+                const U high_u = static_cast<U>(current_high);
+                const U offset = (b < sizeof(U) * 8) ? (low | (high_u << b)) : low;
+                const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);
+                output[i] = static_cast<T>(sum);
+            }
+
+            return endIndex;
+        }
+
+    public:
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            if constexpr (RandomAccess) {
+                return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            } else {
+                return ::gef::internal::no_support::get_elements_force_from_zero<T>(
+                    startIndex, count, m_num_elements, output,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
         }
 
         T operator[](size_t index) const override {
+            if constexpr (!RandomAccess) {
+                std::vector<T> scratch;
+                return ::gef::internal::no_support::at_force_from_zero<T>(
+                    index, scratch,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
             if (h == 0) [[unlikely]] {
@@ -829,11 +900,15 @@ namespace gef {
             H.load(ifs);
             if (h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
-                B->enable_rank();
+                if constexpr (RandomAccess) {
+                    B->enable_rank();
+                }
 
                 G = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                G->enable_rank();
-                G->enable_select0();
+                if constexpr (RandomAccess) {
+                    G->enable_rank();
+                    G->enable_select0();
+                }
             } else {
                 B = nullptr;
                 G = nullptr;

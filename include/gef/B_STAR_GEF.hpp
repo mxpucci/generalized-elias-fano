@@ -37,6 +37,7 @@ namespace stdx = std::experimental;
 #include "gap_computation_utils.hpp"
 #include "CompressionProfile.hpp"
 #include "FastUnaryDecoder.hpp"
+#include "NoRandomAccess.hpp"
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
@@ -45,7 +46,7 @@ namespace stdx = std::experimental;
 
 namespace gef {
     namespace internal {
-    template<typename T, typename GapBitVectorType = PastaGapBitVector>
+    template<typename T, typename GapBitVectorType = PastaGapBitVector, bool RandomAccess = true>
     class B_STAR_GEF : public IGEF<T> {
     private:
         /*
@@ -413,10 +414,14 @@ namespace gef {
               base(other.base) {
             if (other.h > 0) {
                 G_plus = std::make_unique<GapBitVectorType>(*other.G_plus);
-                G_plus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_plus->enable_select0();
+                }
 
                 G_minus = std::make_unique<GapBitVectorType>(*other.G_minus);
-                G_minus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_minus->enable_select0();
+                }
             } else {
                 G_plus = nullptr;
                 G_minus = nullptr;
@@ -674,8 +679,10 @@ namespace gef {
             // ===== END POPULATION PHASE =====
 
             // Enable select0 support (rank not needed, operator[] only uses select0)
-            G_plus->enable_select0();
-            G_minus->enable_select0();
+            if constexpr (RandomAccess) {
+                G_plus->enable_select0();
+                G_minus->enable_select0();
+            }
 
             if (metrics) {
                 double population_seconds = std::chrono::duration<double>(clock::now() - population_start).count();
@@ -704,12 +711,64 @@ namespace gef {
         }
 
         // 2. Your actual function implementation
+    private:
+        size_t decode_prefix_no_support(size_t count, std::vector<T>& output) const {
+            if (count == 0 || m_num_elements == 0) return 0;
+            const size_t endIndex = std::min(count, m_num_elements);
+            // Caller guarantees output has at least 'count' slots.
+
+            using U = std::make_unsigned_t<T>;
+            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+
+            if (h == 0) [[unlikely]] {
+                if (b == 0) [[unlikely]] {
+                    for (size_t i = 0; i < endIndex; ++i) output[i] = base;
+                    return endIndex;
+                }
+                for (size_t i = 0; i < endIndex; ++i) {
+                    const U low = static_cast<U>(L[i]);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    output[i] = static_cast<T>(sum);
+                }
+                return endIndex;
+            }
+
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), 0);
+            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), 0);
+
+            long long running_high = 0;
+            for (size_t i = 0; i < endIndex; ++i) {
+                running_high += static_cast<long long>(plus_decoder.next());
+                running_high -= static_cast<long long>(minus_decoder.next());
+
+                const U low = (b > 0) ? static_cast<U>(L[i]) : U(0);
+                const U high_u = static_cast<U>(running_high);
+                const U offset = (b < sizeof(U) * 8) ? (low | (high_u << b)) : low;
+                const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);
+                output[i] = static_cast<T>(sum);
+            }
+            return endIndex;
+        }
+
+    public:
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            // 65 is the number of cases (0 to 64)
-            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            if constexpr (RandomAccess) {
+                // 65 is the number of cases (0 to 64)
+                return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+            } else {
+                return ::gef::internal::no_support::get_elements_force_from_zero<T>(
+                    startIndex, count, m_num_elements, output,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
         }
 
         T operator[](size_t index) const override {
+            if constexpr (!RandomAccess) {
+                std::vector<T> scratch;
+                return ::gef::internal::no_support::at_force_from_zero<T>(
+                    index, scratch,
+                    [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
+            }
             if (h == 0) [[unlikely]]
                 return base + (b > 0 ? L[index] : 0);
             
@@ -762,10 +821,14 @@ namespace gef {
             
             if (h > 0) {
                 G_plus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                G_plus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_plus->enable_select0();
+                }
 
                 G_minus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                G_minus->enable_select0();
+                if constexpr (RandomAccess) {
+                    G_minus->enable_select0();
+                }
             } else {
                 G_plus = nullptr;
                 G_minus = nullptr;

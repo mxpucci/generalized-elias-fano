@@ -9,8 +9,8 @@
 namespace gef {
     
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class B_GEF : public UniformPartitioning<T, internal::B_GEF<T>, partition_size, SplitPointStrategy> {
-        using Base = UniformPartitioning<T, internal::B_GEF<T>, partition_size, SplitPointStrategy>;
+    class B_GEF : public UniformPartitioning<T, internal::B_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::B_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
     public:
         explicit B_GEF(const std::vector<T>& data,
                        SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT)
@@ -20,8 +20,8 @@ namespace gef {
     };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class B_GEF_APPROXIMATE : public UniformPartitioning<T, internal::B_GEF<T>, partition_size, SplitPointStrategy> {
-        using Base = UniformPartitioning<T, internal::B_GEF<T>, partition_size, SplitPointStrategy>;
+    class B_GEF_APPROXIMATE : public UniformPartitioning<T, internal::B_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::B_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
     public:
         explicit B_GEF_APPROXIMATE(const std::vector<T>& data,
                                    SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT)
@@ -31,8 +31,8 @@ namespace gef {
     };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class B_STAR_GEF : public UniformPartitioning<T, internal::B_STAR_GEF<T>, partition_size, SplitPointStrategy> {
-        using Base = UniformPartitioning<T, internal::B_STAR_GEF<T>, partition_size, SplitPointStrategy>;
+    class B_STAR_GEF : public UniformPartitioning<T, internal::B_STAR_GEF<T, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::B_STAR_GEF<T, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
     public:
         explicit B_STAR_GEF(const std::vector<T>& data,
                             SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT)
@@ -42,8 +42,8 @@ namespace gef {
     };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class RLE_GEF : public UniformPartitioning<T, internal::RLE_GEF<T>, partition_size> {
-        using Base = UniformPartitioning<T, internal::RLE_GEF<T>, partition_size>;
+    class RLE_GEF : public UniformPartitioning<T, internal::RLE_GEF<T, PastaRankBitVector, random_access>, partition_size> {
+        using Base = UniformPartitioning<T, internal::RLE_GEF<T, PastaRankBitVector, random_access>, partition_size>;
     public:
         explicit RLE_GEF(const std::vector<T>& data)
             : Base(data) {}
@@ -52,8 +52,8 @@ namespace gef {
     };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class U_GEF : public UniformPartitioning<T, internal::U_GEF<T>, partition_size, SplitPointStrategy> {
-        using Base = UniformPartitioning<T, internal::U_GEF<T>, partition_size, SplitPointStrategy>;
+    class U_GEF : public UniformPartitioning<T, internal::U_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::U_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
     public:
         explicit U_GEF(const std::vector<T>& data,
                        SplitPointStrategy strategy = OPTIMAL_SPLIT_POINT)
@@ -63,8 +63,8 @@ namespace gef {
     };
 
     template <typename T, size_t partition_size = 32000, bool random_access = true>
-    class U_GEF_APPROXIMATE : public UniformPartitioning<T, internal::U_GEF<T>, partition_size, SplitPointStrategy> {
-        using Base = UniformPartitioning<T, internal::U_GEF<T>, partition_size, SplitPointStrategy>;
+    class U_GEF_APPROXIMATE : public UniformPartitioning<T, internal::U_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy> {
+        using Base = UniformPartitioning<T, internal::U_GEF<T, PastaExceptionBitVector, PastaGapBitVector, random_access>, partition_size, SplitPointStrategy>;
     public:
         explicit U_GEF_APPROXIMATE(const std::vector<T>& data,
                                    SplitPointStrategy strategy = APPROXIMATE_SPLIT_POINT)

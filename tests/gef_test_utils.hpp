@@ -8,18 +8,16 @@
 #include <gtest/gtest.h>
 #include "gef/IGEF.hpp"
 #include <vector>
-#include <memory>
 #include <numeric>
 #include <random>
+#include <type_traits>
+#include <utility>
 
 // Helper trait to extract the underlying value_type from a GEF implementation class.
 // Defined here to avoid redefinition errors in Unity Builds.
-template<typename T>
-struct get_value_type;
-
-template<template<typename, typename...> class C, typename T, typename... Rest>
-struct get_value_type<C<T, Rest...>> {
-    using type = T;
+template<typename GEF>
+struct get_value_type {
+    using type = std::decay_t<decltype(std::declval<const GEF&>()[0])>;
 };
 
 namespace gef::test {
