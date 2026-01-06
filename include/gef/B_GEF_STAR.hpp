@@ -537,184 +537,167 @@ namespace gef {
         }
 
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
-            // [get_elements implementation kept from previous optimization]
-            if (count == 0 || startIndex >= size()) {
-                return 0;
-            }
-            if (output.size() < count) {
+            if (count == 0 || startIndex >= size()) return 0;
+            
+            if (output.size() < count)
                 throw std::invalid_argument("output buffer is smaller than requested count");
-            }
-            
+
             const size_t endIndex = std::min(startIndex + count, size());
-            size_t write_index = 0;
-            
-            // Prepare optimized L pointers if possible
-            using U = std::make_unsigned_t<T>;
-            
-            // Fast path: h == 0, all data in L
-            if (h == 0)[[unlikely]] {
-                size_t i = startIndex;
-#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
-                using simd_t = stdx::native_simd<U>;
-                const size_t simd_width = simd_t::size();
-                if constexpr (std::is_arithmetic_v<T>) {
-                    while (i + simd_width <= endIndex) {
-                        simd_t low_vec;
-                        for(size_t k=0; k<simd_width; ++k) low_vec[k] = static_cast<U>(L[i+k]);
-                        simd_t sum_vec = simd_t(static_cast<U>(base)) + low_vec;
-                        sum_vec.copy_to(output.data() + write_index, stdx::element_aligned);
-                        write_index += simd_width;
-                        i += simd_width;
-                    }
+            const size_t actual_count = endIndex - startIndex;
+            T* out_ptr = output.data();
+
+            if (h == 0) [[unlikely]] {
+                const uint64_t* l_data = L.data();
+                size_t current_bit = startIndex * b;
+                
+                // Local bit buffer state
+                uint64_t bit_buffer = 0;
+                size_t bits_in_buffer = 0;
+                size_t word_idx = current_bit >> 6;
+                size_t bit_offset = current_bit & 63;
+                
+                // Prime buffer
+                if (b > 0) {
+                    bit_buffer = l_data[word_idx];
+                    bit_buffer >>= bit_offset; // Align
+                    bits_in_buffer = 64 - bit_offset;
                 }
-#endif
-                for (; i < endIndex; ++i) {
-                    U low = static_cast<U>(L[i]);
-                    output[write_index++] = base + static_cast<T>(low);
-                }
-                return write_index;
-            }
-            
-            const size_t plus_bits = G_plus->size();
-            const size_t minus_bits = G_minus->size();
-            
-            // Compute prefix sums using select0 only (no rank needed)
-            // select0(i) - (i-1) gives cumulative sum of first i gaps
-            const size_t pos_prefix =
-                (startIndex > 0) ? G_plus->select0_unchecked(startIndex) - (startIndex - 1) : 0;
-            const size_t neg_prefix =
-                (startIndex > 0) ? G_minus->select0_unchecked(startIndex) - (startIndex - 1) : 0;
 
-            const size_t plus_start_bit =
-                startIndex > 0 ? std::min(G_plus->select0_unchecked(startIndex) + 1, plus_bits) : 0;
-            const size_t minus_start_bit =
-                startIndex > 0 ? std::min(G_minus->select0_unchecked(startIndex) + 1, minus_bits) : 0;
+                const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
 
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), plus_bits, plus_start_bit);
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), minus_bits, minus_start_bit);
-
-            constexpr size_t GAP_BATCH = 64;
-            uint32_t pos_buffer[GAP_BATCH];
-            uint32_t neg_buffer[GAP_BATCH];
-            size_t pos_size = 0, pos_index = 0;
-            size_t neg_size = 0, neg_index = 0;
-
-            // Maintain high as signed throughout to avoid conversions
-            long long high_signed = static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
-            
-            // Initialize L reader
-            const uint64_t* l_data = L.data();
-            size_t l_start_bit = startIndex * b;
-            size_t l_word_idx = l_start_bit / 64;
-            uint8_t l_bits_consumed = l_start_bit % 64;
-            uint64_t l_buffer = (b > 0) ? l_data[l_word_idx] : 0;
-            const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
-
-            size_t i = startIndex;
-
-#ifdef GEF_EXPERIMENTAL_SIMD_ENABLED
-            using simd_t = stdx::native_simd<U>;
-            const size_t simd_width = simd_t::size();
-            const size_t BATCH_SIZE = simd_width;
-            uint32_t pos_buf[BATCH_SIZE];
-            uint32_t neg_buf[BATCH_SIZE];
-            U high_parts[BATCH_SIZE];
-            U low_parts[BATCH_SIZE];
-
-            if constexpr (std::is_arithmetic_v<T>) {
-                while (i + BATCH_SIZE <= endIndex) {
-                    size_t count_pos = plus_decoder.next_batch(pos_buf, BATCH_SIZE);
-                    while(count_pos < BATCH_SIZE) pos_buf[count_pos++] = static_cast<uint32_t>(plus_decoder.next());
-                    
-                    size_t count_neg = minus_decoder.next_batch(neg_buf, BATCH_SIZE);
-                    while(count_neg < BATCH_SIZE) neg_buf[count_neg++] = static_cast<uint32_t>(minus_decoder.next());
-
-                    for(size_t k=0; k<BATCH_SIZE; ++k) {
-                        high_signed += static_cast<long long>(pos_buf[k]);
-                        high_signed -= static_cast<long long>(neg_buf[k]);
-                        high_parts[k] = static_cast<U>(high_signed);
-                    }
-
+                for (size_t i = 0; i < actual_count; ++i) {
                     if (b == 0) {
-                         for(size_t k=0; k<BATCH_SIZE; ++k) low_parts[k] = 0;
-                    } else {
-                        size_t local_l_bit_pos = i * b;
-                        size_t local_l_word_idx = local_l_bit_pos / 64;
-                        uint8_t local_l_bits_consumed = local_l_bit_pos % 64;
-                        uint64_t local_l_buffer = l_data[local_l_word_idx];
-                        
-                        for(size_t k=0; k<BATCH_SIZE; ++k) {
-                            uint64_t val = (local_l_buffer >> local_l_bits_consumed);
-                            if (local_l_bits_consumed + b > 64) {
-                                val |= (l_data[local_l_word_idx + 1] << (64 - local_l_bits_consumed));
-                            }
-                            low_parts[k] = static_cast<U>(val & l_mask);
-                            local_l_bits_consumed += b;
-                            if (local_l_bits_consumed >= 64) {
-                                local_l_bits_consumed -= 64;
-                                local_l_word_idx++;
-                                if(k + 1 < BATCH_SIZE) local_l_buffer = l_data[local_l_word_idx]; 
-                            }
-                        }
-                        l_word_idx = local_l_word_idx;
-                        l_bits_consumed = local_l_bits_consumed;
-                        if (i + BATCH_SIZE < endIndex) l_buffer = l_data[l_word_idx];
+                        out_ptr[i] = base; 
+                        continue;
                     }
 
-                    simd_t v_high, v_low;
-                    v_high.copy_from(high_parts, stdx::element_aligned);
-                    v_low.copy_from(low_parts, stdx::element_aligned);
-                    
-                    simd_t v_res = simd_t(static_cast<U>(base)) + v_low + (v_high << b);
-                    v_res.copy_to(output.data() + write_index, stdx::element_aligned);
+                    uint64_t val;
+                    if (bits_in_buffer >= b) {
+                        // Happy path: bits are in the buffer
+                        val = bit_buffer & l_mask;
+                        bit_buffer >>= b;
+                        bits_in_buffer -= b;
+                    } else {
+                        // Refill path: Split the read across words
+                        // 1. Take remaining bits from current buffer
+                        val = bit_buffer; 
+                        
+                        // 2. Get the rest from the next word
+                        size_t needed = b - bits_in_buffer;
+                        word_idx++;
+                        uint64_t next_word = l_data[word_idx];
+                        
+                        // Mask carefully to avoid UB if needed==64
+                        uint64_t next_part = next_word & ((needed == 64) ? ~0ULL : ((1ULL << needed) - 1));
+                        
+                        val |= (next_part << bits_in_buffer);
+                        
+                        // 3. Update buffer to hold only what's left of next_word
+                        bit_buffer = next_word >> needed;
+                        bits_in_buffer = 64 - needed;
+                    }
 
-                    write_index += BATCH_SIZE;
-                    i += BATCH_SIZE;
+                    out_ptr[i] = base + static_cast<T>(val);
                 }
+                return actual_count;
             }
-#endif
+
+            // 1. Prefix Sum Calculation (Jump to startIndex)
+            size_t pos_prefix = 0;
+            size_t neg_prefix = 0;
+            size_t plus_start_bit = 0;
+            size_t minus_start_bit = 0;
+
+            if (startIndex > 0) {
+                // select0(k) returns the position of the k-th zero.
+                size_t p_sel = G_plus->select0_unchecked(startIndex);
+                size_t n_sel = G_minus->select0_unchecked(startIndex);
+                
+                pos_prefix = p_sel - (startIndex - 1);
+                neg_prefix = n_sel - (startIndex - 1);
+                plus_start_bit = p_sel + 1;
+                minus_start_bit = n_sel + 1;
+            }
+            
+            // Signed accumulator
+            long long current_high = static_cast<long long>(pos_prefix) - static_cast<long long>(neg_prefix);
+
+            // 2. Setup Decoders
+            using DecoderType = FastUnaryDecoder<GapBitVectorType::reverse_bit_order>;
+            DecoderType plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), std::min(plus_start_bit, G_plus->size()));
+            DecoderType minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), std::min(minus_start_bit, G_minus->size()));
+
+            // 3. Setup Low Bit Reader
+            const uint64_t* l_data = L.data();
+            size_t current_l_bit = startIndex * b;
+            size_t l_word_idx = current_l_bit >> 6;
+            size_t l_bit_offset = current_l_bit & 63;
+            
+            uint64_t l_buffer = 0;
+            size_t l_bits_available = 0;
 
             if (b > 0) {
-                l_start_bit = i * b;
-                l_word_idx = l_start_bit / 64;
-                l_bits_consumed = l_start_bit % 64;
-                if (i < endIndex) l_buffer = l_data[l_word_idx];
+                l_buffer = l_data[l_word_idx];
+                l_buffer >>= l_bit_offset;
+                l_bits_available = 64 - l_bit_offset;
             }
+            const uint64_t l_mask = (b == 64) ? ~0ULL : ((1ULL << b) - 1);
 
-            uint32_t p_buf[1], n_buf[1];
-            size_t p_idx=1, n_idx=1;
+            // 4. Batch Loop
+            size_t processed = 0;
+            constexpr size_t BATCH_SIZE = 128;
+            uint32_t p_gaps[BATCH_SIZE];
+            uint32_t n_gaps[BATCH_SIZE];
 
-            for (; i < endIndex; ++i) {
-                U low_part = 0;
-                if (b > 0) [[likely]] {
-                    uint64_t val = (l_buffer >> l_bits_consumed);
-                    if (l_bits_consumed + b > 64) {
-                        uint64_t next_word = l_data[++l_word_idx];
-                        val |= (next_word << (64 - l_bits_consumed));
-                        l_buffer = next_word;
-                        l_bits_consumed = l_bits_consumed + b - 64;
-                    } else if (l_bits_consumed + b == 64) {
-                        l_word_idx++;
-                        if (i + 1 < endIndex) l_buffer = l_data[l_word_idx];
-                        l_bits_consumed = 0;
-                    } else {
-                        l_bits_consumed += b;
+            while (processed < actual_count) {
+                size_t batch_len = std::min(BATCH_SIZE, actual_count - processed);
+
+                // Bulk Decode
+                size_t p_fetched = plus_decoder.next_batch(p_gaps, batch_len);
+                size_t n_fetched = minus_decoder.next_batch(n_gaps, batch_len);
+                
+                // Zero-fill remainder (safety)
+                for(; p_fetched < batch_len; ++p_fetched) p_gaps[p_fetched] = 0;
+                for(; n_fetched < batch_len; ++n_fetched) n_gaps[n_fetched] = 0;
+
+                // Inner Combination Loop
+                for (size_t k = 0; k < batch_len; ++k) {
+                    current_high += p_gaps[k];
+                    current_high -= n_gaps[k];
+                    
+                    uint64_t low_val = 0;
+                    if (b > 0) {
+                        if (l_bits_available >= b) {
+                            low_val = l_buffer & l_mask;
+                            l_buffer >>= b;
+                            l_bits_available -= b;
+                        } else {
+                            // Split read logic
+                            low_val = l_buffer; // Take what we have
+                            
+                            size_t needed = b - l_bits_available;
+                            l_word_idx++;
+                            uint64_t next_w = l_data[l_word_idx];
+                            
+                            uint64_t next_part = next_w & ((needed == 64) ? ~0ULL : ((1ULL << needed) - 1));
+                            
+                            low_val |= (next_part << l_bits_available);
+                            
+                            l_buffer = next_w >> needed;
+                            l_bits_available = 64 - needed;
+                        }
                     }
-                    low_part = static_cast<U>(val & l_mask);
-                }
 
-                if (p_idx >= 1) { plus_decoder.next_batch(p_buf, 1); p_idx=0; }
-                if (n_idx >= 1) { minus_decoder.next_batch(n_buf, 1); n_idx=0; }
-                
-                high_signed += static_cast<long long>(p_buf[p_idx++]);
-                high_signed -= static_cast<long long>(n_buf[n_idx++]);
-                
-                const U high_u = static_cast<U>(high_signed);
-                const U combined = low_part | (high_u << b);
-                output[write_index++] = base + static_cast<T>(combined);
+                    using U = std::make_unsigned_t<T>;
+                    U high_part = static_cast<U>(current_high);
+                    U combined = static_cast<U>(low_val) | (high_part << b);
+                    
+                    out_ptr[processed + k] = base + static_cast<T>(combined);
+                }
+                processed += batch_len;
             }
-            
-            return write_index;
+
+            return actual_count;
         }
 
         T operator[](size_t index) const override {

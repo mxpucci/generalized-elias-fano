@@ -1,5 +1,6 @@
 //
 // Fast unary-decoder utility to reconstruct run-length encoded gaps.
+// Refactored for High-Performance Hot Path.
 //
 
 #ifndef GEF_FAST_UNARY_DECODER_HPP
@@ -9,16 +10,59 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <type_traits> // For std::is_same_v logic if needed elsewhere
+#include <type_traits>
 
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+// Includes for SIMD/Bit manipulation intrinsics
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
-#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
-#include <arm_neon.h>
 #endif
 
 namespace gef {
-    
+
+    /**
+     * @brief Helper to count trailing zeros (CTZ).
+     * Used for Standard Mode (LSB -> MSB).
+     * Note: Input 0 is handled by caller (usually), but if passed, behavior depends on intrinsic.
+     * We return 64 for 0 to be safe.
+     */
+    static inline uint64_t count_trailing_zeros(uint64_t x) {
+        if (x == 0) return 64;
+#if defined(__BMI__)
+        return _tzcnt_u64(x);
+#elif defined(__GNUC__) || defined(__clang__)
+        return __builtin_ctzll(x);
+#elif defined(_MSC_VER) && defined(_M_X64)
+        return _tzcnt_u64(x);
+#else
+        unsigned long result;
+        if (_BitScanForward64(&result, x)) return result;
+        return 64;
+#endif
+    }
+
+    /**
+     * @brief Helper to count leading zeros (CLZ).
+     * Used for Reverse Mode (MSB -> LSB).
+     */
+    static inline uint64_t count_leading_zeros(uint64_t x) {
+        if (x == 0) return 64;
+#if defined(__BMI__)
+        return _lzcnt_u64(x);
+#elif defined(__GNUC__) || defined(__clang__)
+        return __builtin_clzll(x);
+#elif defined(_MSC_VER) && defined(_M_X64)
+        return _lzcnt_u64(x);
+#else
+        unsigned long result;
+        if (_BitScanReverse64(&result, x)) return 63 - result;
+        return 64;
+#endif
+    }
+
     /**
      * @brief Fast decoder for Unary codes (gaps).
      * @tparam ReverseOrder 
@@ -32,283 +76,168 @@ namespace gef {
         size_t total_bits_;
         size_t pos_;
 
-        // Standard: Mask keeps lowest 'bits' (Clear top)
-        static inline uint64_t mask_low_bits(size_t bits) {
-            return (~0ULL >> (64 - bits));
-        }
-
-        // Reverse: Mask keeps highest 'bits' (Clear bottom)
-        static inline uint64_t mask_high_bits(size_t bits) {
-            return (~0ULL << (64 - bits));
-        }
-
     public:
         FastUnaryDecoder(const uint64_t* data, size_t total_bits, size_t start_pos = 0)
             : data_(data),
               total_bits_(total_bits),
               pos_(std::min(start_pos, total_bits)) {}
 
+        /**
+         * @brief Decodes a single gap.
+         */
         inline uint64_t next() {
-            if (!data_ || total_bits_ == 0) return 0;
+            if (pos_ >= total_bits_) return 0;
 
             uint64_t count = 0;
             while (pos_ < total_bits_) {
                 const size_t word_idx = pos_ >> 6;
-                const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-                const size_t bits_rem = std::min<size_t>(64 - bit_offset, total_bits_ - pos_);
-                
+                const unsigned bit_off = pos_ & 63;
+                unsigned valid_bits = 64 - bit_off;
+
                 uint64_t word = data_[word_idx];
-                uint64_t inverted; 
+                uint64_t buffer = ~word; // Invert: Gap=0, Term=1
 
+                // Align buffer
                 if constexpr (ReverseOrder) {
-                    // Pasta Mode (MSB -> LSB)
-                    // We align the current bit of interest to the MSB (Shift Left).
-                    // Then we count leading zeros.
-                    uint64_t chunk = word << bit_offset;
-                    
-                    // If we are at the end of the stream, we must ignore garbage bits at the bottom
-                    if (bits_rem < 64) {
-                        chunk &= mask_high_bits(bits_rem);
-                    }
-                    
-                    inverted = ~chunk;
-                    
-                    // In Reverse mode, we might have masked out the bottom with 0s.
-                    // Inverting turns them to 1s. But we are looking for 0s in original (1s in inverted).
-                    // The valid area is the top 'bits_rem'.
-                    // If inverted has a 0 in the valid area, clz will find it.
-                    // If the valid area is all 1s (original was 0s), clz will be 0.
-                    // Wait, Unary code: 11110.
-                    // We look for 0.
-                    // ~chunk: 00001....
-                    // clz(~chunk) = 4. Correct.
-                    
-                    // Special case: if bits_rem < 64, the bottom bits of chunk were masked to 0.
-                    // ~chunk makes them 1. clz stops at the first 1.
-                    // If the valid part was all 0s (original 1s), we want to proceed.
-                    // clz works fine because the padding (1s) won't trigger "leading zeros".
-                    // However, we must ensure we don't read past bits_rem.
+                    buffer <<= bit_off;
                 } else {
-                    // Standard Mode (LSB -> MSB)
-                    // We align current bit to LSB (Shift Right).
-                    uint64_t chunk = word >> bit_offset;
-                    if (bits_rem < 64) {
-                        chunk &= mask_low_bits(bits_rem);
-                    }
-                    inverted = ~chunk;
-                    // Standard mask logic requires ensuring upper bits don't trigger ctz.
-                    // Inverted upper bits will be 1s (due to mask clearing chunk to 0).
-                    // ctz stops at first 1. Perfect.
+                    buffer >>= bit_off;
                 }
 
-                if constexpr (ReverseOrder) {
-                    // Look for 0 in original -> 1 in inverted
-                    // But we want to count how many 1s were in original (gap size).
-                    // Original: 1110...
-                    // Inverted: 0001...
-                    // clz returns 3. This is the gap size.
-                    
-                    // If the word was ALL 1s (11111...), Inverted is 00000...
-                    // clz returns 64.
-                    
-                    // We need to check if we found the terminator (0) within bits_rem.
-                    // Since we shifted left, we operate on the full 64-bit register.
-                    
-                    if (inverted != 0ULL) {
-                        uint64_t run = __builtin_clzll(inverted);
-                        if (run < bits_rem) {
-                            pos_ += run + 1;
-                            count += run;
-                            return count;
-                        }
+                if (buffer != 0) {
+                    uint64_t run;
+                    if constexpr (ReverseOrder) {
+                        run = count_leading_zeros(buffer);
+                    } else {
+                        run = count_trailing_zeros(buffer);
                     }
-                } else {
-                    if (inverted != 0ULL) {
-                        uint64_t run = __builtin_ctzll(inverted);
-                        if (run < bits_rem) {
-                            pos_ += run + 1;
-                            count += run;
+
+                    if (run < valid_bits) {
+                        // Found terminator
+                        // Check bounds for last word
+                        if (pos_ + run >= total_bits_) {
+                            // Terminator in garbage area
+                            count += (total_bits_ - pos_);
+                            pos_ = total_bits_;
                             return count;
                         }
+                        
+                        count += run;
+                        pos_ += run + 1;
+                        return count;
                     }
                 }
 
-                pos_ += bits_rem;
+                // Not found in valid part of this word
+                size_t bits_rem = std::min<size_t>(valid_bits, total_bits_ - pos_);
                 count += bits_rem;
+                pos_ += bits_rem;
             }
             return count;
         }
 
+        /**
+         * @brief Decodes a batch of gaps directly into 'out'.
+         * Optimized for hot path with localized state and minimal branching.
+         */
         size_t next_batch(uint32_t* out, size_t max_batch) {
-            if (!out || max_batch == 0 || !data_ || total_bits_ == 0) return 0;
+            if (!out || max_batch == 0 || pos_ >= total_bits_) return 0;
 
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-            constexpr size_t lane_cap = 8;
-#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
-            constexpr size_t lane_cap = 4;
-#else
-            constexpr size_t lane_cap = 1;
-#endif
-
-            uint32_t lane_buffer[lane_cap];
-            size_t lane_fill = 0;
             size_t produced = 0;
-            size_t pending_gap = 0;
 
-            // Helper to flush buffer to output
-            auto flush_lane = [&]() {
-                if (lane_fill == 0) return;
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-                if (lane_fill == lane_cap && produced + lane_cap <= max_batch) {
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + produced), 
-                                      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane_buffer)));
-                    produced += lane_cap;
-                    lane_fill = 0;
-                    return;
-                }
-#elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
-                if (lane_fill == lane_cap && produced + lane_cap <= max_batch) {
-                    vst1q_u32(reinterpret_cast<uint32_t*>(out + produced), vld1q_u32(lane_buffer));
-                    produced += lane_cap;
-                    lane_fill = 0;
-                    return;
-                }
-#endif
-                for (size_t i = 0; i < lane_fill && produced < max_batch; ++i) {
-                    out[produced++] = lane_buffer[i];
-                }
-                lane_fill = 0;
-            };
+            // 1. Initialize Local State
+            size_t local_pos = pos_;
+            
+            // Current word pointer and end pointer
+            const uint64_t* ptr = data_ + (local_pos >> 6);
+            const uint64_t* end_ptr = data_ + ((total_bits_ - 1) >> 6);
 
-            // Helper to push a gap into buffer
-            auto emit_gap = [&](uint32_t gap) {
-                lane_buffer[lane_fill++] = gap;
-                if (lane_fill == lane_cap || (produced + lane_fill) == max_batch) {
-                    flush_lane();
-                }
-            };
+            unsigned bit_off = local_pos & 63;
+            unsigned valid_bits = 64 - bit_off;
 
-            while ((produced + lane_fill) < max_batch && pos_ < total_bits_) {
-                const size_t word_idx = pos_ >> 6;
-                const uint32_t bit_offset = static_cast<uint32_t>(pos_ & 63);
-                size_t bits_rem = std::min<size_t>(64 - bit_offset, total_bits_ - pos_);
-                
-                uint64_t chunk;
-                
-                if constexpr (ReverseOrder) {
-                    // --- REVERSE (Pasta) LOGIC ---
-                    // Align to MSB
-                    chunk = data_[word_idx] << bit_offset;
-                    // Mask bottom garbage if near end
-                    if (bits_rem < 64) chunk &= mask_high_bits(bits_rem);
+            // 2. Pre-load buffer (Inverted)
+            // Original: 1=gap, 0=term. Inverted: 0=gap, 1=term.
+            uint64_t buffer = ~(*ptr);
 
-                    while (bits_rem > 0) {
-                        // Looking for 0 in chunk (which represents 1s in unary)
-                        // Invert so we look for 1
-                        uint64_t inv = ~chunk;
-                        
-                        // If bits_rem < 64, the bottom of 'chunk' is 0s. 
-                        // So bottom of 'inv' is 1s.
-                        // We must ignore these false positives.
-                        // However, clz searches from TOP. Bottom 1s don't matter unless top is all 0s.
-                        
-                        if (inv == 0ULL) {
-                            // All 1s in the valid part (and implicit 1s in the padding)
-                            // But wait, if bits_rem < 64, chunk had 0s at bottom. ~chunk has 1s at bottom.
-                            // inv can only be 0ULL if chunk was ALL 1s (0xFFFFFF...)
-                            // This means current word is all continuation.
-                            pending_gap += bits_rem;
-                            pos_ += bits_rem;
-                            bits_rem = 0;
-                            break;
-                        }
+            if constexpr (ReverseOrder) {
+                buffer <<= bit_off; // MSB align
+            } else {
+                buffer >>= bit_off; // LSB align
+            }
 
-                        uint64_t run = __builtin_clzll(inv);
-                        
-                        if (run >= bits_rem) {
-                            // No terminator found in the VALID part of the word
-                            pending_gap += bits_rem;
-                            pos_ += bits_rem;
-                            bits_rem = 0;
-                            break;
-                        }
+            uint32_t pending_gap = 0;
 
-                        // Terminator found
-                        pending_gap += run;
-                        emit_gap(static_cast<uint32_t>(pending_gap));
-                        pending_gap = 0;
+            // 3. Hot Loop
+            while (produced < max_batch) {
+                // If buffer is 0, it means all remaining valid bits are gaps (0s).
+                // Or we shifted in 0s (gaps) and valid part was also 0s.
+                if (buffer == 0) {
+                    pending_gap += valid_bits;
+                    local_pos += valid_bits;
 
-                        // Advance
-                        // We consumed 'run' ones and 1 terminator zero.
-                        size_t consumed = run + 1;
-                        pos_ += consumed;
-                        bits_rem -= consumed;
-                        
-                        // Shift out processed bits (Shift Left in Reverse mode)
-                        chunk <<= consumed;
-                        
-                        // Check if batch is full
-                        if ((produced + lane_fill) >= max_batch) {
-                            flush_lane();
-                            return produced;
-                        }
+                    // Move to next word
+                    if (ptr >= end_ptr) {
+                        break; // End of stream
+                    }
+                    ptr++;
+                    // Reload full word
+                    buffer = ~(*ptr);
+                    valid_bits = 64; 
+                } else {
+                    uint64_t run;
+                    if constexpr (ReverseOrder) {
+                        run = count_leading_zeros(buffer);
+                    } else {
+                        run = count_trailing_zeros(buffer);
                     }
 
-                } else {
-                    // --- STANDARD (SDSL) LOGIC ---
-                    // Align to LSB
-                    chunk = data_[word_idx] >> bit_offset;
-                    if (bits_rem < 64) chunk &= mask_low_bits(bits_rem);
-
-                    while (bits_rem > 0) {
-                        uint64_t inv = ~chunk;
-                        
-                        // Mask high garbage to avoid false ctz hits
-                        // If bits_rem < 64, high bits of chunk are 0.
-                        // inv high bits are 1.
-                        // ctz works from bottom, so high 1s don't matter unless bottom is all 0s.
-                        
-                        // If chunk was all 1s (valid part), inv is all 0s (valid part) + 1s (garbage).
-                        // To detect "All 1s in valid part", we need to check if ctz >= bits_rem.
-                        
-                        if ((inv & mask_low_bits(bits_rem)) == 0ULL) {
-                             // Valid part is all 1s (no terminator)
-                             pending_gap += bits_rem;
-                             pos_ += bits_rem;
-                             bits_rem = 0;
-                             break;
-                        }
-
-                        uint64_t run = __builtin_ctzll(inv);
-
-                        if (run >= bits_rem) {
-                            pending_gap += bits_rem;
-                            pos_ += bits_rem;
-                            bits_rem = 0;
+                    if (run < valid_bits) {
+                        // FOUND TERMINATOR
+                        // Check strict bounds if we are at the last word
+                        if (ptr == end_ptr && (local_pos + run >= total_bits_)) {
+                            // Terminator is outside valid stream (garbage)
+                            local_pos = total_bits_;
                             break;
                         }
 
-                        // Terminator found
-                        pending_gap += run;
-                        emit_gap(static_cast<uint32_t>(pending_gap));
+                        out[produced++] = pending_gap + run;
                         pending_gap = 0;
 
-                        size_t consumed = run + 1;
-                        pos_ += consumed;
-                        bits_rem -= consumed;
-                        
-                        // Shift out processed bits (Shift Right in Standard mode)
-                        chunk >>= consumed;
+                        unsigned consumed = run + 1;
+                        local_pos += consumed;
+                        valid_bits -= consumed;
 
-                        if ((produced + lane_fill) >= max_batch) {
-                            flush_lane();
-                            return produced;
+                        // Shift out consumed bits
+                        // Handle UB if valid_bits becomes 0 (shifted by 64)
+                        if (valid_bits == 0) {
+                            buffer = 0; // Force refill next iter
+                        } else {
+                            if constexpr (ReverseOrder) {
+                                buffer <<= consumed;
+                            } else {
+                                buffer >>= consumed;
+                            }
                         }
+                    } else {
+                        // False positive: Terminator found is beyond valid_bits.
+                        // This happens because we shifted in 0s (gaps) which don't trigger find,
+                        // but if the valid part was all 0s, ctz/clz might return something >= valid_bits.
+                        
+                        pending_gap += valid_bits;
+                        local_pos += valid_bits;
+
+                        if (ptr >= end_ptr) {
+                            break;
+                        }
+                        ptr++;
+                        buffer = ~(*ptr);
+                        valid_bits = 64;
                     }
                 }
             }
 
-            flush_lane();
+            // Sync state back
+            pos_ = local_pos;
             return produced;
         }
 
