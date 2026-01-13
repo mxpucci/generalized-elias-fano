@@ -8,9 +8,6 @@ foreach(test_file ${TEST_FILES})
     add_executable(${test_name} ${test_file})
     target_link_libraries(${test_name} PRIVATE gef::gef gtest_main)
     
-    # Reuse PCH from gef to speed up compilation of each test
-    target_precompile_headers(${test_name} REUSE_FROM gef)
-    
     # The dataset test requires CLI args and shouldn't be run by CTest automatically
     if(NOT test_name STREQUAL "split_point_strategy_dataset_test")
         add_test(NAME ${test_name} COMMAND ${test_name})

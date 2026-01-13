@@ -114,7 +114,6 @@ make -j$(nproc)
 ```
 gef/
 ├── include/gef/          # Public API headers
-├── src/                  # Implementation source files
 ├── tests/                # Comprehensive test suite
 ├── benchmarks/           # Performance benchmarks
 ├── examples/             # Usage examples and tutorials

@@ -123,7 +123,55 @@ set(PASTA_INCLUDE_DIR ${pasta_SOURCE_DIR}/include)
 
 
 # --- Project Sources ---
-add_subdirectory(src)
+add_library(gef INTERFACE)
+add_library(gef::gef ALIAS gef)
+
+# Set library properties
+set_target_properties(gef PROPERTIES
+    EXPORT_NAME gef
+)
+
+target_include_directories(gef
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+# Link against sdsl publicly so consumers get access to sdsl functionality
+target_link_libraries(gef INTERFACE sdsl)
+
+# SUX is header-only, so we just need to add its include directory
+target_include_directories(gef INTERFACE ${SUX_INCLUDE_DIR})
+
+# Precompile common headers to speed up compilation
+target_precompile_headers(gef INTERFACE
+    <algorithm>
+    <cmath>
+    <filesystem>
+    <fstream>
+    <iostream>
+    <memory>
+    <string>
+    <vector>
+    <utility>
+    <type_traits>
+    <sdsl/int_vector.hpp>
+)
+
+# Apply maximum optimization to the library itself
+target_compile_options(gef INTERFACE 
+    $<$<CONFIG:Release>:-O3 -march=native -ffast-math -funroll-loops>
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-ftree-vectorize -fvect-cost-model=dynamic>
+)
+
+if(GEF_DISABLE_SIMD)
+    target_compile_definitions(gef INTERFACE GEF_DISABLE_SIMD)
+endif()
+
+# For Debug builds, ensure reasonable performance while keeping debuggability
+target_compile_options(gef INTERFACE 
+    $<$<CONFIG:Debug>:-O1 -g>
+)
 
 # Link Pasta bit-vector implementation
 if(TARGET pasta_bit_vector)
