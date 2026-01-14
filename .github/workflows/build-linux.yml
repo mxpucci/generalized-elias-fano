@@ -1,8 +1,8 @@
 name: build-linux
 
-# Trigger manually from the GitHub Actions tab. You can extend this
-# section to run on pushes or pull requests if desired.
+# Trigger on every push and allow manual triggering from the GitHub Actions tab
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -39,14 +39,13 @@ jobs:
             cmake --build . -- -j\$(nproc)
           "
 
-      # Verify both benchmark variants were built successfully
+      # Verify benchmark executables were built successfully
       - name: Verify benchmark executables
         run: |
           ls -lh build/benchmarks/compression_benchmark
-          ls -lh build/benchmarks/compression_benchmark_no_omp
-          ls -lh build/benchmarks/single_thread_compression_throughput
-          ls -lh build/benchmarks/single_thread_compression_throughput_simd
-          echo "✓ All benchmark and single-thread executables built successfully"
+          ls -lh build/benchmarks/random_access_benchmark
+          ls -lh build/benchmarks/decompression_benchmark
+          echo "✓ All benchmark executables built successfully"
 
       # Ensure CLI binaries from src/ and every tracked test executable were generated.
       - name: Verify CLI and test executables

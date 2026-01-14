@@ -1,151 +1,82 @@
 #!/bin/bash
-
-# =============================================================================
-# Benchmark Runner Script
-# =============================================================================
-# This script runs compression benchmarks on all .bin files in a specified directory.
-#
-# Benchmark Strategy:
-#   - COMPRESSION benchmarks: Run in BOTH OpenMP and non-OpenMP versions
-#     (to compare parallel vs sequential compression throughput)
-#   - ALL OTHER benchmarks (Lookup, SizeInBytes, Decompression, GetElements):
-#     Run ONLY in the non-OpenMP (single-threaded) version
-#
-# Usage:
-#   ./run_benchmarks.sh <input_directory> [output_directory]
-#
-# Arguments:
-#   input_directory  - Directory containing .bin input files (required)
-#   output_directory - Directory to save JSON results (optional, default: ./benchmark_results)
-#
-# Examples:
-#   ./run_benchmarks.sh /path/to/data
-#   ./run_benchmarks.sh /path/to/data ./my_results
-# =============================================================================
-
-# Exit immediately if a command fails
 set -e
 
-# --- Parse Arguments ---
-if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    echo "Usage: $0 <input_directory> [output_directory]"
-    echo ""
-    echo "Arguments:"
-    echo "  input_directory   Directory containing .bin input files (required)"
-    echo "  output_directory  Directory to save JSON results (optional, default: ./benchmark_results)"
-    echo ""
-    echo "Examples:"
-    echo "  $0 /Users/michelangelopucci/Downloads/Data"
-    echo "  $0 /path/to/data ./my_results"
-    echo ""
-    echo "This script runs:"
-    echo "  - compression_benchmark (WITH OpenMP): Compression benchmarks only (parallel)"
-    echo "  - compression_benchmark_no_omp (WITHOUT OpenMP): ALL benchmarks (single-threaded)"
-    echo ""
-    echo "Compression throughput can be compared between parallel and sequential versions."
-    echo "All other benchmarks (Lookup, SizeInBytes, Decompression, GetElements) run single-threaded only."
-    exit 0
-fi
-
-INPUT_DIR="$1"
-OUTPUT_DIR="${2:-./benchmark_results}"
-
-# --- Configuration ---
-BENCH_WITH_OMP="./build/benchmarks/compression_benchmark"
-BENCH_NO_OMP="./build/benchmarks/compression_benchmark_no_omp"
-# ---------------------
-
-# --- Validation ---
-if [ ! -d "$INPUT_DIR" ]; then
-    echo "Error: Input directory '$INPUT_DIR' does not exist."
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <input_path> [num_threads] [output_directory]"
+    echo "  input_path: Can be a single .bin file or a directory containing .bin files"
     exit 1
 fi
 
-if [ ! -f "$BENCH_WITH_OMP" ]; then
-    echo "Error: Benchmark executable '$BENCH_WITH_OMP' not found."
-    echo "Please build the benchmarks first with: cd build && make compression_benchmark"
-    exit 1
-fi
+INPUT_PATH="$1"
+NUM_THREADS="${2:-1}"
+OUTPUT_DIR="${3:-./benchmark_results}"
 
-if [ ! -f "$BENCH_NO_OMP" ]; then
-    echo "Error: Benchmark executable '$BENCH_NO_OMP' not found."
-    echo "Please build the benchmarks first with: cd build && make compression_benchmark_no_omp"
-    exit 1
-fi
-
-# Count .bin files
-bin_count=$(find "$INPUT_DIR" -maxdepth 1 -name "*.bin" -type f | wc -l | tr -d ' ')
-if [ "$bin_count" -eq 0 ]; then
-    echo "Error: No .bin files found in '$INPUT_DIR'"
-    exit 1
-fi
-
-# --- Setup ---
-echo "========================================================================="
-echo "Benchmark Configuration"
-echo "========================================================================="
-echo "Input directory:  $INPUT_DIR"
-echo "Output directory: $OUTPUT_DIR"
-echo "Files to process: $bin_count .bin file(s)"
-echo "Benchmark variants:"
-echo "  1. WITH OpenMP:    $BENCH_WITH_OMP (Compression only)"
-echo "  2. WITHOUT OpenMP: $BENCH_NO_OMP (ALL benchmarks)"
-echo "========================================================================="
-echo ""
-
-# Create the output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# --- Run Benchmarks ---
-file_counter=0
+# Collect files
+FILES=()
+if [ -f "$INPUT_PATH" ]; then
+    FILES+=("$INPUT_PATH")
+elif [ -d "$INPUT_PATH" ]; then
+    # Use nullglob to handle case where no files match
+    shopt -s nullglob
+    FILES=("$INPUT_PATH"/*.bin)
+    shopt -u nullglob
+else
+    echo "Error: '$INPUT_PATH' is not a valid file or directory"
+    exit 1
+fi
 
-for input_file in "$INPUT_DIR"/*.bin; do
-  # Check if the file exists to avoid errors with empty glob matches
-  if [ -f "$input_file" ]; then
-    file_counter=$((file_counter + 1))
-    
-    # Get the base name of the input file (e.g., "AP.bin" -> "AP")
-    base_name=$(basename "$input_file" .bin)
-    
-    echo "[$file_counter/$bin_count] Processing '$base_name.bin'..."
-    
-    # --- Run WITH OpenMP (Compression benchmarks only) ---
-    output_with_omp="$OUTPUT_DIR/${base_name}_with_omp.json"
-    echo "  -> Running WITH OpenMP (Compression benchmarks only, parallel)..."
-    "$BENCH_WITH_OMP" "$input_file" \
-        --benchmark_format=json \
-        --benchmark_context=openmp=enabled \
-        --benchmark_context=variant=with_omp \
-        --benchmark_context=bitvector=sdsl \
-        --benchmark_context=dataset="$base_name" \
-        > "$output_with_omp" 2>&1
-    echo "     Saved to: ${base_name}_with_omp.json"
-    
-    # --- Run WITHOUT OpenMP (ALL benchmarks, single-threaded) ---
-    output_no_omp="$OUTPUT_DIR/${base_name}_no_omp.json"
-    echo "  -> Running WITHOUT OpenMP (ALL benchmarks, single-threaded)..."
-    "$BENCH_NO_OMP" "$input_file" \
-        --benchmark_format=json \
-        --benchmark_context=openmp=disabled \
-        --benchmark_context=variant=no_omp \
-        --benchmark_context=bitvector=pasta \
-        --benchmark_context=dataset="$base_name" \
-        > "$output_no_omp" 2>&1
-    echo "     Saved to: ${base_name}_no_omp.json"
-    
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "No .bin files found in $INPUT_PATH"
+    exit 1
+fi
+
+export OMP_NUM_THREADS=$NUM_THREADS
+
+echo "Running benchmarks with OMP_NUM_THREADS=$OMP_NUM_THREADS"
+echo "Input: $INPUT_PATH"
+echo "Output Directory: $OUTPUT_DIR"
+echo "Found ${#FILES[@]} file(s) to process."
+
+BENCH_COMPRESSION="./build/benchmarks/compression_benchmark"
+BENCH_RANDOM="./build/benchmarks/random_access_benchmark"
+BENCH_DECOMP="./build/benchmarks/decompression_benchmark"
+
+# Check if executables exist
+if [ ! -f "$BENCH_COMPRESSION" ] || [ ! -f "$BENCH_RANDOM" ] || [ ! -f "$BENCH_DECOMP" ]; then
+    echo "Error: Benchmark executables not found in ./build/benchmarks/"
+    echo "Please build them first (e.g., cd build && cmake .. && make)"
+    exit 1
+fi
+
+for FILE in "${FILES[@]}"; do
+    BASENAME=$(basename "$FILE" .bin)
+    echo "==================================================="
+    echo "Processing: $BASENAME"
+    echo "File: $FILE"
+    echo "==================================================="
+
+    # Run Compression Benchmark
+    echo "  -> Running Compression Benchmarks..."
+    "$BENCH_COMPRESSION" "$FILE" \
+        --benchmark_out="$OUTPUT_DIR/${BASENAME}_compression.json" \
+        --benchmark_out_format=json
+
+    # Run Random Access Benchmark
+    echo "  -> Running Random Access Benchmarks..."
+    "$BENCH_RANDOM" "$FILE" \
+        --benchmark_out="$OUTPUT_DIR/${BASENAME}_random_access.json" \
+        --benchmark_out_format=json
+
+    # Run Decompression Benchmark
+    echo "  -> Running Decompression Benchmarks..."
+    "$BENCH_DECOMP" "$FILE" \
+        --benchmark_out="$OUTPUT_DIR/${BASENAME}_decompression.json" \
+        --benchmark_out_format=json
+        
     echo ""
-  fi
 done
 
-echo "========================================================================="
-echo "All benchmarks complete!"
-echo "========================================================================="
-echo "Results saved in: $OUTPUT_DIR"
-echo ""
-echo "To compare compression throughput between OpenMP and non-OpenMP versions:"
-echo "  - Files ending in '_with_omp.json': Compression benchmarks only (parallel)"
-echo "  - Files ending in '_no_omp.json': ALL benchmarks (single-threaded)"
-echo ""
-echo "Use Google Benchmark compare.py to compare Compression benchmarks:"
-echo "  compare.py benchmarks ${OUTPUT_DIR}/<file>_no_omp.json ${OUTPUT_DIR}/<file>_with_omp.json"
-echo "========================================================================="
+echo "---------------------------------------------------"
+echo "All benchmarks completed. Results saved to $OUTPUT_DIR"
