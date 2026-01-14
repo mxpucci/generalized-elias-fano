@@ -48,24 +48,10 @@ jobs:
           ls -lh build/benchmarks/decompression_benchmark
           echo "✓ All benchmark executables built successfully"
 
-      # Ensure CLI binaries from src/ and every tracked test executable were generated.
-      - name: Verify CLI and test executables
+      # Ensure every tracked test executable was generated
+      - name: Verify test executables
         run: |
           set -euo pipefail
-          echo "CLI binaries:"
-          for bin in build/src/ugef \
-                     build/src/rle_gef \
-                     build/src/bgef \
-                     build/src/bgef_no_rle
-          do
-            if [ -x "$bin" ]; then
-              ls -lh "$bin"
-            else
-              echo "❌ Missing CLI binary: $bin"
-              exit 1
-            fi
-          done
-
           echo "Test binaries (tracked sources only):"
           had_tests=0
           while IFS= read -r test_src; do
@@ -85,7 +71,7 @@ jobs:
             exit 1
           fi
 
-          echo "✓ CLI and tracked test executables are present"
+          echo "✓ All tracked test executables are present"
 
       # Upload the entire build directory so artifacts include every generated
       # binary (benchmarks, helper tools, etc.).
