@@ -12,7 +12,7 @@ void RegisterRandomAccess(const std::string& name) {
              size_t f_idx = static_cast<size_t>(file_idx);
              const auto& path = g_input_files[f_idx];
              
-             state.PauseTiming();
+             // Load dataset and build GEF outside the benchmark loop
              auto dataset = load_custom_dataset(path);
              auto data = std::move(dataset.data);
              if (data.empty()) {
@@ -28,15 +28,8 @@ void RegisterRandomAccess(const std::string& name) {
              size_t num_queries = 1000000;
              std::vector<size_t> indices(num_queries);
              std::mt19937 gen(42);
-             // Ensure we don't access out of bounds
-             if (data.empty()) { // Should be caught above, but safe check
-                 state.SkipWithError("Empty data");
-                 return;
-             }
              std::uniform_int_distribution<size_t> dist(0, data.size() - 1);
              for(auto& idx : indices) idx = dist(gen);
-             
-             state.ResumeTiming();
              
              size_t query_idx = 0;
              for (auto _ : state) {

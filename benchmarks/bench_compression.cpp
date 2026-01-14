@@ -12,11 +12,9 @@ void RegisterCompression(const std::string& name) {
              size_t f_idx = static_cast<size_t>(file_idx);
              const auto& path = g_input_files[f_idx];
              
-             state.PauseTiming();
-             // Use custom loader
+             // Load dataset outside the loop (only once)
              auto dataset = load_custom_dataset(path);
              auto data = std::move(dataset.data);
-             state.ResumeTiming();
              
              for (auto _ : state) {
                 GefType gef_struct(data);                
@@ -39,7 +37,7 @@ void RegisterCompression(const std::string& name) {
                  state.SetBytesProcessed(state.iterations() * data.size() * sizeof(uint64_t));
              }
              
-        }, i)->Unit(benchmark::kMillisecond)->UseManualTime();
+        }, i)->Unit(benchmark::kMillisecond);
     }
 }
 

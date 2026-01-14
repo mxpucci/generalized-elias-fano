@@ -11,7 +11,7 @@ void RegisterDecompression(const std::string& name) {
              size_t f_idx = static_cast<size_t>(file_idx);
              const auto& path = g_input_files[f_idx];
              
-             state.PauseTiming();
+             // Load dataset and build GEF outside the benchmark loop
              auto dataset = load_custom_dataset(path);
              auto data = std::move(dataset.data);
              if (data.empty()) {
@@ -21,8 +21,6 @@ void RegisterDecompression(const std::string& name) {
              
              GefType gef_struct(data);
              std::vector<uint64_t> output(data.size());
-             
-             state.ResumeTiming();
              
              for (auto _ : state) {
                  gef_struct.get_elements(0, data.size(), output);
