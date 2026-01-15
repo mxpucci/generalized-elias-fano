@@ -48,6 +48,8 @@ class UniformPartitioning : public IGEF<T> {
     static_assert(K > 0, "Block size K cannot be zero.");
 
 public:
+    constexpr static size_t MIN_ELEMENTS_PER_THREAD = 100000;
+
     /**
      * @brief Constructs a UniformPartitioning by compressing data in blocks.
      * @param data The input vector to compress.
@@ -111,12 +113,18 @@ public:
         };
 
     #if GEF_USE_OPENMP
-        // resize() on vector<optional<T>> creates N empty optionals - trivially cheap!
-        // No Compressor default construction. Each thread then constructs via emplace().
-        // This gives constant throughput regardless of partition count.
         m_partitions.resize(num_partitions);
         
-        #pragma omp parallel
+        
+        const size_t elements_limit = std::max<size_t>(1, total_requested / MIN_ELEMENTS_PER_THREAD);
+        
+        int max_threads = omp_get_max_threads();
+        int n_threads = std::max(1, std::min({
+            max_threads, 
+            static_cast<int>(num_partitions_spanned), 
+            static_cast<int>(elements_limit)
+        }));
+        #pragma omp parallel num_threads(n_threads)
         {
             // Thread-local buffer to avoid repeated allocations in fallback cases
             std::vector<T> buffer;
@@ -258,7 +266,16 @@ public:
             std::vector<std::vector<T>> partition_results(num_partitions_spanned);
             std::vector<size_t> partition_written(num_partitions_spanned, 0);
             
-            #pragma omp parallel for schedule(static)
+            const size_t elements_limit = std::max<size_t>(1, total_requested / MIN_ELEMENTS_PER_THREAD);
+            
+            int max_threads = omp_get_max_threads();
+            int n_threads = std::max(1, std::min({
+                max_threads, 
+                static_cast<int>(num_partitions_spanned), 
+                static_cast<int>(elements_limit)
+            }));
+
+            #pragma omp parallel for schedule(static) num_threads(n_threads)
             for (size_t i = 0; i < num_partitions_spanned; ++i) {
                 const size_t p = start_partition + i;
                 const size_t partition_start = p * K;
