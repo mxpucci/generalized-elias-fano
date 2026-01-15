@@ -7,13 +7,14 @@
 
 #include "IGEF.hpp"
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <type_traits>
 
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD) && false
 #include <immintrin.h>
 #endif
 
@@ -52,7 +53,9 @@ GapComputation variation_of_original_vec(
 
     // first gap is always non-negative since min_val <= vec[0]
     {
-        sum_pos += (static_cast<uint64_t>(vec[0]) - static_cast<uint64_t>(min_val));
+        uint64_t diff = (static_cast<uint64_t>(vec[0]) - static_cast<uint64_t>(min_val));
+        if (std::numeric_limits<size_t>::max() - sum_pos < diff) sum_pos = std::numeric_limits<size_t>::max();
+        else sum_pos += diff;
         ++pos_gaps;             // count the initial positive gap
     }
 
@@ -74,11 +77,13 @@ GapComputation variation_of_original_vec(
             if (diff == 0) {
                 ++zero_gaps;
             }
+            if (std::numeric_limits<size_t>::max() - sum_pos < mag) sum_pos = std::numeric_limits<size_t>::max();
+            else sum_pos += mag;
         } else {
             ++neg_gaps;
+            if (std::numeric_limits<size_t>::max() - sum_neg < mag) sum_neg = std::numeric_limits<size_t>::max();
+            else sum_neg += mag;
         }
-        sum_pos += is_positive ? mag : 0;
-        sum_neg += is_positive ? 0 : mag;
     }
 
     result.positive_gaps = pos_gaps;
@@ -156,12 +161,28 @@ GapComputation variation_of_shifted_vec(
                                 }(range);
 
     const WI first_gap = get_gap(v[0], min_val, b);
-    result.sum_of_positive_gaps += static_cast<size_t>(first_gap);
+    
+    // Check overflow for first gap
+    if (first_gap >= 0) {
+        if (static_cast<size_t>(first_gap) > std::numeric_limits<size_t>::max()) {
+            result.sum_of_positive_gaps = std::numeric_limits<size_t>::max();
+        } else {
+            result.sum_of_positive_gaps += static_cast<size_t>(first_gap);
+        }
+    }
+    
     result.positive_gaps++;
     if (is_exception(0, first_gap, total_bits))
         result.positive_exceptions_count++;
-    else
-        result.sum_of_positive_gaps_without_exception += static_cast<size_t>(first_gap);
+    else {
+        if (first_gap >= 0) {
+            if (static_cast<size_t>(first_gap) > std::numeric_limits<size_t>::max()) {
+                result.sum_of_positive_gaps_without_exception = std::numeric_limits<size_t>::max();
+            } else {
+                result.sum_of_positive_gaps_without_exception += static_cast<size_t>(first_gap);
+            }
+        }
+    }
     
     for (size_t i = 1; i < n; ++i) {
         const WI gap = get_gap(v[i], v[i - 1], b);
@@ -172,14 +193,34 @@ GapComputation variation_of_shifted_vec(
             if (gap == 0) {
                 ++zero_gap_count;
             }
-            result.sum_of_positive_gaps += g;
-            if (!exception) result.sum_of_positive_gaps_without_exception += g;
+            // Saturating add
+            if (std::numeric_limits<size_t>::max() - result.sum_of_positive_gaps < g)
+                result.sum_of_positive_gaps = std::numeric_limits<size_t>::max();
+            else
+                result.sum_of_positive_gaps += g;
+
+            if (!exception) {
+                if (std::numeric_limits<size_t>::max() - result.sum_of_positive_gaps_without_exception < g)
+                    result.sum_of_positive_gaps_without_exception = std::numeric_limits<size_t>::max();
+                else
+                    result.sum_of_positive_gaps_without_exception += g;
+            }
             if (exception)  result.positive_exceptions_count += 1;
         } else {
             const size_t g = static_cast<size_t>(-gap);
             result.negative_gaps++;
-            if (!exception) result.sum_of_negative_gaps_without_exception += g;
-            result.sum_of_negative_gaps += g;
+            if (!exception) {
+                 if (std::numeric_limits<size_t>::max() - result.sum_of_negative_gaps_without_exception < g)
+                    result.sum_of_negative_gaps_without_exception = std::numeric_limits<size_t>::max();
+                else
+                    result.sum_of_negative_gaps_without_exception += g;
+            }
+            
+            if (std::numeric_limits<size_t>::max() - result.sum_of_negative_gaps < g)
+                result.sum_of_negative_gaps = std::numeric_limits<size_t>::max();
+            else
+                result.sum_of_negative_gaps += g;
+
             if (exception)  result.negative_exceptions_count += 1;
         }
     }
@@ -188,7 +229,6 @@ GapComputation variation_of_shifted_vec(
     return result;
 }
 
-// Replace the entire function starting from template<typename T> total_variation_of_shifted_vec_with_multiple_shifts to its closing brace with this corrected version
 
 template<typename C>
 std::vector<GapComputation>
@@ -237,6 +277,13 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         return _mm256_xor_si256(signed_gt, xor_signs);
     };
 
+    auto sadd = [&](__m256i a, __m256i b) -> __m256i {
+        __m256i sum = _mm256_add_epi64(a, b);
+        // Overflow if sum < a (unsigned). Equivalent to a > sum.
+        __m256i wrapped = ugt(a, sum);
+        return _mm256_or_si256(sum, wrapped);
+    };
+
     for (size_t b_group = min_b; b_group <= max_b; b_group += SIMD_LANES) {
         size_t group_size = std::min(SIMD_LANES, static_cast<size_t>(max_b - b_group + 1));
 
@@ -275,13 +322,13 @@ total_variation_of_shifted_vec_with_multiple_shifts(
         __m256i is_exc = (rule == ExceptionRule::None) ? zero_vec : _mm256_set1_epi64x(-1LL);
         __m256i pos_mask = is_pos;
         __m256i neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
-        sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
-        sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
+        sum_pos = sadd(sum_pos, _mm256_and_si256(mag, pos_mask));
+        sum_neg = sadd(sum_neg, _mm256_and_si256(mag, neg_mask));
         pos_gaps = _mm256_add_epi64(pos_gaps, _mm256_srli_epi64(pos_mask, 63));
         neg_gaps = _mm256_add_epi64(neg_gaps, _mm256_srli_epi64(neg_mask, 63));
         __m256i no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
-        sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
-        sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
+        sum_pos_no_exc = sadd(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
+        sum_neg_no_exc = sadd(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
         pos_exc = _mm256_add_epi64(pos_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, pos_mask), 63));
         neg_exc = _mm256_add_epi64(neg_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, neg_mask), 63));
         
@@ -309,23 +356,23 @@ total_variation_of_shifted_vec_with_multiple_shifts(
                 hbits = _mm256_blendv_epi8(zero_vec, hbits, gt_zero);
                 
                 if (rule == ExceptionRule::BGEF) {
-                    __m256i threshold = _mm256_add_epi64(mag, _mm256_set1_epi64x(2));
+                    __m256i threshold = sadd(mag, _mm256_set1_epi64x(2));
                     is_exc = ugt(threshold, hbits);
                 } else if (rule == ExceptionRule::UGEF) {
-                    __m256i threshold = _mm256_add_epi64(mag, one_vec);
+                    __m256i threshold = sadd(mag, one_vec);
                     is_exc = ugt(threshold, hbits);
                 }
             }
             
             pos_mask = is_pos;
             neg_mask = _mm256_xor_si256(pos_mask, _mm256_set1_epi64x(-1LL));
-            sum_pos = _mm256_add_epi64(sum_pos, _mm256_and_si256(mag, pos_mask));
-            sum_neg = _mm256_add_epi64(sum_neg, _mm256_and_si256(mag, neg_mask));
+            sum_pos = sadd(sum_pos, _mm256_and_si256(mag, pos_mask));
+            sum_neg = sadd(sum_neg, _mm256_and_si256(mag, neg_mask));
             pos_gaps = _mm256_add_epi64(pos_gaps, _mm256_srli_epi64(pos_mask, 63));
             neg_gaps = _mm256_add_epi64(neg_gaps, _mm256_srli_epi64(neg_mask, 63));
             no_exc_mask = _mm256_cmpeq_epi64(is_exc, zero_vec);
-            sum_pos_no_exc = _mm256_add_epi64(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
-            sum_neg_no_exc = _mm256_add_epi64(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
+            sum_pos_no_exc = sadd(sum_pos_no_exc, _mm256_and_si256(mag, _mm256_and_si256(pos_mask, no_exc_mask)));
+            sum_neg_no_exc = sadd(sum_neg_no_exc, _mm256_and_si256(mag, _mm256_and_si256(neg_mask, no_exc_mask)));
             pos_exc = _mm256_add_epi64(pos_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, pos_mask), 63));
             neg_exc = _mm256_add_epi64(neg_exc, _mm256_srli_epi64(_mm256_and_si256(is_exc, neg_mask), 63));
         }
