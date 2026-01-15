@@ -84,7 +84,42 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/simongog/sdsl-lite.git
     GIT_TAG        master # It is recommended to use a specific tag/commit
 )
-FetchContent_MakeAvailable(sdsl-lite)
+FetchContent_GetProperties(sdsl-lite)
+if(NOT sdsl-lite_POPULATED)
+    FetchContent_Populate(sdsl-lite)
+    
+    # Initialize submodules manually to allow patching
+    find_package(Git REQUIRED)
+    if(EXISTS "${sdsl-lite_SOURCE_DIR}/.git")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+            WORKING_DIRECTORY ${sdsl-lite_SOURCE_DIR}
+        )
+    endif()
+
+    # Patch sdsl-lite main CMakeLists.txt
+    file(READ "${sdsl-lite_SOURCE_DIR}/CMakeLists.txt" SDSL_CMAKE_CONTENT)
+    string(REPLACE "cmake_minimum_required(VERSION 2.8.11)" "cmake_minimum_required(VERSION 3.14)" SDSL_CMAKE_CONTENT "${SDSL_CMAKE_CONTENT}")
+    file(WRITE "${sdsl-lite_SOURCE_DIR}/CMakeLists.txt" "${SDSL_CMAKE_CONTENT}")
+    
+    # Patch libdivsufsort CMakeLists.txt
+    set(DIVSUF_CMAKE "${sdsl-lite_SOURCE_DIR}/external/libdivsufsort/CMakeLists.txt")
+    if(EXISTS "${DIVSUF_CMAKE}")
+        file(READ "${DIVSUF_CMAKE}" DIVSUF_CONTENT)
+        string(REGEX REPLACE "cmake_minimum_required\\(VERSION [0-9.]+\\)" "cmake_minimum_required(VERSION 3.14)" DIVSUF_CONTENT "${DIVSUF_CONTENT}")
+        file(WRITE "${DIVSUF_CMAKE}" "${DIVSUF_CONTENT}")
+    endif()
+
+    # Patch googletest CMakeLists.txt
+    set(GTEST_CMAKE "${sdsl-lite_SOURCE_DIR}/external/googletest/googletest/CMakeLists.txt")
+    if(EXISTS "${GTEST_CMAKE}")
+        file(READ "${GTEST_CMAKE}" GTEST_CONTENT)
+        string(REGEX REPLACE "cmake_minimum_required\\(VERSION [0-9.]+\\)" "cmake_minimum_required(VERSION 3.14)" GTEST_CONTENT "${GTEST_CONTENT}")
+        file(WRITE "${GTEST_CMAKE}" "${GTEST_CONTENT}")
+    endif()
+    
+    add_subdirectory(${sdsl-lite_SOURCE_DIR} ${sdsl-lite_BINARY_DIR})
+endif()
 
 # --- Secondary Dependency: SUX (Header-only library) ---
 FetchContent_Declare(
