@@ -83,3 +83,5 @@ jobs:
             build/benchmarks/
             build/tests/
             run_benchmarks.sh
+            !build/benchmarks/CMakeFiles/
+            !build/tests/CMakeFiles/

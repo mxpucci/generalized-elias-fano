@@ -13,6 +13,7 @@
 // Configuration globals
 std::string g_compressor_filter = "RLE_GEF";
 gef::SplitPointStrategy g_strategy = gef::OPTIMAL_SPLIT_POINT;
+std::string g_random_access_mode = "enabled";
 int g_threads = 1;
 
 // ==========================================
@@ -93,7 +94,7 @@ void register_variant(const std::string& name) {
         std::string filename = std::filesystem::path(path).filename().string();
 
         // 1. Random Access Enabled
-        {
+        if (g_random_access_mode == "enabled" || g_random_access_mode == "both") {
             std::string bench_name = filename + "/" + name + "/" + std::to_string(Size) + "/RA_Enabled";
             benchmark::RegisterBenchmark(bench_name.c_str(), [path](benchmark::State& state) {
                 RunBenchmark<CompressorT<int64_t, Size, true>, Size, true>(state, path);
@@ -101,7 +102,7 @@ void register_variant(const std::string& name) {
         }
 
         // 2. Random Access Disabled
-        {
+        if (g_random_access_mode == "disabled" || g_random_access_mode == "both") {
             std::string bench_name = filename + "/" + name + "/" + std::to_string(Size) + "/RA_Disabled";
             benchmark::RegisterBenchmark(bench_name.c_str(), [path](benchmark::State& state) {
                 RunBenchmark<CompressorT<int64_t, Size, false>, Size, false>(state, path);
@@ -146,6 +147,7 @@ void print_usage(const char* prog) {
     std::cerr << "Options:\n";
     std::cerr << "  --compressor NAME       Compressor to benchmark (default: RLE_GEF)\n";
     std::cerr << "  --strategy STRAT        OPTIMAL or APPROXIMATE (default: OPTIMAL)\n";
+    std::cerr << "  --random-access MODE    enabled, disabled, or both (default: enabled)\n";
     std::cerr << "  --threads N             Number of threads for parallel compression (default: 1)\n";
     std::cerr << "  [Google Benchmark Flags] (e.g., --benchmark_out=res.json --benchmark_format=json)\n\n";
     std::cerr << "Available compressors: RLE_GEF, B_GEF, B_GEF_APPROXIMATE, B_STAR_GEF, B_STAR_GEF_APPROXIMATE, U_GEF, U_GEF_APPROXIMATE\n";
@@ -163,6 +165,12 @@ int main(int argc, char** argv) {
         } else if (arg == "--strategy" && i + 1 < argc) {
             std::string s = argv[++i];
             g_strategy = (s == "APPROXIMATE") ? gef::APPROXIMATE_SPLIT_POINT : gef::OPTIMAL_SPLIT_POINT;
+        } else if (arg == "--random-access" && i + 1 < argc) {
+            g_random_access_mode = argv[++i];
+            if (g_random_access_mode != "enabled" && g_random_access_mode != "disabled" && g_random_access_mode != "both") {
+                std::cerr << "Invalid random access mode: " << g_random_access_mode << ". Using default: enabled\n";
+                g_random_access_mode = "enabled";
+            }
         } else if (arg == "--threads" && i + 1 < argc) {
             g_threads = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
@@ -208,6 +216,7 @@ int main(int argc, char** argv) {
     std::cout << "Configuration:\n";
     std::cout << "  Compressor: " << g_compressor_filter << "\n";
     std::cout << "  Strategy: " << (g_strategy == gef::OPTIMAL_SPLIT_POINT ? "OPTIMAL" : "APPROXIMATE") << "\n";
+    std::cout << "  Random Access: " << g_random_access_mode << "\n";
     std::cout << "  Threads: " << g_threads << "\n";
     std::cout << "  Datasets: " << g_input_files.size() << "\n\n";
 
