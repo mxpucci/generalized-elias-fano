@@ -28,7 +28,7 @@ jobs:
             STATIC_OMP=\$(gcc -print-file-name=libgomp.a) && \
             
             mkdir -p build && cd build && \
-            cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.14 \
                      -DCMAKE_BUILD_TYPE=Release \
                      -DCMAKE_CXX_STANDARD=20 \
                      -DCMAKE_CXX_FLAGS=\"-Wno-error=template-body\" \
