@@ -118,25 +118,17 @@ public:
         
         #pragma omp parallel
         {
-            const int num_threads = omp_get_num_threads();
-            const int thread_id = omp_get_thread_num();
-            
-            // Divide partitions evenly among threads
-            const size_t base_count = num_partitions / static_cast<size_t>(num_threads);
-            const size_t remainder = num_partitions % static_cast<size_t>(num_threads);
-            const size_t my_start = static_cast<size_t>(thread_id) * base_count 
-                                  + std::min(static_cast<size_t>(thread_id), remainder);
-            const size_t my_count = base_count + (static_cast<size_t>(thread_id) < remainder ? 1 : 0);
-            const size_t my_end = my_start + my_count;
-            
             // Thread-local buffer to avoid repeated allocations in fallback cases
             std::vector<T> buffer;
             if constexpr (!can_use_view && !accepts_vector_value) {
                 buffer.reserve(K);
             }
 
-            // Construct directly at target indices - no merge needed!
-            for (size_t p = my_start; p < my_end; ++p) {
+            // Use dynamic scheduling for better load balancing
+            // Chunk size of 16 provides good balance between scheduling overhead and load distribution
+            // Threads that finish early can pick up more work, improving overall parallel efficiency
+            #pragma omp for schedule(dynamic, 16)
+            for (size_t p = 0; p < num_partitions; ++p) {
                 const size_t start = p * K;
                 const size_t end   = std::min(start + K, data.size());
                 const size_t len   = end - start;

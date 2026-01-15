@@ -17,3 +17,11 @@ target_compile_options(random_access_benchmark PRIVATE -O3 -march=native)
 add_executable(decompression_benchmark bench_decompression.cpp)
 target_link_libraries(decompression_benchmark PRIVATE gef benchmark::benchmark OpenMP::OpenMP_CXX)
 target_compile_options(decompression_benchmark PRIVATE -O3 -march=native)
+
+add_executable(multithread_scalability bench_multithread_scalability.cpp)
+target_link_libraries(multithread_scalability PRIVATE gef OpenMP::OpenMP_CXX)
+target_compile_options(multithread_scalability PRIVATE -O3 -march=native)
+
+add_executable(bench_partition_size_trade_off bench_partition_size_trade_off.cpp)
+target_link_libraries(bench_partition_size_trade_off PRIVATE gef benchmark::benchmark OpenMP::OpenMP_CXX)
+target_compile_options(bench_partition_size_trade_off PRIVATE -O3 -march=native)
