@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generalized Elias-Fano (GEF) | Compressed Indexing for Arbitrary Sequences</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .hero-bg {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        }
+        .code-block {
+            background-color: #1e293b;
+            color: #e2e8f0;
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased">
+
+    <header class="hero-bg border-b border-slate-200">
+        <div class="max-w-6xl mx-auto px-6 py-16 text-center">
+            <div class="inline-block bg-slate-200 text-slate-700 text-xs font-semibold px-3 py-1 rounded-full mb-4">
+                Under Submission
+            </div>
+            
+            <h1 class="text-4xl md:text-6xl font-bold tracking-tight text-slate-900 mb-6">
+                Generalized Elias-Fano
+            </h1>
+            <p class="text-xl md:text-2xl text-slate-600 max-w-3xl mx-auto mb-8 font-light">
+                The first compressed index to offer simultaneous state-of-the-art compression, constant-time random access, and high throughput for <span class="font-semibold text-blue-600">arbitrary</span> integer sequences.
+            </p>
+
+            <div class="flex flex-wrap justify-center gap-6 text-sm text-slate-600 mb-10">
+                <a href="https://michelangelopucci.com" target="_blank" class="flex items-center gap-2 hover:text-blue-600 transition">
+                    <i class="fas fa-user-circle text-slate-400"></i>
+                    <span>Michelangelo Pucci (ETH Zürich)</span>
+                </a>
+                <a href="https://pages.di.unipi.it/ferragina/" target="_blank" class="flex items-center gap-2 hover:text-blue-600 transition">
+                    <i class="fas fa-user-circle text-slate-400"></i>
+                    <span>Paolo Ferragina (Sant'Anna & Univ. Pisa)</span>
+                </a>
+            </div>
+
+            <div class="flex flex-wrap justify-center gap-4">
+                <a href="https://github.com/mxpucci/generalized-elias-fano" class="bg-slate-900 hover:bg-slate-800 text-white font-semibold py-3 px-6 rounded-lg transition flex items-center gap-2">
+                    <i class="fab fa-github"></i> Core Library
+                </a>
+                <a href="https://github.com/mxpucci/gef-experiments" class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold py-3 px-6 rounded-lg transition flex items-center gap-2">
+                    <i class="fas fa-flask"></i> Benchmarks & Data
+                </a>
+                <a href="#" onclick="alert('Coming soon'); return false;" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition flex items-center gap-2">
+                    <i class="fas fa-file-pdf"></i> Read Paper
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <section class="py-16 bg-white">
+        <div class="max-w-4xl mx-auto px-6">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-900 mb-4">Why GEF?</h2>
+                <div class="w-16 h-1 bg-blue-600 mx-auto rounded"></div>
+            </div>
+            
+            <div class="grid md:grid-cols-2 gap-12 items-center">
+                <div class="bg-red-50 p-6 rounded-xl border border-red-100 h-full">
+                    <h3 class="text-lg font-bold text-red-800 mb-2"><i class="fas fa-times-circle mr-2"></i>The Limitation</h3>
+                    <p class="text-slate-700">
+                        The classic <strong>Elias-Fano</strong> encoding is the gold standard for compression, but it is strictly limited to <strong>sorted (monotonic)</strong> sequences.
+                        <br><br>
+                        When it comes to non-sorted data, there are many solutions, but all of them fail to simultaneously combine <strong>high compression ratios</strong>, <strong>high-throughput</strong>, and <strong>fast random access</strong> support.
+                    </p>
+                </div>
+                <div class="bg-green-50 p-6 rounded-xl border border-green-100 h-full">
+                    <h3 class="text-lg font-bold text-green-800 mb-2"><i class="fas fa-check-circle mr-2"></i>The GEF Solution</h3>
+                    <p class="text-slate-700">
+                        <strong>GEF</strong> bridges this gap by exploiting runs and gaps in the high-order bits of integers.
+                        <br><br>
+                        It unlocks compression performance typical of general purpose compressors (e.g., <strong>Brotli</strong> and <strong>Zstd</strong>) while retaining the ability to access any element in <strong>constant time</strong>.
+                        <br><br>
+                        For some real-world datasets (e.g., Time Series), GEF even <strong>approaches the theoretical lower bound</strong>.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-16 bg-slate-50 border-y border-slate-200">
+        <div class="max-w-6xl mx-auto px-6">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-900 mb-4">Choose Your Variant</h2>
+                <p class="text-slate-600 max-w-2xl mx-auto">GEF offers four specialized templates tailored to different data distributions. Use this guide to select the right one.</p>
+            </div>
+
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+                
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition flex flex-col">
+                    <div class="text-blue-600 text-3xl mb-4"><i class="fas fa-bolt"></i></div>
+                    <h3 class="text-xl font-bold mb-2">RLE-GEF</h3>
+                    <p class="text-sm text-slate-500 font-semibold uppercase tracking-wider mb-4">Fastest Access</p>
+                    <p class="text-slate-600 text-sm mb-4 flex-grow">
+                        Optimized for sequences with "runs" of values sharing high-order bits.
+                    </p>
+                    <div class="border-t border-slate-100 pt-4 mt-auto">
+                        <span class="text-xs font-bold text-slate-400">BEST FOR:</span>
+                        <p class="text-sm text-slate-800">Speed-critical applications & clustered data.</p>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition flex flex-col">
+                    <div class="text-emerald-600 text-3xl mb-4"><i class="fas fa-arrow-trend-up"></i></div>
+                    <h3 class="text-xl font-bold mb-2">U-GEF</h3>
+                    <p class="text-sm text-slate-500 font-semibold uppercase tracking-wider mb-4">Mostly Sorted</p>
+                    <p class="text-slate-600 text-sm mb-4 flex-grow">
+                        Tailored for sequences with mostly positive small gaps and occasionally large gaps.
+                    </p>
+                    <div class="border-t border-slate-100 pt-4 mt-auto">
+                        <span class="text-xs font-bold text-slate-400">BEST FOR:</span>
+                        <p class="text-sm text-slate-800">Graph adjacency lists, timestamps & sorted runs.</p>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition flex flex-col">
+                    <div class="text-indigo-600 text-3xl mb-4"><i class="fas fa-right-left"></i></div>
+                    <h3 class="text-xl font-bold mb-2">B-GEF</h3>
+                    <p class="text-sm text-slate-500 font-semibold uppercase tracking-wider mb-4">Bidirectional</p>
+                    <p class="text-slate-600 text-sm mb-4 flex-grow">
+                        Tailored for sequences with mostly small gaps (regardless of sign) and occasionally large gaps.
+                    </p>
+                    <div class="border-t border-slate-100 pt-4 mt-auto">
+                        <span class="text-xs font-bold text-slate-400">BEST FOR:</span>
+                        <p class="text-sm text-slate-800">Sensors, fluctuating logs, volatile time series with spikes.</p>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition relative overflow-hidden flex flex-col">
+                    <div class="absolute top-0 right-0 bg-yellow-400 text-yellow-900 text-xs font-bold px-2 py-1 rounded-bl">STAR</div>
+                    <div class="text-purple-600 text-3xl mb-4"><i class="fas fa-star"></i></div>
+                    <h3 class="text-xl font-bold mb-2">B*-GEF</h3>
+                    <p class="text-sm text-slate-500 font-semibold uppercase tracking-wider mb-4">Max Compression</p>
+                    <p class="text-slate-600 text-sm mb-4 flex-grow">
+                        Most compact for small gaps. Second fastest after RLE-GEF. Offers space guarantees & theoretical optimality (quasi-succinctness).
+                    </p>
+                    <div class="border-t border-slate-100 pt-4 mt-auto">
+                        <span class="text-xs font-bold text-slate-400">BEST FOR:</span>
+                        <p class="text-sm text-slate-800">Time series with small gaps where spikes are unusual.</p>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <section class="py-16 bg-white">
+        <div class="max-w-6xl mx-auto px-6">
+            <div class="grid md:grid-cols-2 gap-12 items-center">
+                <div>
+                    <h2 class="text-3xl font-bold text-slate-900 mb-6">On the Pareto Frontier</h2>
+                    <p class="text-slate-600 mb-6">
+                        GEF consistently sits on the Pareto frontier of compression ratio vs. access speed. It matches general-purpose compressors (Xz, Brotli) in space while being orders of magnitude faster.
+                    </p>
+                    
+                    <ul class="space-y-6">
+                        <li class="flex items-start">
+                            <i class="fas fa-bolt text-yellow-500 mt-1 mr-3 text-lg"></i>
+                            <div>
+                                <span class="font-bold text-slate-900 text-lg">Up to 500x faster compression</span>
+                                <p class="text-sm text-slate-500">than general-purpose compressors (e.g. Brotli, Xz) and SOTA learned compressors (e.g. NeaTS).</p>
+                            </div>
+                        </li>
+                        <li class="flex items-start">
+                            <i class="fas fa-rocket text-blue-500 mt-1 mr-3 text-lg"></i>
+                            <div>
+                                <span class="font-bold text-slate-900 text-lg">Up to 42.83% more compact</span>
+                                <p class="text-sm text-slate-500">among compressors with high throughput and random access.</p>
+                            </div>
+                        </li>
+                    </ul>
+
+                    <div class="mt-8 pt-8 border-t border-slate-100">
+                        <div class="inline-flex items-center gap-2 bg-slate-900 text-white px-4 py-1 rounded-full text-sm font-bold mb-4">
+                            <i class="fas fa-gauge-high"></i> HIGH PERFORMANCE
+                        </div>
+                        <ul class="space-y-4">
+                            <li class="flex items-center">
+                                <i class="fas fa-check text-green-500 mr-3"></i>
+                                <span class="text-slate-700"><strong>Up to 5 GB/s</strong> compression throughput (multi-threaded)</span>
+                            </li>
+                            <li class="flex items-center">
+                                <i class="fas fa-check text-green-500 mr-3"></i>
+                                <span class="text-slate-700"><strong>> 1 GB/s</strong> decompression speed</span>
+                            </li>
+                            <li class="flex items-center">
+                                <i class="fas fa-check text-green-500 mr-3"></i>
+                                <span class="text-slate-700"><strong>O(1)</strong> Constant-time random access</span>
+                            </li>
+                        </ul>
+                    </div>
+
+                </div>
+                <div class="bg-slate-50 border border-slate-200 rounded-xl p-8 text-center flex flex-col justify-center h-full">
+                   <div class="aspect-square bg-white rounded shadow-sm border border-slate-100 flex items-center justify-center mb-4">
+                        <div class="text-center px-4">
+                            <i class="fas fa-chart-line text-5xl text-blue-100 mb-4"></i>
+                            <p class="text-slate-400 font-medium italic">Throughput vs Ratio<br>Pareto Frontier</p>
+                        </div>
+                   </div>
+                   <p class="text-xs text-slate-500 mt-2">
+                       Detailed comparisons against Brotli, Xz, Zstd, NeaTS, ALP, LeCo, and Falcon available in the <a href="https://github.com/mxpucci/gef-experiments" class="text-blue-600 hover:underline">benchmarks repository</a>.
+                   </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-16 bg-slate-900 text-white">
+        <div class="max-w-5xl mx-auto px-6">
+            <div class="text-center mb-10">
+                <h2 class="text-3xl font-bold mb-4">Simple C++ Interface</h2>
+                <p class="text-slate-400">Header-only library. easy to integrate via CMake.</p>
+            </div>
+
+            <div class="rounded-xl overflow-hidden shadow-2xl border border-slate-700">
+                <div class="bg-slate-800 px-4 py-2 flex items-center gap-2 border-b border-slate-700">
+                    <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                    <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    <span class="ml-2 text-xs text-slate-400 font-mono">main.cpp</span>
+                </div>
+                <pre class="code-block p-6 overflow-x-auto text-sm font-mono leading-relaxed"><code class="language-cpp"><span class="text-purple-400">#include</span> <span class="text-green-400">&lt;gef/gef.hpp&gt;</span>
+<span class="text-purple-400">#include</span> <span class="text-green-400">&lt;vector&gt;</span>
+
+<span class="text-blue-400">int</span> <span class="text-yellow-300">main</span>() {
+    <span class="text-gray-500">// 1. Define an arbitrary (unsorted) sequence</span>
+    std::vector&lt;<span class="text-blue-400">uint32_t</span>&gt; sequence = {<span class="text-orange-400">1</span>, <span class="text-orange-400">3</span>, <span class="text-orange-400">7</span>, <span class="text-orange-400">11</span>, <span class="text-orange-400">15</span>, <span class="text-orange-400">23</span>, <span class="text-orange-400">31</span>, <span class="text-orange-400">20</span>, <span class="text-orange-400">10</span>, <span class="text-orange-400">5</span>};
+    
+    <span class="text-gray-500">// 2. Create index (B-GEF handles non-monotone automatically)</span>
+    gef::B_GEF&lt;<span class="text-blue-400">uint32_t</span>&gt; <span class="text-yellow-300">index</span>(sequence);
+    
+    <span class="text-gray-500">// 3. Constant-time random access</span>
+    <span class="text-blue-400">uint32_t</span> val = index[<span class="text-orange-400">3</span>];  <span class="text-gray-500">// Returns 11</span>
+    
+    <span class="text-gray-500">// 4. Efficient Range Decompression</span>
+    std::vector&lt;<span class="text-blue-400">uint32_t</span>&gt; buffer(<span class="text-orange-400">5</span>);
+    index.<span class="text-yellow-300">get_elements</span>(<span class="text-orange-400">2</span>, <span class="text-orange-400">5</span>, buffer); <span class="text-gray-500">// Decodes 7, 11, 15, 23, 31</span>
+    
+    <span class="text-purple-400">return</span> <span class="text-orange-400">0</span>;
+}</code></pre>
+            </div>
+            
+            <div class="text-center mt-8">
+                <a href="https://github.com/mxpucci/generalized-elias-fano" class="text-blue-400 hover:text-blue-300 underline underline-offset-4">
+                    View Installation Instructions on GitHub &rarr;
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <footer class="bg-slate-50 border-t border-slate-200 py-12">
+        <div class="max-w-4xl mx-auto px-6">
+            <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">Citation</h3>
+            <div class="bg-white border border-slate-200 p-4 rounded text-xs font-mono text-slate-600 overflow-x-auto">
+@misc{pucci2025gef,
+  author    = {Michelangelo Pucci and Paolo Ferragina},
+  title     = {Generalized Elias-Fano code for the compressed indexing of arbitrary integer sequences},
+  year      = {2025},
+  note      = {Under Submission}
+}
+            </div>
+            <div class="mt-8 text-center text-slate-400 text-sm">
+                <p>&copy; 2025 Generalized Elias-Fano Project. Released under Apache License 2.0.</p>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
