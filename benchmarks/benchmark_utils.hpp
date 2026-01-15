@@ -26,7 +26,7 @@ inline void RegisterInputFiles(int argc, char** argv) {
 }
 
 struct LoadedDataset {
-    std::vector<uint64_t> data;
+    std::vector<int64_t> data;
     uint64_t x;
 };
 
@@ -51,7 +51,7 @@ inline LoadedDataset load_custom_dataset(const std::string& filename) {
     size_t expected_size_old = 8 + n * 8;
     
     uint64_t x = 0;
-    std::vector<uint64_t> data(n);
+    std::vector<int64_t> data(n);
     
     if (file_size == expected_size_new) {
         uint64_t x_val = 0;
@@ -93,7 +93,7 @@ inline LoadedDataset load_custom_dataset(const std::string& filename) {
 // Common fixture
 class GefBenchmarkFixture : public benchmark::Fixture {
 public:
-    std::vector<uint64_t> input_data;
+    std::vector<int64_t> input_data;
     uint64_t universe;
     std::string current_basename;
 

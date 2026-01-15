@@ -50,13 +50,13 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    RegisterCompression<gef::B_GEF<uint64_t>>("B_GEF");
-    RegisterCompression<gef::B_GEF_APPROXIMATE<uint64_t>>("B_GEF_APPROXIMATE");
-    RegisterCompression<gef::B_STAR_GEF<uint64_t>>("B_STAR_GEF");
-    RegisterCompression<gef::B_STAR_GEF_APPROXIMATE<uint64_t>>("B_STAR_GEF_APPROXIMATE");
-    RegisterCompression<gef::RLE_GEF<uint64_t>>("RLE_GEF");
-    RegisterCompression<gef::U_GEF<uint64_t>>("U_GEF");
-    RegisterCompression<gef::U_GEF_APPROXIMATE<uint64_t>>("U_GEF_APPROXIMATE");
+    RegisterCompression<gef::B_GEF<int64_t>>("B_GEF");
+    RegisterCompression<gef::B_GEF_APPROXIMATE<int64_t>>("B_GEF_APPROXIMATE");
+    RegisterCompression<gef::B_STAR_GEF<int64_t>>("B_STAR_GEF");
+    RegisterCompression<gef::B_STAR_GEF_APPROXIMATE<int64_t>>("B_STAR_GEF_APPROXIMATE");
+    RegisterCompression<gef::RLE_GEF<int64_t>>("RLE_GEF");
+    RegisterCompression<gef::U_GEF<int64_t>>("U_GEF");
+    RegisterCompression<gef::U_GEF_APPROXIMATE<int64_t>>("U_GEF_APPROXIMATE");
 
     benchmark::RunSpecifiedBenchmarks();
     return 0;

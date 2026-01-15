@@ -20,7 +20,7 @@ void RegisterDecompression(const std::string& name) {
              }
              
              GefType gef_struct(data);
-             std::vector<uint64_t> output(data.size());
+             std::vector<int64_t> output(data.size());
              
              for (auto _ : state) {
                  gef_struct.get_elements(0, data.size(), output);
@@ -43,13 +43,13 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    RegisterDecompression<gef::B_GEF<uint64_t>>("B_GEF");
-    RegisterDecompression<gef::B_GEF_APPROXIMATE<uint64_t>>("B_GEF_APPROXIMATE");
-    RegisterDecompression<gef::B_STAR_GEF<uint64_t>>("B_STAR_GEF");
-    RegisterDecompression<gef::B_STAR_GEF_APPROXIMATE<uint64_t>>("B_STAR_GEF_APPROXIMATE");
-    RegisterDecompression<gef::RLE_GEF<uint64_t>>("RLE_GEF");
-    RegisterDecompression<gef::U_GEF<uint64_t>>("U_GEF");
-    RegisterDecompression<gef::U_GEF_APPROXIMATE<uint64_t>>("U_GEF_APPROXIMATE");
+    RegisterDecompression<gef::B_GEF<int64_t>>("B_GEF");
+    RegisterDecompression<gef::B_GEF_APPROXIMATE<int64_t>>("B_GEF_APPROXIMATE");
+    RegisterDecompression<gef::B_STAR_GEF<int64_t>>("B_STAR_GEF");
+    RegisterDecompression<gef::B_STAR_GEF_APPROXIMATE<int64_t>>("B_STAR_GEF_APPROXIMATE");
+    RegisterDecompression<gef::RLE_GEF<int64_t>>("RLE_GEF");
+    RegisterDecompression<gef::U_GEF<int64_t>>("U_GEF");
+    RegisterDecompression<gef::U_GEF_APPROXIMATE<int64_t>>("U_GEF_APPROXIMATE");
 
     benchmark::RunSpecifiedBenchmarks();
     return 0;

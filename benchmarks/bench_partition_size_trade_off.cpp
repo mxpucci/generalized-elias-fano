@@ -34,10 +34,10 @@ struct has_strategy_ctor<T, Data, Strat, std::void_t<supports_strategy_t<T, Data
 
 template<typename GefType, size_t Size, bool RandomAccess>
 void RunBenchmark(benchmark::State& state, const std::string& path) {
-    constexpr bool uses_strategy = has_strategy_ctor<GefType, std::vector<uint64_t>, gef::SplitPointStrategy>::value;
+    constexpr bool uses_strategy = has_strategy_ctor<GefType, std::vector<int64_t>, gef::SplitPointStrategy>::value;
 
     // Load dataset once
-    std::vector<uint64_t> data;
+    std::vector<int64_t> data;
     try {
         auto dataset = load_custom_dataset(path);
         data = std::move(dataset.data);
@@ -96,7 +96,7 @@ void register_variant(const std::string& name) {
         {
             std::string bench_name = filename + "/" + name + "/" + std::to_string(Size) + "/RA_Enabled";
             benchmark::RegisterBenchmark(bench_name.c_str(), [path](benchmark::State& state) {
-                RunBenchmark<CompressorT<uint64_t, Size, true>, Size, true>(state, path);
+                RunBenchmark<CompressorT<int64_t, Size, true>, Size, true>(state, path);
             })->Unit(benchmark::kMillisecond);
         }
 
@@ -104,7 +104,7 @@ void register_variant(const std::string& name) {
         {
             std::string bench_name = filename + "/" + name + "/" + std::to_string(Size) + "/RA_Disabled";
             benchmark::RegisterBenchmark(bench_name.c_str(), [path](benchmark::State& state) {
-                RunBenchmark<CompressorT<uint64_t, Size, false>, Size, false>(state, path);
+                RunBenchmark<CompressorT<int64_t, Size, false>, Size, false>(state, path);
             })->Unit(benchmark::kMillisecond);
         }
     }

@@ -60,13 +60,13 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    RegisterRandomAccess<gef::B_GEF<uint64_t>>("B_GEF");
-    RegisterRandomAccess<gef::B_GEF_APPROXIMATE<uint64_t>>("B_GEF_APPROXIMATE");
-    RegisterRandomAccess<gef::B_STAR_GEF<uint64_t>>("B_STAR_GEF");
-    RegisterRandomAccess<gef::B_STAR_GEF_APPROXIMATE<uint64_t>>("B_STAR_GEF_APPROXIMATE");
-    RegisterRandomAccess<gef::RLE_GEF<uint64_t>>("RLE_GEF");
-    RegisterRandomAccess<gef::U_GEF<uint64_t>>("U_GEF");
-    RegisterRandomAccess<gef::U_GEF_APPROXIMATE<uint64_t>>("U_GEF_APPROXIMATE");
+    RegisterRandomAccess<gef::B_GEF<int64_t>>("B_GEF");
+    RegisterRandomAccess<gef::B_GEF_APPROXIMATE<int64_t>>("B_GEF_APPROXIMATE");
+    RegisterRandomAccess<gef::B_STAR_GEF<int64_t>>("B_STAR_GEF");
+    RegisterRandomAccess<gef::B_STAR_GEF_APPROXIMATE<int64_t>>("B_STAR_GEF_APPROXIMATE");
+    RegisterRandomAccess<gef::RLE_GEF<int64_t>>("RLE_GEF");
+    RegisterRandomAccess<gef::U_GEF<int64_t>>("U_GEF");
+    RegisterRandomAccess<gef::U_GEF_APPROXIMATE<int64_t>>("U_GEF_APPROXIMATE");
 
     benchmark::RunSpecifiedBenchmarks();
     return 0;

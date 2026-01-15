@@ -20,7 +20,7 @@
 
 const std::vector<int> THREAD_COUNTS = {1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 64};
 
-std::vector<uint64_t> load_dataset(const std::string& filename) {
+std::vector<int64_t> load_dataset(const std::string& filename) {
     std::ifstream in(filename, std::ios::binary);
     if (!in) throw std::runtime_error("Cannot open file: " + filename);
     
@@ -36,13 +36,13 @@ std::vector<uint64_t> load_dataset(const std::string& filename) {
         in.read(reinterpret_cast<char*>(&x), 8);
     }
     
-    std::vector<uint64_t> data(n);
+    std::vector<int64_t> data(n);
     in.read(reinterpret_cast<char*>(data.data()), n * 8);
     return data;
 }
 
 double calculate_throughput(size_t num_elements, double time_ms) {
-    double bytes = num_elements * sizeof(uint64_t);
+    double bytes = num_elements * sizeof(int64_t);
     double megabytes = bytes / (1024.0 * 1024.0);
     double seconds = time_ms / 1000.0;
     return megabytes / seconds;
@@ -70,7 +70,7 @@ template<typename GefType>
 void run_benchmark(const std::string& name, size_t partition_size,
                    const std::vector<std::string>& paths, gef::SplitPointStrategy strategy) {
     
-    constexpr bool uses_strategy = has_strategy_ctor<GefType, std::vector<uint64_t>, gef::SplitPointStrategy>::value;
+    constexpr bool uses_strategy = has_strategy_ctor<GefType, std::vector<int64_t>, gef::SplitPointStrategy>::value;
 
     std::cout << "\n========================================\n";
     std::cout << "Compressor: " << name << "\n";
@@ -154,7 +154,7 @@ static std::map<std::pair<std::string, size_t>, BenchmarkRunner> benchmark_regis
 template<template<typename, size_t, bool> class CompressorT, size_t Size, bool random_access = true>
 void register_variant(const std::string& name) {
     benchmark_registry[{name, Size}] = [name](const std::vector<std::string>& paths, gef::SplitPointStrategy strategy) {
-        run_benchmark<CompressorT<uint64_t, Size, true>>(name, Size, paths, strategy);
+        run_benchmark<CompressorT<int64_t, Size, true>>(name, Size, paths, strategy);
     };
 }
 
