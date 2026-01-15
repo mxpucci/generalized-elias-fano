@@ -27,7 +27,7 @@ inline void RegisterInputFiles(int argc, char** argv) {
 
 struct LoadedDataset {
     std::vector<int64_t> data;
-    uint64_t x;
+    uint64_t decimals;
 };
 
 inline LoadedDataset load_custom_dataset(const std::string& filename) {
@@ -40,38 +40,40 @@ inline LoadedDataset load_custom_dataset(const std::string& filename) {
     in.read(reinterpret_cast<char*>(&n_val), 8);
     size_t n = static_cast<size_t>(n_val);
     
-    // Check if file size matches the new format (N + X + Data)
+    // Check if file size matches the new format (N + Decimals + Data)
     in.seekg(0, std::ios::end);
     size_t file_size = in.tellg();
     in.seekg(8, std::ios::beg); // Skip N
     
-    // New format: 8 bytes N + 8 bytes X + N*8 bytes Data
-    size_t expected_size_new = 8 + 8 + n * 8;
-    // Old format: 8 bytes N + N*8 bytes Data (assuming 64-bit values)
-    size_t expected_size_old = 8 + n * 8;
+    // Standard Format: 16 bytes Header (N, Decimals) + Data
+    // Header (16 bytes): uint64_t N, uint64_t Decimals
+    size_t expected_size_standard = 16 + n * 8;
+    // Simple Format: 8 bytes Header (N) + Data
+    // Header (8 bytes): uint64_t N
+    size_t expected_size_simple = 8 + n * 8;
     
-    uint64_t x = 0;
+    uint64_t decimals = 0;
     std::vector<int64_t> data(n);
     
-    if (file_size == expected_size_new) {
-        uint64_t x_val = 0;
-        in.read(reinterpret_cast<char*>(&x_val), 8);
-        x = x_val;
-    } else if (file_size == expected_size_old) {
-        // Fallback to old format, assume x=0 and data follows immediately
-        x = 0;
+    if (file_size == expected_size_standard) {
+        uint64_t dec_val = 0;
+        in.read(reinterpret_cast<char*>(&dec_val), 8);
+        decimals = dec_val;
+    } else if (file_size == expected_size_simple) {
+        // Simple format, no decimals parameter (defaults to 0)
+        decimals = 0;
     } else {
         // Warning or error? Let's try to read data anyway if we can
-        // Assuming old format structure for safety if unknown
-        std::cerr << "Warning: File size " << file_size << " doesn't match expected new (" 
-                  << expected_size_new << ") or old (" << expected_size_old << ") format." << std::endl;
+        // Assuming simple format structure for safety if unknown
+        std::cerr << "Warning: File size " << file_size << " doesn't match expected Standard (" 
+                  << expected_size_standard << ") or Simple (" << expected_size_simple << ") format." << std::endl;
     }
     
     char* ptr = reinterpret_cast<char*>(data.data());
     size_t total_bytes = n * 8;
     size_t bytes_read = 0;
     const size_t CHUNK_SIZE = 1024 * 1024 * 1024; // 1GB chunks
-
+    
     while (bytes_read < total_bytes) {
         size_t to_read = std::min(CHUNK_SIZE, total_bytes - bytes_read);
         in.read(ptr + bytes_read, to_read);
@@ -87,7 +89,7 @@ inline LoadedDataset load_custom_dataset(const std::string& filename) {
         std::cerr << "Warning: Read fewer bytes than expected. Expected " << total_bytes << ", got " << bytes_read << std::endl;
     }
     
-    return {data, x};
+    return {data, decimals};
 }
 
 // Common fixture
@@ -109,7 +111,7 @@ public:
         try {
             auto dataset = load_custom_dataset(path);
             input_data = std::move(dataset.data);
-            universe = dataset.x;
+            universe = dataset.decimals;
         } catch (const std::exception& e) {
             state.SkipWithError(e.what());
             return;

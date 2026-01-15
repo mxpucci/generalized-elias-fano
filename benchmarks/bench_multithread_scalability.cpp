@@ -27,14 +27,19 @@ std::vector<int64_t> load_dataset(const std::string& filename) {
     uint64_t n;
     in.read(reinterpret_cast<char*>(&n), 8);
     
+    // Check if file size matches the new format (N + Decimals + Data)
     in.seekg(0, std::ios::end);
     size_t file_size = in.tellg();
     in.seekg(8, std::ios::beg);
     
-    if (file_size == 8 + 8 + n * 8) {
-        uint64_t x;
-        in.read(reinterpret_cast<char*>(&x), 8);
+    // Standard Format: 16 bytes Header (N, Decimals) + Data
+    size_t expected_size_standard = 16 + n * 8;
+    
+    if (file_size == expected_size_standard) {
+        uint64_t decimals;
+        in.read(reinterpret_cast<char*>(&decimals), 8);
     }
+    // Else: Simple Format, just N (already read), data follows immediately.
     
     std::vector<int64_t> data(n);
     in.read(reinterpret_cast<char*>(data.data()), n * 8);
