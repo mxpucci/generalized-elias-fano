@@ -116,12 +116,12 @@ public:
         m_partitions.resize(num_partitions);
         
         
-        const size_t elements_limit = std::max<size_t>(1, total_requested / MIN_ELEMENTS_PER_THREAD);
+        const size_t elements_limit = std::max<size_t>(1, data.size() / MIN_ELEMENTS_PER_THREAD);
         
         int max_threads = omp_get_max_threads();
         int n_threads = std::max(1, std::min({
             max_threads, 
-            static_cast<int>(num_partitions_spanned), 
+            static_cast<int>(num_partitions), 
             static_cast<int>(elements_limit)
         }));
         #pragma omp parallel num_threads(n_threads)
