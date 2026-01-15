@@ -16,7 +16,35 @@
             background-color: #1e293b;
             color: #e2e8f0;
         }
+        /* Fade animation for chart switching */
+        .chart-fade {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .hidden-chart {
+            display: none;
+            opacity: 0;
+        }
+        .visible-chart {
+            display: block;
+            opacity: 1;
+        }
     </style>
+    <script>
+        function showChart(type) {
+            // Buttons
+            document.getElementById('btn-ra').className = type === 'ra' 
+                ? "flex-1 py-2 px-4 bg-white border-b-2 border-blue-600 text-blue-600 font-bold focus:outline-none"
+                : "flex-1 py-2 px-4 bg-slate-50 border-b border-slate-200 text-slate-500 hover:text-slate-700 focus:outline-none";
+            
+            document.getElementById('btn-ct').className = type === 'ct'
+                ? "flex-1 py-2 px-4 bg-white border-b-2 border-blue-600 text-blue-600 font-bold focus:outline-none"
+                : "flex-1 py-2 px-4 bg-slate-50 border-b border-slate-200 text-slate-500 hover:text-slate-700 focus:outline-none";
+
+            // Images
+            document.getElementById('chart-ra').className = type === 'ra' ? "visible-chart w-full h-auto" : "hidden-chart";
+            document.getElementById('chart-ct').className = type === 'ct' ? "visible-chart w-full h-auto" : "hidden-chart";
+        }
+    </script>
 </head>
 <body class="text-slate-800 antialiased">
 
@@ -36,11 +64,11 @@
             <div class="flex flex-wrap justify-center gap-6 text-sm text-slate-600 mb-10">
                 <a href="https://michelangelopucci.com" target="_blank" class="flex items-center gap-2 hover:text-blue-600 transition">
                     <i class="fas fa-user-circle text-slate-400"></i>
-                    <span>Michelangelo Pucci (ETH Zürich)</span>
+                    <span>Michelangelo Pucci</span>
                 </a>
                 <a href="https://pages.di.unipi.it/ferragina/" target="_blank" class="flex items-center gap-2 hover:text-blue-600 transition">
                     <i class="fas fa-user-circle text-slate-400"></i>
-                    <span>Paolo Ferragina (Sant'Anna & Univ. Pisa)</span>
+                    <span>Paolo Ferragina</span>
                 </a>
             </div>
 
@@ -157,6 +185,7 @@
     <section class="py-16 bg-white">
         <div class="max-w-6xl mx-auto px-6">
             <div class="grid md:grid-cols-2 gap-12 items-center">
+                
                 <div>
                     <h2 class="text-3xl font-bold text-slate-900 mb-6">On the Pareto Frontier</h2>
                     <p class="text-slate-600 mb-6">
@@ -172,10 +201,10 @@
                             </div>
                         </li>
                         <li class="flex items-start">
-                            <i class="fas fa-rocket text-blue-500 mt-1 mr-3 text-lg"></i>
+                            <i class="fas fa-trophy text-blue-500 mt-1 mr-3 text-lg"></i>
                             <div>
-                                <span class="font-bold text-slate-900 text-lg">Up to 42.83% more compact</span>
-                                <p class="text-sm text-slate-500">among compressors with high throughput and random access.</p>
+                                <span class="font-bold text-slate-900 text-lg">Up to 37% more compact</span>
+                                <p class="text-sm text-slate-500">than general-purpose compressors (e.g. Xz, Brotli).</p>
                             </div>
                         </li>
                     </ul>
@@ -199,19 +228,39 @@
                             </li>
                         </ul>
                     </div>
+                </div>
 
+                <div class="bg-slate-50 border border-slate-200 rounded-xl p-6 text-center h-full flex flex-col">
+                    
+                    <div class="flex text-sm mb-4 rounded-lg overflow-hidden border border-slate-200 shadow-sm">
+                        <button id="btn-ra" onclick="showChart('ra')" 
+                            class="flex-1 py-2 px-4 bg-white border-b-2 border-blue-600 text-blue-600 font-bold focus:outline-none">
+                            Random Access
+                        </button>
+                        <button id="btn-ct" onclick="showChart('ct')" 
+                            class="flex-1 py-2 px-4 bg-slate-50 border-b border-slate-200 text-slate-500 hover:text-slate-700 focus:outline-none">
+                            Throughput
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded border border-slate-100 p-2 mb-2 flex-grow flex items-center justify-center relative min-h-[300px]">
+                        <img id="chart-ra" src="./random_access_speed_vs_ratio.svg" 
+                             alt="Random Access Speed vs Ratio" class="visible-chart w-full h-auto">
+                        
+                        <img id="chart-ct" src="./compression_throughput_vs_ratio.svg" 
+                             alt="Compression Throughput vs Ratio" class="hidden-chart w-full h-auto">
+                    </div>
+
+                    <div class="mt-2 border-t border-slate-100 pt-2">
+                         <img src="./legend.svg" alt="Legend" class="w-full h-auto opacity-80">
+                    </div>
+
+                    <p class="text-xs text-slate-500 mt-2">
+                       GEF variants (circled in dashed blue) dominate the Pareto frontier.<br>
+                       <a href="https://github.com/mxpucci/gef-experiments" class="text-blue-600 hover:underline">View full benchmarks</a>
+                    </p>
                 </div>
-                <div class="bg-slate-50 border border-slate-200 rounded-xl p-8 text-center flex flex-col justify-center h-full">
-                   <div class="aspect-square bg-white rounded shadow-sm border border-slate-100 flex items-center justify-center mb-4">
-                        <div class="text-center px-4">
-                            <i class="fas fa-chart-line text-5xl text-blue-100 mb-4"></i>
-                            <p class="text-slate-400 font-medium italic">Throughput vs Ratio<br>Pareto Frontier</p>
-                        </div>
-                   </div>
-                   <p class="text-xs text-slate-500 mt-2">
-                       Detailed comparisons against Brotli, Xz, Zstd, NeaTS, ALP, LeCo, and Falcon available in the <a href="https://github.com/mxpucci/gef-experiments" class="text-blue-600 hover:underline">benchmarks repository</a>.
-                   </p>
-                </div>
+
             </div>
         </div>
     </section>
