@@ -3,47 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
     <title>Generalized Elias-Fano (GEF) | Compressed Indexing for Arbitrary Sequences</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <meta name="description" content="Generalized Elias-Fano (GEF) extends the classic Elias-Fano encoding to arbitrary (non-monotone) integer sequences. It achieves state-of-the-art compression ratios, constant-time random access, and >1GB/s throughput, approaching the information-theoretic lower bound for Laplacian-distributed gaps.">
+    
+    <meta name="keywords" content="Generalized Elias-Fano, GEF, Compressed Indexing, Succinct Data Structures, Integer Compression, Time Series Compression, Non-monotone Sequences, Random Access, Laplacian Distribution, Quasi-succinct, RLE-GEF, B-GEF, U-GEF">
+    
+    <meta name="author" content="Michelangelo Pucci, Paolo Ferragina">
+    <meta name="robots" content="index, follow">
+
+    <link rel="canonical" href="https://mxpucci.github.io/generalized-elias-fano/">
+
+    <meta property="og:title" content="Generalized Elias-Fano: Compressed Indexing for Arbitrary Sequences">
+    <meta property="og:description" content="The first compressed index to combine SOTA compression, constant-time random access, and high throughput for unsorted integers. Outperforms Brotli, Xz, and specialized time-series compressors on the Pareto frontier.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://mxpucci.github.io/generalized-elias-fano/">
+    <meta property="og:site_name" content="Generalized Elias-Fano Project">
+    <meta property="og:image" content="https://mxpucci.github.io/generalized-elias-fano/preview-card.png"> <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Generalized Elias-Fano (GEF)">
+    <meta name="twitter:description" content="Bridging the gap between compression and access speed for arbitrary integer sequences. Approaches theoretical lower bounds for Laplacian gaps.">
+    <meta name="twitter:creator" content="@MichelangeloPucci"> <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
-        .hero-bg {
-            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-        }
-        .code-block {
-            background-color: #1e293b;
-            color: #e2e8f0;
-        }
-        /* Fade animation for chart switching */
-        .chart-fade {
-            transition: opacity 0.3s ease-in-out;
-        }
-        .hidden-chart {
-            display: none;
-            opacity: 0;
-        }
-        .visible-chart {
-            display: block;
-            opacity: 1;
-        }
+        .hero-bg { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); }
+        .code-block { background-color: #1e293b; color: #e2e8f0; }
+        .chart-fade { transition: opacity 0.3s ease-in-out; }
+        .hidden-chart { display: none; opacity: 0; }
+        .visible-chart { display: block; opacity: 1; }
     </style>
     <script>
         function showChart(type) {
-            // Buttons
             document.getElementById('btn-ra').className = type === 'ra' 
                 ? "flex-1 py-2 px-4 bg-white border-b-2 border-blue-600 text-blue-600 font-bold focus:outline-none"
                 : "flex-1 py-2 px-4 bg-slate-50 border-b border-slate-200 text-slate-500 hover:text-slate-700 focus:outline-none";
-            
             document.getElementById('btn-ct').className = type === 'ct'
                 ? "flex-1 py-2 px-4 bg-white border-b-2 border-blue-600 text-blue-600 font-bold focus:outline-none"
                 : "flex-1 py-2 px-4 bg-slate-50 border-b border-slate-200 text-slate-500 hover:text-slate-700 focus:outline-none";
-
-            // Images
             document.getElementById('chart-ra').className = type === 'ra' ? "visible-chart w-full h-auto" : "hidden-chart";
             document.getElementById('chart-ct').className = type === 'ct' ? "visible-chart w-full h-auto" : "hidden-chart";
         }
+    </script>
+    
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "ScholarlyArticle",
+      "headline": "Generalized Elias-Fano code for the compressed indexing of arbitrary integer sequences",
+      "author": [
+        {
+          "@type": "Person",
+          "name": "Michelangelo Pucci",
+          "affiliation": "ETH Zürich"
+        },
+        {
+          "@type": "Person",
+          "name": "Paolo Ferragina",
+          "affiliation": "Sant'Anna School of Advanced Studies and University of Pisa"
+        }
+      ],
+      "description": "A family of compression schemes extending Elias-Fano to arbitrary sequences, offering theoretical worst-case space bounds and constant-time random access.",
+      "datePublished": "2026",
+      "genre": "Computer Science Reference",
+      "keywords": "Elias-Fano, Compressed Indexing, Time Series, Arbitrary Sequences, Pareto Frontier",
+      "articleSection": "Data Compression",
+      "url": "https://mxpucci.github.io/generalized-elias-fano/",
+      "citation": "Pucci, M., & Ferragina, P. (2026). Generalized Elias-Fano code for the compressed indexing of arbitrary integer sequences. PVLDB.",
+      "isAccessibleForFree": true,
+      "about": [
+        { "@type": "Thing", "name": "Compressed Indexing" },
+        { "@type": "Thing", "name": "Elias-Fano Coding" },
+        { "@type": "Thing", "name": "Time Series Compression" }
+      ]
+    }
     </script>
 </head>
 <body class="text-slate-800 antialiased">
@@ -312,7 +346,7 @@
         <div class="max-w-4xl mx-auto px-6">
             <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">Citation</h3>
             <div class="bg-white border border-slate-200 p-4 rounded text-xs font-mono text-slate-600 overflow-x-auto">
-@misc{pucci2025gef,
+@misc{pucci2026gef,
   author    = {Michelangelo Pucci and Paolo Ferragina},
   title     = {Generalized Elias-Fano code for the compressed indexing of arbitrary integer sequences},
   year      = {2026},
