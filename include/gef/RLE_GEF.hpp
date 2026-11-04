@@ -15,6 +15,7 @@
 #include <utility>
 #include <stdexcept>
 #include "IGEF.hpp"
+#include "AllocatedSize.hpp"
 #include "BlockParameters.hpp"
 #include "FastBitWriter.hpp"
 #include "NoRandomAccess.hpp"
@@ -321,138 +322,120 @@ namespace gef {
 
     private:
         template<uint8_t SPLIT_POINT>
+        static uint64_t unpack_low(const uint64_t* words, size_t index) {
+            if constexpr (SPLIT_POINT == 0) return 0;
+            else if constexpr (SPLIT_POINT == 64) return words[index];
+            else {
+                const size_t position = index * SPLIT_POINT;
+                const size_t offset = position & 63;
+                uint64_t value = words[position >> 6] >> offset;
+                if (offset + SPLIT_POINT > 64) {
+                    value |= words[(position >> 6) + 1] << (64 - offset);
+                }
+                return value & ((uint64_t(1) << SPLIT_POINT) - 1);
+            }
+        }
+
+        // Starting at an element index divisible by 64 makes all extraction
+        // shifts and word indices compile-time constants for the next 64 values.
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static uint64_t unpack_aligned_low(const uint64_t* words) {
+            if constexpr (SPLIT_POINT == 0) return 0;
+            else if constexpr (SPLIT_POINT == 64) return words[INDEX];
+            else {
+                constexpr size_t position = INDEX * SPLIT_POINT;
+                constexpr size_t offset = position & 63;
+                uint64_t value = words[position >> 6] >> offset;
+                if constexpr (offset + SPLIT_POINT > 64) {
+                    value |= words[(position >> 6) + 1] << (64 - offset);
+                }
+                return value & ((uint64_t(1) << SPLIT_POINT) - 1);
+            }
+        }
+
+        template<uint8_t SPLIT_POINT, size_t... INDICES>
+        static void unpack_aligned_block(const uint64_t* words, T* output,
+                                         uint64_t offset, std::index_sequence<INDICES...>) {
+            ((output[INDICES] = static_cast<T>(offset + unpack_aligned_low<SPLIT_POINT, INDICES>(words))), ...);
+        }
+
+        template<uint8_t SPLIT_POINT>
+        void unpack_low_range(size_t start, size_t end, T* output, uint64_t offset) const {
+            if constexpr (SPLIT_POINT == 0) {
+                std::fill_n(output, end - start, static_cast<T>(offset));
+            } else {
+                const uint64_t* words = L.data();
+                size_t i = start;
+                for (; i < end && (i & 63); ++i, ++output) {
+                    *output = static_cast<T>(offset + unpack_low<SPLIT_POINT>(words, i));
+                }
+                for (; end - i >= 64; i += 64, output += 64) {
+                    unpack_aligned_block<SPLIT_POINT>(words + ((i * SPLIT_POINT) >> 6),
+                                                     output, offset, std::make_index_sequence<64>{});
+                }
+                for (; i < end; ++i, ++output) {
+                    *output = static_cast<T>(offset + unpack_low<SPLIT_POINT>(words, i));
+                }
+            }
+        }
+
+        template<uint8_t SPLIT_POINT>
         size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
-            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] {
-                return 0;
+            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
+            const size_t actual = std::min(count, m_num_elements - startIndex);
+            const size_t endIndex = startIndex + actual;
+
+            if (h == 0) {
+                unpack_low_range<SPLIT_POINT>(startIndex, endIndex, output, static_cast<uint64_t>(base));
+                return actual;
             }
-            const size_t endIndex = startIndex + std::min(count, m_num_elements - startIndex);
-            size_t produced_count = 0;
 
-            // L vector setup
-            const uint64_t* l_raw_data = nullptr;
-            uint64_t l_buffer_curr = 0;
-            size_t l_word_idx = 0;
-            uint32_t l_bit_offset = 0;
-
+            // Separate low-bit unpacking from run reconstruction. The former
+            // uses constant shifts in full blocks; the latter becomes a simple
+            // contiguous add/fill loop, without per-value bit-cursor branches.
             if constexpr (SPLIT_POINT > 0) {
-                l_raw_data = L.data();
-                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
-                l_word_idx = l_bit_global_pos >> 6;
-                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
-                l_buffer_curr = l_raw_data[l_word_idx];
+                unpack_low_range<SPLIT_POINT>(startIndex, endIndex, output, 0);
             }
-
-            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
-
-            // Fast path: h == 0
-            if (h == 0) [[unlikely]] {
-                T* out_ptr = output;
-                size_t current_pos = startIndex;
-                while (current_pos < endIndex) {
-                     uint64_t l_val = 0;
-                     if constexpr (SPLIT_POINT > 0) {
-                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
-                        if (l_bit_offset + SPLIT_POINT > 64) {
-                            l_word_idx++;
-                            l_buffer_curr = l_raw_data[l_word_idx];
-                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
-                            l_val = (word0 | word1) & l_mask;
-                        } else {
-                            l_val = word0 & l_mask;
-                            if (l_bit_offset + SPLIT_POINT == 64) {
-                                l_word_idx++;
-                                l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
-                            }
-                        }
-                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
-                     }
-                     out_ptr[produced_count++] = base + l_val;
-                     current_pos++;
-                }
-                return produced_count;
-            }
-
-            // Normal path: h > 0
-            size_t current_rank_idx = 1;
+            size_t rank = 1;
             if (startIndex != 0) {
-                if constexpr (RandomAccess) current_rank_idx = B->rank_unchecked(startIndex + 1);
+                if constexpr (RandomAccess) rank = B->rank_unchecked(startIndex + 1);
             }
-
-            uint64_t current_high = H[current_rank_idx - 1];
-            uint64_t current_base_plus_high;
-             if constexpr (SPLIT_POINT < sizeof(T) * 8) {
-                 current_base_plus_high = base + (current_high << SPLIT_POINT);
-             } else {
-                 current_base_plus_high = base;
-             }
-
-            const uint64_t* b_data = B->raw_data_ptr();
-            const size_t b_size = B->size();
-            size_t current_pos = startIndex;
-            T* out_ptr = output;
-
-            while (current_pos < endIndex) {
-                size_t next_one_pos = b_size;
-                size_t search_start = current_pos + 1;
-                
-                size_t b_word_idx = search_start / 64;
-                size_t b_bit_offset = search_start % 64;
-                size_t max_words = (endIndex + 63) / 64;
-                
-                if (b_word_idx < max_words) {
-                     uint64_t word = b_data[b_word_idx];
-                     constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
-                     uint64_t b_mask = reverse ? (~0ULL >> b_bit_offset) : (~0ULL << b_bit_offset);
-                     uint64_t masked_word = word & b_mask;
-                     
-                     if (masked_word != 0) {
-                         next_one_pos = b_word_idx * 64 + (reverse ? __builtin_clzll(masked_word) : __builtin_ctzll(masked_word));
-                     } else {
-                         for (size_t w = b_word_idx + 1; w < max_words; ++w) {
-                             if (b_data[w] != 0) {
-                                 next_one_pos = w * 64 + (reverse ? __builtin_clzll(b_data[w]) : __builtin_ctzll(b_data[w]));
-                                 break;
-                             }
-                         }
-                     }
-                }
-
-                size_t run_limit = std::min(endIndex, next_one_pos);
-                size_t count_in_run = run_limit - current_pos;
-                
-                for(size_t i=0; i<count_in_run; ++i) {
-                    uint64_t l_val = 0;
-                    if constexpr (SPLIT_POINT > 0) {
-                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
-                        if (l_bit_offset + SPLIT_POINT > 64) {
-                            l_word_idx++;
-                            l_buffer_curr = l_raw_data[l_word_idx];
-                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
-                            l_val = (word0 | word1) & l_mask;
-                        } else {
-                            l_val = word0 & l_mask;
-                             if (l_bit_offset + SPLIT_POINT == 64) {
-                                l_word_idx++;
-                                l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
-                            }
-                        }
-                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
-                    }
-                    out_ptr[produced_count++] = current_base_plus_high + static_cast<T>(l_val);
-                }
-                current_pos = run_limit;
-
-                if (current_pos == next_one_pos && current_pos < m_num_elements) {
-                    current_rank_idx++;
-                    if (current_rank_idx <= H.size()) {
-                        current_high = H[current_rank_idx - 1];
-                         if constexpr (SPLIT_POINT < sizeof(T) * 8) {
-                             current_base_plus_high = base + (current_high << SPLIT_POINT);
-                         }
+            const uint64_t* bits = B->raw_data_ptr();
+            const size_t word_limit = (endIndex + 63) / 64;
+            size_t position = startIndex;
+            while (position < endIndex) {
+                const size_t search = position + 1;
+                size_t word_index = search >> 6;
+                size_t next_run = endIndex;
+                if (word_index < word_limit) {
+                    constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
+                    const uint64_t mask = reverse ? (~uint64_t(0) >> (search & 63))
+                                                  : (~uint64_t(0) << (search & 63));
+                    uint64_t word = bits[word_index] & mask;
+                    while (word == 0 && ++word_index < word_limit) word = bits[word_index];
+                    if (word != 0) {
+                        const size_t bit = reverse ? __builtin_clzll(word) : __builtin_ctzll(word);
+                        next_run = std::min(endIndex, word_index * 64 + bit);
                     }
                 }
+                uint64_t run_base = static_cast<uint64_t>(base);
+                if constexpr (SPLIT_POINT < sizeof(T) * 8) {
+                    run_base += static_cast<uint64_t>(H[rank - 1]) << SPLIT_POINT;
+                }
+                T* first = output + (position - startIndex);
+                T* last = output + (next_run - startIndex);
+                if constexpr (SPLIT_POINT == 0) {
+                    std::fill(first, last, static_cast<T>(run_base));
+                } else {
+                    using U = std::make_unsigned_t<T>;
+                    for (; first != last; ++first) {
+                        *first = static_cast<T>(run_base + static_cast<U>(*first));
+                    }
+                }
+                position = next_run;
+                ++rank;
             }
-            return produced_count;
+            return actual;
         }
 
         template <size_t... Is>
@@ -470,14 +453,14 @@ namespace gef {
             if (count == 0 || startIndex >= m_num_elements) return 0;
             const size_t actual = std::min(count, m_num_elements - startIndex);
             if constexpr (RandomAccess) {
-                return dispatch_worker(b, startIndex, actual, output, std::make_index_sequence<65>{});
+                return dispatch_worker(b, startIndex, actual, output, std::make_index_sequence<sizeof(T) * 8 + 1>{});
             } else {
                 // A support-free range must still decode the preceding prefix.
                 if (startIndex == 0) {
-                    return dispatch_worker(b, 0, actual, output, std::make_index_sequence<65>{});
+                    return dispatch_worker(b, 0, actual, output, std::make_index_sequence<sizeof(T) * 8 + 1>{});
                 }
                 std::vector<T> prefix(startIndex + actual);
-                dispatch_worker(b, 0, prefix.size(), prefix.data(), std::make_index_sequence<65>{});
+                dispatch_worker(b, 0, prefix.size(), prefix.data(), std::make_index_sequence<sizeof(T) * 8 + 1>{});
                 std::copy_n(prefix.data() + startIndex, actual, output);
                 return actual;
             }
@@ -596,6 +579,14 @@ namespace gef {
             total_bytes += sizeof(b);
             
             return total_bytes;
+        }
+
+        // Owned C++ object storage and dynamic capacities; allocator metadata
+        // and allocation-size-class rounding are intentionally excluded.
+        [[nodiscard]] size_t allocated_size_in_bytes() const
+            requires requires(const ExceptionBitVectorType& bits) { bits.allocated_size_in_bytes(); } {
+            return sizeof(*this) + sdsl_allocated_payload_bytes(H) +
+                sdsl_allocated_payload_bytes(L) + (B ? B->allocated_size_in_bytes() : 0);
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {

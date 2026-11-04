@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <vector>
 #include <memory>
+#include <optional>
+#include <type_traits>
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
@@ -45,13 +47,13 @@ private:
         static constexpr pasta::FindL2FlatWith search_strategy = pasta::FindL2FlatWith::LINEAR_SEARCH;
     #endif
 
-    using support_type = OptimizedFlatRankSelect<
-        opt_target, 
-        search_strategy, 
-        bv_type
-    >; 
+    // Rank-only users need only the packed rank directory. Avoid the two
+    // unused select-sample vectors and their sentinel allocations entirely.
+    using support_type = std::conditional_t<OptSelect0 || OptSelect1,
+        OptimizedFlatRankSelect<opt_target, search_strategy, bv_type>,
+        pasta::FlatRank<opt_target, bv_type>>;
     bv_type bv_;
-    mutable std::unique_ptr<support_type> support_;
+    mutable std::optional<support_type> support_;
 
 public:
     static constexpr bool reverse_bit_order = false;
@@ -91,7 +93,7 @@ public:
         std::copy(src_span.begin(), src_span.end(), dest_span.begin());
 
         if (other.support_) {
-            support_ = std::make_unique<support_type>(bv_);
+            support_.emplace(bv_);
         }
     }
 
@@ -108,7 +110,7 @@ public:
             // Rebuild support structure
             support_.reset();
             if (other.support_) {
-                support_ = std::make_unique<support_type>(bv_);
+                support_.emplace(bv_);
             }
         }
         return *this;
@@ -118,7 +120,7 @@ public:
         : bv_(std::move(other.bv_)) {
 
         if (other.support_) {
-            support_ = std::make_unique<support_type>(bv_);
+            support_.emplace(bv_);
         }
         other.support_.reset();
     }
@@ -129,7 +131,7 @@ public:
             support_.reset();
 
             if (other.support_) {
-                support_ = std::make_unique<support_type>(bv_);
+                support_.emplace(bv_);
             }
             other.support_.reset();
         }
@@ -174,26 +176,40 @@ public:
 
     // Unchecked variants for hot paths
     inline size_t rank_unchecked(size_t pos) const { return support_->rank1(pos); }
-    inline size_t select_unchecked(size_t k) const { return support_->select1(k); }
-    inline size_t select0_unchecked(size_t k) const { return support_->select0(k); }
+    // Keep these names available even for rank-only instantiations: generic
+    // support-free codecs may instantiate an unreachable select path. Disabled
+    // operations fail consistently with the checked API if actually called.
+    inline size_t select_unchecked(size_t k) const {
+        if constexpr (OptSelect1) return support_->select1(k);
+        else throw std::runtime_error("Select1 not enabled at compile time");
+    }
+    inline size_t select0_unchecked(size_t k) const {
+        if constexpr (OptSelect0) return support_->select0(k);
+        else throw std::runtime_error("Select0 not enabled at compile time");
+    }
+
+    inline std::pair<size_t, size_t> select0_pair_unchecked(const PastaBitVectorT& other,
+                                                         size_t k) const requires (OptSelect0) {
+        return support_->select0_pair(*other.support_, k);
+    }
 
     // ---- Support Construction ----
 
     void enable_rank() override {
         if constexpr (OptRank1) {
-            if (!support_) support_ = std::make_unique<support_type>(bv_);
+            if (!support_) support_.emplace(bv_);
         }
     }
 
     void enable_select1() override {
         if constexpr (OptSelect1) {
-            if (!support_) support_ = std::make_unique<support_type>(bv_);
+            if (!support_) support_.emplace(bv_);
         }
     }
 
     void enable_select0() override {
         if constexpr (OptSelect0) {
-            if (!support_) support_ = std::make_unique<support_type>(bv_);
+            if (!support_) support_.emplace(bv_);
         }
     }
 
@@ -205,6 +221,20 @@ public:
         return bv_.space_usage() + (support_ ? support_->space_usage() : 0);
     }
     
+    // Object storage plus owned arrays/capacities, excluding allocator headers
+    // and allocator size-class rounding. Keep separate from the historical
+    // payload-and-index reporting convention used by size_in_bytes().
+    size_t allocated_size_in_bytes() const {
+        size_t support_arrays = 0;
+        if (support_) {
+            if constexpr (OptSelect0 || OptSelect1)
+                support_arrays = support_->allocated_size_in_bytes() - sizeof(support_type);
+            else
+                support_arrays = support_->space_usage() - sizeof(support_type);
+        }
+        return sizeof(*this) + bv_.data().size() * sizeof(uint64_t) + support_arrays;
+    }
+
     size_t support_size_in_bytes() const override {
         return support_ ? support_->space_usage() : 0;
     }
@@ -220,7 +250,7 @@ public:
     void serialize(std::ofstream& out) const override {
         size_t sz = bv_.size();
         out.write(reinterpret_cast<const char*>(&sz), sizeof(size_t));
-        bool has_supp = (support_ != nullptr);
+        bool has_supp = support_.has_value();
         out.write(reinterpret_cast<const char*>(&has_supp), sizeof(bool));
         
         // Bulk write bits
@@ -240,7 +270,7 @@ public:
 
         if (has_supp) {
             // Rebuilds specific supported structure
-            res.support_ = std::make_unique<support_type>(res.bv_);
+            res.support_.emplace(res.bv_);
         }
         return res;
     }

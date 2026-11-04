@@ -187,6 +187,16 @@ public:
         return m_original_size;
     }
 
+    // Optional<Compressor> already embeds every child object. Add only each
+    // child's dynamic allocation to the vector's full capacity.
+    [[nodiscard]] size_t allocated_size_in_bytes() const
+        requires requires(const Compressor& codec) { codec.allocated_size_in_bytes(); } {
+        size_t bytes = sizeof(*this) + m_partitions.capacity() * sizeof(std::optional<Compressor>);
+        for (const auto& codec : m_partitions)
+            if (codec) bytes += codec->allocated_size_in_bytes() - sizeof(Compressor);
+        return bytes;
+    }
+
     size_t size_in_bytes() const override {
         size_t total_bytes = sizeof(m_original_size); // K is template param, not stored
         size_t num_partitions = m_partitions.size();

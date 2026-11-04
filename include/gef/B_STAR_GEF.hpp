@@ -34,6 +34,7 @@ namespace stdx = std::experimental;
 #endif
 
 #include "IGEF.hpp"
+#include "AllocatedSize.hpp"
 #include "BlockParameters.hpp"
 #include "RLE_GEF.hpp"
 #include "gap_computation_utils.hpp"
@@ -774,9 +775,17 @@ namespace gef {
             const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
 
             const size_t zero_rank = index + 1;
-            // Use unchecked select0 - support is guaranteed enabled after construction
-            const size_t pos_gaps = G_plus->select0_unchecked(zero_rank) - zero_rank;
-            const size_t neg_gaps = G_minus->select0_unchecked(zero_rank) - zero_rank;
+            // Stage the two independent select queries together when the
+            // backend supports it; other bitvectors retain their scalar path.
+            size_t pos_gaps, neg_gaps;
+            if constexpr (requires { G_plus->select0_pair_unchecked(*G_minus, zero_rank); }) {
+                const auto positions = G_plus->select0_pair_unchecked(*G_minus, zero_rank);
+                pos_gaps = positions.first - zero_rank;
+                neg_gaps = positions.second - zero_rank;
+            } else {
+                pos_gaps = G_plus->select0_unchecked(zero_rank) - zero_rank;
+                neg_gaps = G_minus->select0_unchecked(zero_rank) - zero_rank;
+            }
 
             const U high_u = static_cast<U>(
                 static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps));
@@ -833,6 +842,15 @@ namespace gef {
 
         [[nodiscard]] size_t size() const override {
             return m_num_elements;
+        }
+
+        // Owned C++ object storage and dynamic capacities; allocator metadata
+        // and allocation-size-class rounding are intentionally excluded.
+        [[nodiscard]] size_t allocated_size_in_bytes() const
+            requires requires(const GapBitVectorType& bits) { bits.allocated_size_in_bytes(); } {
+            return sizeof(*this) + sdsl_allocated_payload_bytes(L) +
+                (G_plus ? G_plus->allocated_size_in_bytes() : 0) +
+                (G_minus ? G_minus->allocated_size_in_bytes() : 0);
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
