@@ -216,12 +216,45 @@ public:
             throw std::invalid_argument("output buffer is smaller than requested count");
         }
         
-        const size_t endIndex = std::min(startIndex + count, m_original_size);
+        const size_t endIndex = startIndex + std::min(count, m_original_size - startIndex);
         const size_t total_requested = endIndex - startIndex;
         
         // Identify which partitions we need to access
         const size_t start_partition = startIndex / K;
         const size_t end_partition = (endIndex - 1) / K;
+
+#if __cplusplus >= 202002L
+        // Codecs with a contiguous-output decoder can fill their disjoint
+        // destination slices directly. Avoid allocating and copying a scratch
+        // vector for every block during a sequential scan.
+        if constexpr (requires(const Compressor& codec, T* dst) {
+            codec.get_elements_into(size_t{}, size_t{}, dst);
+        }) {
+            size_t total_written = 0;
+            const size_t blocks = end_partition - start_partition + 1;
+            auto decode_partition = [&](size_t p) {
+                const size_t block_start = p * K;
+                const size_t range_start = std::max(startIndex, block_start);
+                const size_t range_end = std::min(endIndex, block_start + K);
+                return partition(p).get_elements_into(range_start - block_start,
+                    range_end - range_start, output.data() + range_start - startIndex);
+            };
+#if GEF_USE_OPENMP
+            if (total_requested >= 100000 && blocks >= 4) {
+                const int threads = std::max(1, std::min({omp_get_max_threads(),
+                    static_cast<int>(blocks),
+                    static_cast<int>(total_requested / MIN_ELEMENTS_PER_THREAD)}));
+                #pragma omp parallel for schedule(static) num_threads(threads) reduction(+:total_written)
+                for (size_t i = 0; i < blocks; ++i)
+                    total_written += decode_partition(start_partition + i);
+                return total_written;
+            }
+#endif
+            for (size_t p = start_partition; p <= end_partition; ++p)
+                total_written += decode_partition(p);
+            return total_written;
+        }
+#endif
         
         auto fetch_partition_range = [&](size_t partition_index,
                                          size_t range_start,
