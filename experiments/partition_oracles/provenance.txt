@@ -1,0 +1,33 @@
+Full time-series comparison on 2026-11-04.
+Host: Apple M1, 16 GiB RAM, macOS arm64.
+Compiler: Homebrew GCC 14.2.0_1 (g++-14 14.2.0).
+Upstream base: 1408a1d6f81272e055fe60f2087fe80f45cbddbd plus the partition-oracle integration in this worktree.
+
+Build:
+  cmake -S . -B build -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-14 -DCMAKE_BUILD_TYPE=Release -DGEF_BUILD_BENCHMARKS=OFF -DGEF_BUILD_PARTITION_BENCHMARK=ON
+  cmake --build build --target partition_oracle_comparison -j2
+
+Run, one dataset at a time:
+  OMP_NUM_THREADS=1 ./build/partition_oracle_comparison /Users/michelangelopucci/gef-residual-experiment/data/datasets/DU.bin > experiments/partition_oracles/DU.csv
+  OMP_NUM_THREADS=1 ./build/partition_oracle_comparison /Users/michelangelopucci/gef-residual-experiment/data/datasets/CT.bin > experiments/partition_oracles/CT.csv
+
+Parameters: grid=256, epsilon=0.1, modeled block overhead=256 bits.
+Uniform blocks have 32000 values. All methods support random access.
+The executable also enforces one OpenMP thread. Indices and their preprocessing are constructed sequentially and released after each row.
+Build time includes preprocessing, partition planning, native encoding, and temporary oracle destruction; input reading and full decoding verification are excluded.
+Preprocessing time is the oracle constructor alone. One measured construction per method, without warm-up or repeated timing trials.
+Values are the original signed 64-bit integers; no prefix sum is applied. The optional decimal-count header word does not change the stored integers.
+All values are decoded and compared to the input before a row is emitted. verified=1 records successful full verification.
+size_in_bytes and theoretical_bytes use the native library accounting methods. estimated_bits is the partitioner's objective, not serialized or allocated bytes. Uniform methods have no estimated_bits value.
+
+DU.bin: 334880 values, 2679056 bytes, 16-byte header, decimal count 3.
+SHA256: f472abe8d16e4e258717aca347375becbefd3ccb1668b7dd3a8b0daf8eaa55c2
+CT.bin: 2826654 values, 22613248 bytes, 16-byte header, decimal count 1.
+SHA256: d296ec7be6fb7ba3e1c0358a4a650053ebb9870b28a4f71707accc1bb04dcc36
+
+Release build with the repository default optimization flags, LTO, SIMD enabled, and OpenMP. Cached dependency sources were reused from /Users/michelangelopucci/gef-residual-experiment/build-gef/_deps.
+sdsl-lite: c32874cb2d8524119f25f3b501526fe692df29f4
+pasta: 3ffb6e5a2e58c76425de8197bfe554eb1bf9fd94
+pasta_utils: 32ee848255ee05448220155ab545cc5ef240f78a
+sux: 568903f1b7957ef03620ebad65d6ef68e031fef9
+tlx: 2dd63ab839909f0b43cd02108a1869c4670b2c8e

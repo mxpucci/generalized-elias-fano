@@ -1,0 +1,6 @@
+dataset,codec,n,grid,epsilon,block_overhead_bits,preprocessing_seconds,build_seconds,size_in_bytes,theoretical_bytes,estimated_bits,partitions,verified
+DU,bstar_uniform32000,334880,256,0.1,256,0,0.014588,258273,250851,,11,1
+DU,bstar_partitioned_exact,334880,256,0.1,256,0.009265,0.04799,225093,184498,1491300,147,1
+DU,bstar_partitioned_bound,334880,256,0.1,256,0.001065,0.012971,224503,184565,1827587,145,1
+DU,rle_uniform32000,334880,256,0.1,256,0,0.004533,240172,237354,,11,1
+DU,rle_partitioned,334880,256,0.1,256,0.001561,0.018986,232536,187880,1535466,298,1
