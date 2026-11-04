@@ -13,6 +13,7 @@
 #include <utility>
 #include <stdexcept>
 #include "IGEF.hpp"
+#include "BlockParameters.hpp"
 #include "FastBitWriter.hpp"
 #include "NoRandomAccess.hpp"
 
@@ -211,10 +212,15 @@ namespace gef {
         }
 
 
+        template<typename C>
+        RLE_GEF(const C& S, const BlockParameters<T>& parameters)
+            : RLE_GEF(S, &parameters) {}
+
         // Constructor
         template<typename C>
-        RLE_GEF(const C &S) {
+        RLE_GEF(const C &S, const BlockParameters<T>* parameters = nullptr) {
             const size_t N = S.size();
+            if (parameters) parameters->validate(S);
             m_num_elements = N;
             if (S.size() == 0) {
                 b = 0;
@@ -225,16 +231,18 @@ namespace gef {
             }
 
             auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
-            base = *min_it;
-            const int64_t max_val = *max_it;
-            const int64_t min_val = base;
-            const uint64_t u = max_val - min_val + 1;
-            const uint8_t total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
-
-
-            b = optimal_split_point(S,
-                                    total_bits,
-                                    /* min= */ base);
+            base = parameters ? parameters->base : *min_it;
+            uint8_t total_bits;
+            if (parameters) {
+                total_bits = parameters->width;
+                b = parameters->split;
+            } else {
+                const int64_t max_val = *max_it;
+                const int64_t min_val = base;
+                const uint64_t u = max_val - min_val + 1;
+                total_bits = (u > 1) ? static_cast<uint8_t>(floor(log2(u)) + 1) : 1;
+                b = optimal_split_point(S, total_bits, base);
+            }
             h = total_bits - b;
 
             if (b > 0) {
@@ -357,12 +365,12 @@ namespace gef {
                             l_val = word0 & l_mask;
                             if (l_bit_offset + SPLIT_POINT == 64) {
                                 l_word_idx++;
-                                l_buffer_curr = l_raw_data[l_word_idx];
+                                l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
                             }
                         }
                         l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
                      }
-                     out_ptr[produced_count++] = base + static_cast<T>(l_val);
+                     out_ptr[produced_count++] = base + l_val;
                      current_pos++;
                 }
                 return produced_count;
@@ -375,8 +383,8 @@ namespace gef {
                 if (current_rank_idx == 0) current_rank_idx = 1;
             }
 
-            T current_high = H[current_rank_idx - 1];
-            T current_base_plus_high;
+            uint64_t current_high = H[current_rank_idx - 1];
+            uint64_t current_base_plus_high;
              if constexpr (SPLIT_POINT < sizeof(T) * 8) {
                  current_base_plus_high = base + (current_high << SPLIT_POINT);
              } else {
@@ -429,7 +437,7 @@ namespace gef {
                             l_val = word0 & l_mask;
                              if (l_bit_offset + SPLIT_POINT == 64) {
                                 l_word_idx++;
-                                l_buffer_curr = l_raw_data[l_word_idx];
+                                l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
                             }
                         }
                         l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
@@ -467,7 +475,7 @@ namespace gef {
             // Caller guarantees output has at least 'count' slots.
 
             using U = std::make_unsigned_t<T>;
-            using Acc = std::conditional_t<std::is_signed_v<T>, long long, unsigned long long>;
+            using Acc = unsigned long long;
 
             if (h == 0) [[unlikely]] {
                 if (b == 0) [[unlikely]] {
@@ -540,7 +548,7 @@ namespace gef {
             if (is_exception) [[unlikely]] {
                 const size_t exception_rank = B->rank_unchecked(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
-                return base + static_cast<T>(low | (high_val << b));
+                return base + (low | (high_val << b));
             }
 
             const size_t rank = B->rank_unchecked(index + 1);
