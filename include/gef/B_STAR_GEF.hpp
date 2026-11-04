@@ -6,6 +6,7 @@
 #define B_STAR_GEF_HPP
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -97,103 +98,129 @@ namespace gef {
             return total_bytes;
         }
 
+        // The representation stores offsets from base, whose exact width can be
+        // computed without floating-point rounding or a range+1 overflow.
+        static uint8_t value_width(T min, T max) {
+            using U = std::make_unsigned_t<T>;
+            return static_cast<uint8_t>(std::bit_width(static_cast<U>(
+                static_cast<U>(max) - static_cast<U>(min))));
+        }
+
+        static GapComputation bitpack_statistics(size_t n) {
+            GapComputation result{};
+            result.positive_gaps = n;
+            result.zero_gaps = n ? n - 1 : 0;
+            return result;
+        }
+
         template<typename C>
         static double approximated_optimal_split_point(const C &S, const T min, const T max) {
-            const GapComputation gap_computation = variation_of_original_vec(S, min, max);
-            const size_t total_variation = gap_computation.sum_of_negative_gaps + gap_computation.sum_of_positive_gaps;
+            using U = std::make_unsigned_t<T>;
+            const U range = static_cast<U>(max) - static_cast<U>(min);
+            if (range == 0 || S.size() == 0) return 0.0;
 
-            return log2(log(2) * total_variation / S.size());
+            // All magnitudes are at most range. Proving the sum fits once lets
+            // the common path use an ordinary, vectorizable word-sized sum.
+            double total_variation;
+            if (range <= SIZE_MAX / S.size()) {
+                size_t variation = static_cast<U>(static_cast<U>(S[0]) - static_cast<U>(min));
+                for (size_t i = 1; i < S.size(); ++i) {
+                    const U current = static_cast<U>(S[i]);
+                    const U previous = static_cast<U>(S[i - 1]);
+                    variation += S[i] >= S[i - 1]
+                        ? static_cast<U>(current - previous)
+                        : static_cast<U>(previous - current);
+                }
+                total_variation = static_cast<double>(variation);
+            } else {
+                // Full-width integer inputs need a wider accumulator, not a
+                // saturated approximation (whose two partial sums can wrap).
+                unsigned __int128 variation = static_cast<U>(static_cast<U>(S[0]) - static_cast<U>(min));
+                for (size_t i = 1; i < S.size(); ++i) {
+                    const U current = static_cast<U>(S[i]);
+                    const U previous = static_cast<U>(S[i - 1]);
+                    variation += S[i] >= S[i - 1]
+                        ? static_cast<U>(current - previous)
+                        : static_cast<U>(previous - current);
+                }
+                total_variation = static_cast<double>(variation);
+            }
+            return total_variation > 0
+                ? std::log2(std::log(2.0) * total_variation / S.size()) : 0.0;
         }
 
         template<typename C>
         static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const C &S,
             const T min, const T max) {
-            using WI = __int128;
-            using WU = unsigned __int128;
-            const WI min_w = static_cast<WI>(min);
-            const WI max_w = static_cast<WI>(max);
-            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+            using U = std::make_unsigned_t<T>;
+            const uint8_t total_bits = value_width(min, max);
+            if (total_bits == 0) return {0, bitpack_statistics(S.size())};
 
-            size_t total_bits = 1;
-            if (range > 1) {
-                WU x = range - 1;
-                total_bits = 0;
-                while (x > 0) {
-                    ++total_bits;
-                    x >>= 1;
+            const double approx_b = std::clamp(approximated_optimal_split_point(S, min, max),
+                                                0.0, static_cast<double>(total_bits));
+            const uint8_t floor_b = static_cast<uint8_t>(std::floor(approx_b));
+            const uint8_t ceil_b = static_cast<uint8_t>(std::ceil(approx_b));
+            if (floor_b == total_bits) return {total_bits, bitpack_statistics(S.size())};
+
+            GapComputation candidates[2]{};
+            const U maximum_high = static_cast<U>(static_cast<U>(max) - static_cast<U>(min)) >> floor_b;
+            if (maximum_high <= (SIZE_MAX - S.size()) / S.size()) {
+                // The two candidates are adjacent shifts. Compute their sums
+                // together from one residual stream; no exception statistics,
+                // saturating arithmetic, or dynamically allocated vector is needed.
+                U previous = 0;
+                for (const T value : S) {
+                    const U current = static_cast<U>(static_cast<U>(value) - static_cast<U>(min)) >> floor_b;
+                    const U positive = current >= previous ? current - previous : 0;
+                    const U negative = previous > current ? previous - current : 0;
+                    candidates[0].sum_of_positive_gaps += positive;
+                    candidates[0].sum_of_negative_gaps += negative;
+                    candidates[0].positive_gaps += current >= previous;
+                    candidates[0].negative_gaps += current < previous;
+                    if (ceil_b != floor_b) {
+                        const U current_ceil = current >> 1;
+                        const U previous_ceil = previous >> 1;
+                        candidates[1].sum_of_positive_gaps += current_ceil >= previous_ceil ? current_ceil - previous_ceil : 0;
+                        candidates[1].sum_of_negative_gaps += previous_ceil > current_ceil ? previous_ceil - current_ceil : 0;
+                        candidates[1].positive_gaps += current_ceil >= previous_ceil;
+                        candidates[1].negative_gaps += current_ceil < previous_ceil;
+                    }
+                    previous = current;
+                }
+            } else {
+                candidates[0] = variation_of_shifted_vec(S, min, max, floor_b, ExceptionRule::None);
+                if (ceil_b != floor_b)
+                    candidates[1] = variation_of_shifted_vec(S, min, max, ceil_b, ExceptionRule::None);
+            }
+
+            uint8_t best_b = floor_b;
+            size_t best_space = evaluate_space(candidates[0], floor_b, total_bits);
+            GapComputation best_stats = candidates[0];
+            if (ceil_b != floor_b) {
+                const size_t ceil_space = evaluate_space(candidates[1], ceil_b, total_bits);
+                if (ceil_space < best_space) {
+                    best_b = ceil_b;
+                    best_space = ceil_space;
+                    best_stats = candidates[1];
                 }
             }
-            total_bits = std::min<size_t>(total_bits, sizeof(T) * 8);
-
-            const double approx_b = approximated_optimal_split_point(S, min, max);
-            
-            if (ceil(approx_b) == floor(approx_b)) {
-                const uint8_t b_clamped = static_cast<uint8_t>(
-                    std::max(0.0, std::min<double>(total_bits, floor(approx_b))));
-                return {
-                    b_clamped,
-                    variation_of_shifted_vec(S, min, max, b_clamped, ExceptionRule::None)
-                };
-            }
-
-            const double ceil_candidate = std::min<double>(total_bits, ceil(approx_b));
-            const double floor_candidate = std::max(0.0, floor(approx_b));
-            const uint8_t ceilB = static_cast<uint8_t>(std::min<double>((double)total_bits, ceil_candidate));
-            const uint8_t floorB = static_cast<uint8_t>(std::max(0.0, floor_candidate));
-
-            const std::vector<GapComputation> gap_computation =
-                    total_variation_of_shifted_vec_with_multiple_shifts(S, min, max, floorB, ceilB, ExceptionRule::None);
-            
-            size_t best_index = 0;
-            size_t best_space = SIZE_MAX;
-            for (size_t i = 0; i < gap_computation.size(); i++) {
-                const size_t space = evaluate_space(gap_computation[i],
-                                                    static_cast<uint8_t>(floorB + i),
-                                                    total_bits);
-                if (space < best_space) {
-                    best_space = space;
-                    best_index = i;
-                }
-            }
-
-            const auto total_bits_stats =
-                variation_of_shifted_vec(S,
-                                         min,
-                                         max,
-                                         static_cast<uint8_t>(total_bits),
-                                         ExceptionRule::None);
-            const size_t total_bits_space =
-                evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits);
-
-            if (total_bits_space < best_space) {
-                return {static_cast<uint8_t>(total_bits), total_bits_stats};
-            }
-
-            return {static_cast<uint8_t>(floorB + best_index), gap_computation[best_index]};
+            // With every bit in L, both high-part sums are known to be zero.
+            // Evaluating the bitpacking fallback does not require another scan.
+            const auto bitpack_stats = bitpack_statistics(S.size());
+            if (evaluate_space(bitpack_stats, total_bits, total_bits) < best_space)
+                return {total_bits, bitpack_stats};
+            return {best_b, best_stats};
         }
 
 
         template<typename C>
         static std::pair<uint8_t, GapComputation>
         optimal_split_point(const C &S, const T min, const T max) {
-            using WI = __int128;
-            using WU = unsigned __int128;
-            const WI min_w = static_cast<WI>(min);
-            const WI max_w = static_cast<WI>(max);
-            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
+            const size_t total_bits = value_width(min, max);
+            if (total_bits == 0) return {0, bitpack_statistics(S.size())};
 
-            size_t total_bits = 1;
-            if (range > 1) {
-                WU x = range - 1;
-                total_bits = 0;
-                while (x > 0) {
-                    ++total_bits;
-                    x >>= 1;
-                }
-            }
-            total_bits = std::min<size_t>(total_bits, sizeof(T) * 8);
-
-            const double approx_b = approximated_optimal_split_point(S, min, max);
+            const double approx_b = std::clamp(approximated_optimal_split_point(S, min, max),
+                                                0.0, static_cast<double>(total_bits));
             const size_t min_b = static_cast<size_t>(std::max(0.0, floor(approx_b) - 1));
             const size_t max_b = static_cast<size_t>(std::min(static_cast<double>(total_bits), ceil(approx_b) + 3));
 
@@ -216,12 +243,7 @@ namespace gef {
                 }
             }
 
-            const auto total_bits_stats =
-                variation_of_shifted_vec(S,
-                                         min,
-                                         max,
-                                         static_cast<uint8_t>(total_bits),
-                                         ExceptionRule::None);
+            const auto total_bits_stats = bitpack_statistics(S.size());
             const size_t total_bits_space =
                 evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits);
 
@@ -246,153 +268,103 @@ namespace gef {
         }
 
 
-        template<uint8_t SPLIT_POINT>
-        size_t get_elements_worker(size_t startIndex, size_t count, std::vector<T>& output) const {
-            constexpr size_t MAX_BATCH = 512;
-            
-            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] {
-                return 0;
-            }
-            if (output.size() < count) [[unlikely]] {
-                throw std::invalid_argument("output buffer is smaller than requested count");
-            }
-
-            const size_t endIndex = std::min(startIndex + count, m_num_elements);
-            size_t write_index = startIndex;
-            size_t produced_count = 0;
-
-
-            const uint64_t* l_raw_data = nullptr;
-            uint64_t l_buffer_curr = 0;
-            size_t l_word_idx = 0;
-            uint32_t l_bit_offset = 0;
-
-            if constexpr (SPLIT_POINT > 0) {
-                l_raw_data = L.data();
-                // Calculate initial bit position in L
-                const size_t l_bit_global_pos = startIndex * SPLIT_POINT;
-                l_word_idx = l_bit_global_pos >> 6;
-                l_bit_offset = static_cast<uint32_t>(l_bit_global_pos & 63);
-                l_buffer_curr = l_raw_data[l_word_idx];
+        // Enumerate zero delimiters directly. The difference between their
+        // positions in G+ and G- is the high value, so sequential decoding needs
+        // neither unary-gap materialization nor a prefix-sum dependency.
+        class ZeroPositionReader {
+            const uint64_t* data_;
+            size_t word_;
+            uint64_t zeros_;
+        public:
+            ZeroPositionReader(const uint64_t* data, size_t start)
+                : data_(data), word_(start >> 6), zeros_(~data_[word_]) {
+                const unsigned offset = start & 63;
+                if constexpr (GapBitVectorType::reverse_bit_order)
+                    zeros_ &= ~uint64_t(0) >> offset;
+                else
+                    zeros_ &= ~uint64_t(0) << offset;
             }
 
-            // Mask for low bits
-            constexpr uint64_t l_mask = (SPLIT_POINT == 64) ? ~0ULL : ((1ULL << SPLIT_POINT) - 1);
-
-
-            /* --- Fast Path: No High Bits (h=0) --- */
-            if (h == 0) [[unlikely]] {
-                T* out_ptr = output.data(); 
-                
-                while (write_index < endIndex) {
-                    const size_t remaining = endIndex - write_index;
-                    for (size_t i = 0; i < remaining; ++i) {
-                        uint64_t l_val = 0;
-                        if constexpr (SPLIT_POINT > 0) {
-                            // Extract 'b' bits
-                            uint64_t word0 = l_buffer_curr >> l_bit_offset;
-                            
-                            if (l_bit_offset + SPLIT_POINT > 64) {
-                                // Crossing boundary
-                                l_word_idx++;
-                                l_buffer_curr = l_raw_data[l_word_idx]; // Load next
-                                uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
-                                l_val = (word0 | word1) & l_mask;
-                            } else {
-                                l_val = word0 & l_mask;
-                                if (l_bit_offset + SPLIT_POINT == 64) {
-                                    l_word_idx++;
-                                    l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
-                                }
-                            }
-                            
-                            // Advance offset
-                            l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
-                        }
-                        
-                        out_ptr[produced_count++] = base + l_val;
-                    }
-                    write_index += remaining;
-                }
-                return produced_count;
-            }
-
-            // --- Standard Path: High Bits Present ---
-            
-            // 1. Setup High-Part State
-            size_t plusGapStart = 0;
-            size_t minusGapStart = 0;
-            
-            using U = std::make_unsigned_t<T>;
-            U running_high = 0;
-
-            if (startIndex > 0) [[unlikely]] {
-                plusGapStart = G_plus->select0(startIndex) + 1;
-                minusGapStart = G_minus->select0(startIndex) + 1;
-                const size_t pos_gaps = (plusGapStart - 1) - startIndex;
-                const size_t neg_gaps = (minusGapStart - 1) - startIndex;
-                running_high = static_cast<U>(static_cast<int64_t>(pos_gaps) - static_cast<int64_t>(neg_gaps));
-            }
-
-            // 2. Initialize Decoders
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), plusGapStart);
-            FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), minusGapStart);
-
-            uint32_t plus_gaps[MAX_BATCH];
-            uint32_t minus_gaps[MAX_BATCH];
-            
-            T* out_ptr = output.data();
-
-            while (write_index < endIndex) {
-                const size_t remaining = endIndex - write_index;
-                const size_t batch_size = std::min(remaining, MAX_BATCH);
-                
-                // Batch Decode Gaps
-                plus_decoder.prefetch();
-                minus_decoder.prefetch();
-
-                plus_decoder.next_batch(plus_gaps, batch_size);
-                minus_decoder.next_batch(minus_gaps, batch_size);
-
-                // Hot Loop: Merge L extraction + H update + Write
-                for (size_t i = 0; i < batch_size; ++i) {
-                    // --- 1. Extract Low Part (Inline Stream Reader) ---
-                    uint64_t l_val = 0;
-                    if constexpr (SPLIT_POINT > 0) {
-                        uint64_t word0 = l_buffer_curr >> l_bit_offset;
-                        
-                        if (l_bit_offset + SPLIT_POINT > 64) {
-                            l_word_idx++;
-                            l_buffer_curr = l_raw_data[l_word_idx]; 
-                            uint64_t word1 = l_buffer_curr << (64 - l_bit_offset);
-                            l_val = (word0 | word1) & l_mask;
+            // The caller requests no more delimiters than remain in the codec.
+            // Thus padding bits are never returned, and no sentinel word is read.
+            void read(size_t* out, size_t count) {
+                size_t i = 0;
+                while (i < count) {
+                    while (zeros_ == 0) zeros_ = ~data_[++word_];
+                    const size_t base_position = word_ * 64;
+                    do {
+                        if constexpr (GapBitVectorType::reverse_bit_order) {
+                            const unsigned bit = std::countl_zero(zeros_);
+                            out[i++] = base_position + bit;
+                            zeros_ ^= uint64_t(1) << (63 - bit);
                         } else {
-                            l_val = word0 & l_mask;
-                            if (l_bit_offset + SPLIT_POINT == 64) {
-                                l_word_idx++;
-                                l_buffer_curr = l_word_idx < (L.bit_size() + 63) / 64 ? l_raw_data[l_word_idx] : 0;
-                            }
+                            out[i++] = base_position + std::countr_zero(zeros_);
+                            zeros_ &= zeros_ - 1;
                         }
-                        l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
-                    }
-
-                    // --- 2. Update High Part ---
-                    const int64_t delta = static_cast<int64_t>(plus_gaps[i]) - static_cast<int64_t>(minus_gaps[i]);
-                    running_high = static_cast<U>(running_high + delta);
-
-                    // --- 3. Fuse and Write ---
-                    U high_shifted = 0;
-                    if constexpr (SPLIT_POINT < sizeof(T) * 8) {
-                         high_shifted = static_cast<U>(running_high << SPLIT_POINT);
-                    }
-                    const T val = base + static_cast<T>(l_val) + high_shifted;
-                    out_ptr[produced_count++] = val;
+                    } while (zeros_ && i < count);
                 }
+            }
+        };
 
-                write_index += batch_size;
+        template<uint8_t SPLIT_POINT>
+        static uint64_t read_low(const uint64_t* data, size_t index) {
+            if constexpr (SPLIT_POINT == 0) {
+                return 0;
+            } else if constexpr (SPLIT_POINT == 64) {
+                return data[index];
+            } else {
+                constexpr uint64_t mask = (uint64_t(1) << SPLIT_POINT) - 1;
+                const size_t bit_position = index * SPLIT_POINT;
+                const size_t word = bit_position >> 6;
+                const unsigned offset = bit_position & 63;
+                uint64_t value = data[word] >> offset;
+                if constexpr (64 % SPLIT_POINT != 0) {
+                    if (offset + SPLIT_POINT > 64)
+                        value |= data[word + 1] << (64 - offset);
+                }
+                return value & mask;
+            }
+        }
+
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
+            constexpr size_t MAX_BATCH = 256;
+            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
+            count = std::min(count, m_num_elements - startIndex);
+            using U = std::make_unsigned_t<T>;
+            const U base_u = static_cast<U>(base);
+            const uint64_t* low_data = L.data();
+
+            if (h == 0) {
+                if constexpr (SPLIT_POINT == 0) {
+                    std::fill_n(output, count, base);
+                } else {
+                    for (size_t i = 0; i < count; ++i)
+                        output[i] = static_cast<T>(base_u + static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + i)));
+                }
+                return count;
             }
 
-            return produced_count;
+            const size_t plus_start = startIndex ? G_plus->select0(startIndex) + 1 : 0;
+            const size_t minus_start = startIndex ? G_minus->select0(startIndex) + 1 : 0;
+            ZeroPositionReader plus(G_plus->raw_data_ptr(), plus_start);
+            ZeroPositionReader minus(G_minus->raw_data_ptr(), minus_start);
+            alignas(64) size_t plus_positions[MAX_BATCH];
+            alignas(64) size_t minus_positions[MAX_BATCH];
+            for (size_t produced = 0; produced < count;) {
+                const size_t batch = std::min(count - produced, MAX_BATCH);
+                plus.read(plus_positions, batch);
+                minus.read(minus_positions, batch);
+                for (size_t i = 0; i < batch; ++i) {
+                    U high = 0;
+                    if constexpr (SPLIT_POINT < sizeof(T) * 8)
+                        high = static_cast<U>(plus_positions[i] - minus_positions[i]) << SPLIT_POINT;
+                    const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + produced + i));
+                    output[produced + i] = static_cast<T>(base_u + (high | low));
+                }
+                produced += batch;
+            }
+            return count;
         }
 
     public:
@@ -517,24 +489,8 @@ namespace gef {
             base = parameters ? parameters->base : *min_it;
             const T max_val = *max_it;
             
-            // Use 128-bit arithmetic to avoid overflow
-            using WI = __int128;
-            using WU = unsigned __int128;
-            const WI min_w = static_cast<WI>(base);
-            const WI max_w = static_cast<WI>(max_val);
-            const WU range = static_cast<WU>(max_w - min_w) + static_cast<WU>(1);
-            
-            // Calculate total_bits safely, clamped to sizeof(T)*8
-            uint8_t total_bits;
-            if (range <= 1) {
-                total_bits = 1;
-            } else {
-                size_t bits = 0;
-                WU x = range - 1;
-                while (x > 0) { ++bits; x >>= 1; }
-                total_bits = std::min<size_t>(bits, sizeof(T) * 8);
-            }
-            
+            uint8_t total_bits = value_width(base, max_val);
+
             GapComputation gap_computation{};
 
             if (parameters) {
@@ -696,8 +652,8 @@ namespace gef {
                 // Note: gap == 0 means no ones to write
                 
                 // Write terminators (always 0)
-                minus_writer.set_zero();
-                plus_writer.set_zero();
+                minus_writer.skip_zeros(1);
+                plus_writer.skip_zeros(1);
 
                 lastHighBits = currentHighBits;
             }
@@ -726,8 +682,8 @@ namespace gef {
         }
 
         template <size_t... Is>
-        size_t dispatch_worker(size_t b, size_t start, size_t count, std::vector<T>& out, std::index_sequence<Is...>) const {
-            using WorkerPtr = size_t (B_STAR_GEF::*)(size_t, size_t, std::vector<T>&) const;
+        size_t dispatch_worker(size_t b, size_t start, size_t count, T* out, std::index_sequence<Is...>) const {
+            using WorkerPtr = size_t (B_STAR_GEF::*)(size_t, size_t, T*) const;
 
             // Create the table
             static constexpr WorkerPtr table[] = { &B_STAR_GEF::get_elements_worker<Is>... };
@@ -783,13 +739,23 @@ namespace gef {
     public:
         size_t get_elements(size_t startIndex, size_t count, std::vector<T>& output) const override {
             if constexpr (RandomAccess) {
-                // 65 is the number of cases (0 to 64)
-                return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
+                if (count == 0 || startIndex >= m_num_elements) return 0;
+                if (output.size() < count)
+                    throw std::invalid_argument("output buffer is smaller than requested count");
+                return get_elements_into(startIndex, count, output.data());
             } else {
                 return ::gef::internal::no_support::get_elements_force_from_zero<T>(
                     startIndex, count, m_num_elements, output,
                     [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
             }
+        }
+
+        // Decode directly into caller-owned contiguous storage. The caller must
+        // provide space for min(count, size() - startIndex) values when startIndex
+        // is valid; this avoids partition-local allocation and copying.
+        size_t get_elements_into(size_t startIndex, size_t count, T* output) const
+            requires (RandomAccess) {
+            return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
         T operator[](size_t index) const override {
