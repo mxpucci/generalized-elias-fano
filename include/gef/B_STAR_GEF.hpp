@@ -257,8 +257,7 @@ namespace gef {
                 throw std::invalid_argument("output buffer is smaller than requested count");
             }
 
-            using U = std::make_unsigned_t<T>;
-            const size_t endIndex = startIndex + std::min(count, m_num_elements - startIndex);
+            const size_t endIndex = std::min(startIndex + count, m_num_elements);
             size_t write_index = startIndex;
             size_t produced_count = 0;
 
@@ -311,7 +310,7 @@ namespace gef {
                             l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
                         }
                         
-                        out_ptr[produced_count++] = static_cast<T>(static_cast<U>(base) + static_cast<U>(l_val));
+                        out_ptr[produced_count++] = base + l_val;
                     }
                     write_index += remaining;
                 }
@@ -324,6 +323,7 @@ namespace gef {
             size_t plusGapStart = 0;
             size_t minusGapStart = 0;
             
+            using U = std::make_unsigned_t<T>;
             U running_high = 0;
 
             if (startIndex > 0) [[unlikely]] {
@@ -331,7 +331,7 @@ namespace gef {
                 minusGapStart = G_minus->select0(startIndex) + 1;
                 const size_t pos_gaps = (plusGapStart - 1) - startIndex;
                 const size_t neg_gaps = (minusGapStart - 1) - startIndex;
-                running_high = static_cast<U>(pos_gaps - neg_gaps);
+                running_high = static_cast<U>(static_cast<int64_t>(pos_gaps) - static_cast<int64_t>(neg_gaps));
             }
 
             // 2. Initialize Decoders
@@ -377,15 +377,15 @@ namespace gef {
                     }
 
                     // --- 2. Update High Part ---
-                    running_high += static_cast<U>(plus_gaps[i]);
-                    running_high -= static_cast<U>(minus_gaps[i]);
+                    const int64_t delta = static_cast<int64_t>(plus_gaps[i]) - static_cast<int64_t>(minus_gaps[i]);
+                    running_high = static_cast<U>(running_high + delta);
 
                     // --- 3. Fuse and Write ---
                     U high_shifted = 0;
                     if constexpr (SPLIT_POINT < sizeof(T) * 8) {
                          high_shifted = static_cast<U>(running_high << SPLIT_POINT);
                     }
-                    const T val = static_cast<T>(static_cast<U>(base) + static_cast<U>(l_val) + high_shifted);
+                    const T val = base + static_cast<T>(l_val) + high_shifted;
                     out_ptr[produced_count++] = val;
                 }
 
@@ -685,12 +685,13 @@ namespace gef {
 
                 // Compute high part and gap
                 const U currentHighBits = element_u >> b;
+                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
 
                 // Write gap encoding using inline bit operations (no virtual calls)
-                if (currentHighBits > lastHighBits) {
-                    plus_writer.set_ones_range(currentHighBits - lastHighBits);
-                } else if (currentHighBits < lastHighBits) {
-                    minus_writer.set_ones_range(lastHighBits - currentHighBits);
+                if (gap > 0) {
+                    plus_writer.set_ones_range(static_cast<uint64_t>(gap));
+                } else if (gap < 0) {
+                    minus_writer.set_ones_range(static_cast<uint64_t>(-gap));
                 }
                 // Note: gap == 0 means no ones to write
                 
@@ -747,6 +748,7 @@ namespace gef {
             // Caller guarantees output has at least 'count' slots.
 
             using U = std::make_unsigned_t<T>;
+            using Acc = unsigned long long;
 
             if (h == 0) [[unlikely]] {
                 if (b == 0) [[unlikely]] {
@@ -755,7 +757,8 @@ namespace gef {
                 }
                 for (size_t i = 0; i < endIndex; ++i) {
                     const U low = static_cast<U>(L[i]);
-                    output[i] = static_cast<T>(static_cast<U>(base) + low);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    output[i] = static_cast<T>(sum);
                 }
                 return endIndex;
             }
@@ -763,15 +766,16 @@ namespace gef {
             FastUnaryDecoder<GapBitVectorType::reverse_bit_order> plus_decoder(G_plus->raw_data_ptr(), G_plus->size(), 0);
             FastUnaryDecoder<GapBitVectorType::reverse_bit_order> minus_decoder(G_minus->raw_data_ptr(), G_minus->size(), 0);
 
-            U running_high = 0;
+            long long running_high = 0;
             for (size_t i = 0; i < endIndex; ++i) {
-                running_high += static_cast<U>(plus_decoder.next());
-                running_high -= static_cast<U>(minus_decoder.next());
+                running_high += static_cast<long long>(plus_decoder.next());
+                running_high -= static_cast<long long>(minus_decoder.next());
 
                 const U low = (b > 0) ? static_cast<U>(L[i]) : U(0);
                 const U high_u = static_cast<U>(running_high);
                 const U offset = (b < sizeof(U) * 8) ? (low | (high_u << b)) : low;
-                output[i] = static_cast<T>(static_cast<U>(base) + offset);
+                const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);
+                output[i] = static_cast<T>(sum);
             }
             return endIndex;
         }
@@ -795,9 +799,10 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
             }
-            using U = std::make_unsigned_t<T>;
             if (h == 0) [[unlikely]]
-                return static_cast<T>(static_cast<U>(base) + (b > 0 ? static_cast<U>(L[index]) : U(0)));
+                return base + (b > 0 ? L[index] : 0);
+            
+            using U = std::make_unsigned_t<T>;
 
             // Initiate L access early to hide memory latency while computing select0
             const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
@@ -807,9 +812,10 @@ namespace gef {
             const size_t pos_gaps = G_plus->select0_unchecked(zero_rank) - zero_rank;
             const size_t neg_gaps = G_minus->select0_unchecked(zero_rank) - zero_rank;
 
-            const U high_u = static_cast<U>(pos_gaps - neg_gaps);
+            const U high_u = static_cast<U>(
+                static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps));
 
-            return static_cast<T>(static_cast<U>(base) + (low | (high_u << b)));
+            return base + (low | (high_u << b));
         }
 
         void serialize(std::ofstream &ofs) const override {

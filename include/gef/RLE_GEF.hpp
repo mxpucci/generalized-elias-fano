@@ -329,8 +329,7 @@ namespace gef {
                 throw std::invalid_argument("output buffer is smaller than requested count");
             }
 
-            using U = std::make_unsigned_t<T>;
-            const size_t endIndex = startIndex + std::min(count, m_num_elements - startIndex);
+            const size_t endIndex = std::min(startIndex + count, m_num_elements);
             size_t produced_count = 0;
 
             // L vector setup
@@ -371,7 +370,7 @@ namespace gef {
                         }
                         l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
                      }
-                     out_ptr[produced_count++] = static_cast<T>(static_cast<U>(base) + static_cast<U>(l_val));
+                     out_ptr[produced_count++] = base + l_val;
                      current_pos++;
                 }
                 return produced_count;
@@ -384,12 +383,12 @@ namespace gef {
                 if (current_rank_idx == 0) current_rank_idx = 1;
             }
 
-            U current_high = static_cast<U>(H[current_rank_idx - 1]);
-            U current_base_plus_high;
+            uint64_t current_high = H[current_rank_idx - 1];
+            uint64_t current_base_plus_high;
              if constexpr (SPLIT_POINT < sizeof(T) * 8) {
-                 current_base_plus_high = static_cast<U>(base) + (current_high << SPLIT_POINT);
+                 current_base_plus_high = base + (current_high << SPLIT_POINT);
              } else {
-                 current_base_plus_high = static_cast<U>(base);
+                 current_base_plus_high = base;
              }
 
             const uint64_t* b_data = B->raw_data_ptr();
@@ -443,16 +442,16 @@ namespace gef {
                         }
                         l_bit_offset = (l_bit_offset + SPLIT_POINT) & 63;
                     }
-                    out_ptr[produced_count++] = static_cast<T>(current_base_plus_high + static_cast<U>(l_val));
+                    out_ptr[produced_count++] = current_base_plus_high + static_cast<T>(l_val);
                 }
                 current_pos = run_limit;
 
                 if (current_pos == next_one_pos && current_pos < m_num_elements) {
                     current_rank_idx++;
                     if (current_rank_idx <= H.size()) {
-                        current_high = static_cast<U>(H[current_rank_idx - 1]);
+                        current_high = H[current_rank_idx - 1];
                          if constexpr (SPLIT_POINT < sizeof(T) * 8) {
-                             current_base_plus_high = static_cast<U>(base) + (current_high << SPLIT_POINT);
+                             current_base_plus_high = base + (current_high << SPLIT_POINT);
                          }
                     }
                 }
@@ -476,6 +475,7 @@ namespace gef {
             // Caller guarantees output has at least 'count' slots.
 
             using U = std::make_unsigned_t<T>;
+            using Acc = unsigned long long;
 
             if (h == 0) [[unlikely]] {
                 if (b == 0) [[unlikely]] {
@@ -484,7 +484,8 @@ namespace gef {
                 }
                 for (size_t i = 0; i < endIndex; ++i) {
                     const U low = static_cast<U>(L[i]);
-                    output[i] = static_cast<T>(static_cast<U>(base) + low);
+                    const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(low);
+                    output[i] = static_cast<T>(sum);
                 }
                 return endIndex;
             }
@@ -503,7 +504,8 @@ namespace gef {
                 }
                 const U low = (b > 0) ? static_cast<U>(L[i]) : U(0);
                 const U offset = (b < sizeof(U) * 8) ? (low | (current_high << b)) : low;
-                output[i] = static_cast<T>(static_cast<U>(base) + offset);
+                const Acc sum = static_cast<Acc>(base) + static_cast<Acc>(offset);
+                output[i] = static_cast<T>(sum);
             }
             return endIndex;
         }
@@ -527,14 +529,14 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
             }
-            using U = std::make_unsigned_t<T>;
             // Case 1: No high bits are used (h=0).
             // All information is stored in the L vector. Reconstruction is trivial.
             if (h == 0) [[unlikely]] {
                 if (b == 0) [[unlikely]] return base;
-                return static_cast<T>(static_cast<U>(base) + static_cast<U>(L[index]));
+                return base + L[index];
             }
 
+            using U = std::make_unsigned_t<T>;
             // Initiate L access early to hide memory latency
             const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
 
@@ -546,12 +548,12 @@ namespace gef {
             if (is_exception) [[unlikely]] {
                 const size_t exception_rank = B->rank_unchecked(index + 1);
                 const U high_val = static_cast<U>(H[exception_rank - 1]);
-                return static_cast<T>(static_cast<U>(base) + (low | (high_val << b)));
+                return base + (low | (high_val << b));
             }
 
             const size_t rank = B->rank_unchecked(index + 1);
-            const U high_shifted = static_cast<U>(H[rank - 1]) << b;
-            return static_cast<T>(static_cast<U>(base) + (low | high_shifted));
+            const T high_shifted = H[rank - 1] << b;
+            return base + (low | high_shifted);
         }
 
         void serialize(std::ofstream &ofs) const override {
