@@ -370,8 +370,9 @@ public:
         const size_t partition_index = index / K;
         const size_t index_in_partition = index % K;
         
-        // Direct object access - NO VIRTUAL CALL if Compressor type is final or compiler can devirtualize
-        return partition(partition_index)[index_in_partition];
+        // Partitions store concrete Compressor objects by value. Qualifying the
+        // call avoids a redundant virtual dispatch and exposes the access path.
+        return partition(partition_index).Compressor::operator[](index_in_partition);
     }
 
     uint8_t split_point() const override {
