@@ -88,7 +88,7 @@ void check_packed_roundtrip(const char* name) {
 template<typename T> class RLEMarkerTypes : public ::testing::Test {};
 using MarkerTypes = ::testing::Types<int8_t, uint8_t, int16_t, uint16_t,
                                     int32_t, uint32_t, int64_t, uint64_t>;
-TYPED_TEST_SUITE(RLEMarkerTypes, MarkerTypes);
+TYPED_TEST_CASE(RLEMarkerTypes, MarkerTypes);
 TYPED_TEST(RLEMarkerTypes, FullWidthExtremesAndTailMasks) { check_types_and_tails<TypeParam>(); }
 
 TEST(RLEMarkerBackends, SDSL) { check_types_and_tails<int64_t, SDSLBitVector>(); }
