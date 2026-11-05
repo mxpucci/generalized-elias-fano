@@ -380,7 +380,7 @@ namespace gef {
         }
 
         template<uint8_t SPLIT_POINT>
-        size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
+        [[gnu::flatten]] size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
             if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
             const size_t actual = std::min(count, m_num_elements - startIndex);
             const size_t endIndex = startIndex + actual;
