@@ -475,7 +475,7 @@ namespace gef {
             return get_elements_into(startIndex, count, output.data());
         }
 
-        [[gnu::always_inline]] inline T operator[](size_t index) const override {
+        [[gnu::flatten]] inline T operator[](size_t index) const override {
             if constexpr (!RandomAccess) {
                 std::vector<T> scratch;
                 return ::gef::internal::no_support::at_force_from_zero<T>(
