@@ -20,11 +20,16 @@
 #include <tlx/container/simple_vector.hpp>
 #include <vector>
 #include <bit>
+#include <utility>
 
-// We define a custom configuration to tune the sampling rate.
+// The sampling interval affects only the navigation index, not the encoded bits.
+// Keep it configurable so applications can measure the space/latency trade-off.
+#ifndef GEF_SELECT_SAMPLE_RATE
+#define GEF_SELECT_SAMPLE_RATE 4096
+#endif
 struct OptimizedFlatRankSelectConfig : public pasta::FlatRankSelectConfig {
-  // Reduce sample rate from 8192 to 512 for faster select0 linear search start
-  static constexpr size_t SELECT_SAMPLE_RATE = 16384;
+  static constexpr size_t SELECT_SAMPLE_RATE = GEF_SELECT_SAMPLE_RATE;
+  static_assert(SELECT_SAMPLE_RATE > 0);
 };
 
 template <pasta::OptimizedFor optimized_for = pasta::OptimizedFor::DONT_CARE,
@@ -48,35 +53,36 @@ public:
   OptimizedFlatRankSelect() = default;
 
   OptimizedFlatRankSelect(VectorType& bv) : pasta::FlatRank<optimized_for, VectorType>(bv) {
-    init();
+    init(bv.size());
   }
 
   OptimizedFlatRankSelect(OptimizedFlatRankSelect&&) = default;
   OptimizedFlatRankSelect& operator=(OptimizedFlatRankSelect&&) = default;
   ~OptimizedFlatRankSelect() = default;
 
-  [[nodiscard("select0 computed but not used")]] size_t
-  select0(size_t rank) const {
-    size_t const l12_end = l12_end_;
+private:
+  struct Select0State {
+    size_t rank;
+    size_t position;
+  };
 
-    size_t const sample_pos =
-        ((rank - 1) / OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE);
-    size_t l1_pos = 0;
-    // Unsafe access for speed (relying on init correctness)
-    // Bounds check removed for performance as init logic is now robust
-    l1_pos = samples0_[sample_pos];
-    
-    // Prefetch current and next L1 block metadata and data
-    // 0 = read access, 3 = high temporal locality
+  // Keep the stages separate so a pair can issue independent loads before
+  // either query follows its entire sample -> metadata -> data dependency chain.
+  [[gnu::always_inline]] inline Select0State select0_sample(size_t rank) const {
+    constexpr size_t rate = OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
+    const size_t sample = samples0_[(rank - 1) / rate];
+    const size_t l1_pos = sample + ((rank - 1) % rate) /
+                                      OptimizedFlatRankSelectConfig::L1_BIT_SIZE;
     __builtin_prefetch(&l12_[l1_pos], 0, 3);
-    // Removed speculative prefetch of l1_pos + 1 as it may hurt performance
-    
-    size_t const word_idx = l1_pos * OptimizedFlatRankSelectConfig::L1_WORD_SIZE;
-    __builtin_prefetch(&data_access_[word_idx], 0, 3);
-    
-    l1_pos += ((rank - 1) % OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE) /
-              OptimizedFlatRankSelectConfig::L1_BIT_SIZE;
-              
+    if (l1_pos + 1 < l12_end_) __builtin_prefetch(&l12_[l1_pos + 1], 0, 3);
+    __builtin_prefetch(&data_access_[l1_pos * OptimizedFlatRankSelectConfig::L1_WORD_SIZE], 0, 3);
+    return {rank, l1_pos};
+  }
+
+  [[gnu::always_inline]] inline void select0_l1(Select0State& state) const {
+    size_t rank = state.rank;
+    size_t l1_pos = state.position;
+    const size_t l12_end = l12_end_;
     if constexpr (pasta::optimize_one_or_dont_care(optimized_for)) {
       while (l1_pos + 1 < l12_end &&
              ((l1_pos + 1) * OptimizedFlatRankSelectConfig::L1_BIT_SIZE) -
@@ -92,6 +98,12 @@ public:
       }
       rank -= l12_[l1_pos].l1();
     }
+    state = {rank, l1_pos};
+  }
+
+  [[gnu::always_inline]] inline void select0_l2(Select0State& state) const {
+    size_t rank = state.rank;
+    const size_t l1_pos = state.position;
     size_t l2_pos = 0;
     
     // Logic copied from pasta::FlatRankSelect and adapted to use OptimizedFlatRankSelectConfig
@@ -170,6 +182,13 @@ public:
     
     size_t last_pos = (OptimizedFlatRankSelectConfig::L2_WORD_SIZE * l2_pos) +
                       (OptimizedFlatRankSelectConfig::L1_WORD_SIZE * l1_pos);
+    __builtin_prefetch(&data_access_[last_pos], 0, 3);
+    state = {rank, last_pos};
+  }
+
+  [[gnu::always_inline]] inline size_t select0_finish(Select0State state) const {
+    size_t rank = state.rank;
+    size_t last_pos = state.position;
     size_t popcount = 0;
 
     // Use std::popcount or pasta::popcount depending on availability.
@@ -179,6 +198,28 @@ public:
       rank -= popcount;
     }
     return (last_pos * 64) + pasta::select(~data_access_[last_pos], rank - 1);
+  }
+
+public:
+  [[nodiscard("select0 computed but not used")]] size_t
+  select0(size_t rank) const {
+    auto state = select0_sample(rank);
+    select0_l1(state);
+    select0_l2(state);
+    return select0_finish(state);
+  }
+
+  // Both ranks are 1-based, as for select0(). The two answers refer to
+  // independent bitvectors and use their existing indexes without extra space.
+  [[nodiscard]] std::pair<size_t, size_t>
+  select0_pair(const OptimizedFlatRankSelect& other, size_t rank) const {
+    auto first = select0_sample(rank);
+    auto second = other.select0_sample(rank);
+    select0_l1(first);
+    other.select0_l1(second);
+    select0_l2(first);
+    other.select0_l2(second);
+    return {select0_finish(first), other.select0_finish(second)};
   }
 
   [[nodiscard("select1 computed but not used")]] size_t
@@ -277,6 +318,14 @@ public:
     return (last_pos * 64) + pasta::select(data_access_[last_pos], rank - 1);
   }
 
+  // Full support object and owned array capacities. References to the input
+  // bitvector are excluded: its owner accounts for that storage separately.
+  size_t allocated_size_in_bytes() const {
+    return sizeof(*this) + l12_.size() * sizeof(pasta::BigL12Type) +
+           samples0_.capacity() * sizeof(uint32_t) +
+           samples1_.capacity() * sizeof(uint32_t);
+  }
+
   size_t space_usage() const final {
     // Include base class's l12_ array + our samples vectors
     return pasta::FlatRank<optimized_for, VectorType>::space_usage() +
@@ -285,7 +334,7 @@ public:
   }
 
 private:
-  void init() {
+  void init(size_t logical_bits) {
     // CRITICAL: Use l12_end_ (populated count) not l12_.size() (allocated count)
     // l12_ uses NoInitNoDestroy mode so entries beyond l12_end_ contain garbage
     size_t const l12_end = l12_end_;
@@ -333,6 +382,27 @@ private:
          }
       }
     }
+    // A final, partially filled L1 block can contain several sample intervals
+    // when sampling is denser than one interval per L1 block. Its samples are
+    // absent from the boundary-based loop above. Leave the existing final
+    // sentinel to supply the last entry, preserving allocation/space behavior
+    // for the default interval and every interval at least L1_BIT_SIZE.
+    if constexpr (OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE <
+                      OptimizedFlatRankSelectConfig::L1_BIT_SIZE &&
+                  optimized_for != pasta::OptimizedFor::DONT_CARE) {
+      const size_t ones = pasta::FlatRank<optimized_for, VectorType>::rank1(logical_bits);
+      const size_t zeros = logical_bits - ones;
+      const auto fill_final_samples = [&](std::vector<uint32_t>& samples, size_t count) {
+        constexpr size_t rate = OptimizedFlatRankSelectConfig::SELECT_SAMPLE_RATE;
+        const size_t required = count / rate + (count % rate != 0);
+        while (samples.size() + 1 < required)
+          samples.push_back(static_cast<uint32_t>(l12_end - 1));
+      };
+      fill_final_samples(samples0_, zeros);
+      if constexpr (pasta::optimize_one_or_dont_care(optimized_for))
+        fill_final_samples(samples1_, ones);
+    }
+
     // Add at least one entry.
     if (samples0_.size() == 0) [[unlikely]] {
       samples0_.push_back(0);
