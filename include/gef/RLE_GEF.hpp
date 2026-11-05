@@ -402,21 +402,22 @@ namespace gef {
             }
             const uint64_t* bits = B->raw_data_ptr();
             const size_t word_limit = (endIndex + 63) / 64;
+            constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
+            const size_t search = startIndex + 1;
+            size_t word_index = search >> 6;
+            const uint64_t mask = reverse ? (~uint64_t(0) >> (search & 63))
+                                          : (~uint64_t(0) << (search & 63));
+            uint64_t word = word_index < word_limit ? bits[word_index] & mask : 0;
             size_t position = startIndex;
             while (position < endIndex) {
-                const size_t search = position + 1;
-                size_t word_index = search >> 6;
+                while (word == 0 && word_index + 1 < word_limit)
+                    word = bits[++word_index];
                 size_t next_run = endIndex;
-                if (word_index < word_limit) {
-                    constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
-                    const uint64_t mask = reverse ? (~uint64_t(0) >> (search & 63))
-                                                  : (~uint64_t(0) << (search & 63));
-                    uint64_t word = bits[word_index] & mask;
-                    while (word == 0 && ++word_index < word_limit) word = bits[word_index];
-                    if (word != 0) {
-                        const size_t bit = reverse ? __builtin_clzll(word) : __builtin_ctzll(word);
-                        next_run = std::min(endIndex, word_index * 64 + bit);
-                    }
+                if (word != 0) {
+                    const size_t bit = reverse ? __builtin_clzll(word) : __builtin_ctzll(word);
+                    next_run = std::min(endIndex, word_index * 64 + bit);
+                    if constexpr (reverse) word &= ~(uint64_t(1) << (63 - bit));
+                    else word &= word - 1;
                 }
                 uint64_t run_base = static_cast<uint64_t>(base);
                 if constexpr (SPLIT_POINT < sizeof(T) * 8) {
@@ -474,7 +475,7 @@ namespace gef {
             return get_elements_into(startIndex, count, output.data());
         }
 
-        T operator[](size_t index) const override {
+        [[gnu::flatten]] inline T operator[](size_t index) const override {
             if constexpr (!RandomAccess) {
                 std::vector<T> scratch;
                 return ::gef::internal::no_support::at_force_from_zero<T>(

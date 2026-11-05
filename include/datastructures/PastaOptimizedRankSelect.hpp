@@ -92,8 +92,11 @@ private:
       }
       rank -= (l1_pos * OptimizedFlatRankSelectConfig::L1_BIT_SIZE) - l12_[l1_pos].l1();
     } else {
-      // Hint that the loop usually runs at least once but not many times
-      while (__builtin_expect(l1_pos + 1 < l12_end && l12_[l1_pos + 1].l1() < rank, 1)) {
+      // The sample usually needs at most one step. Resolve that step without
+      // a data-dependent branch, retaining the loop for more distant samples.
+      if (l1_pos + 1 < l12_end)
+        l1_pos += size_t(l12_[l1_pos + 1].l1() < rank);
+      while (__builtin_expect(l1_pos + 1 < l12_end && l12_[l1_pos + 1].l1() < rank, 0)) {
         ++l1_pos;
       }
       rank -= l12_[l1_pos].l1();

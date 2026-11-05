@@ -293,6 +293,14 @@ namespace gef {
                 while (i < count) {
                     while (zeros_ == 0) zeros_ = ~data_[++word_];
                     const size_t base_position = word_ * 64;
+                    // Expand a full delimiter word without per-value bit scans.
+                    if (zeros_ == UINT64_MAX && count - i >= 64) {
+                        for (size_t offset = 0; offset < 64; ++offset)
+                            out[i + offset] = base_position + offset;
+                        i += 64;
+                        zeros_ = 0;
+                        continue;
+                    }
                     do {
                         if constexpr (GapBitVectorType::reverse_bit_order) {
                             const unsigned bit = std::countl_zero(zeros_);
@@ -759,7 +767,7 @@ namespace gef {
             return dispatch_worker(b, startIndex, count, output, std::make_index_sequence<65>{});
         }
 
-        T operator[](size_t index) const override {
+        [[gnu::always_inline]] inline T operator[](size_t index) const override {
             if constexpr (!RandomAccess) {
                 std::vector<T> scratch;
                 return ::gef::internal::no_support::at_force_from_zero<T>(
