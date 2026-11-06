@@ -284,26 +284,29 @@ namespace gef {
                 L = sdsl::int_vector<>(0);
             }
 
-            // Append sequential low parts a word at a time. Unlike an indexed
-            // int_vector assignment, a completed word needs only one store.
-            uint64_t* low_data = L.data();
-            uint64_t low_buffer = 0;
-            unsigned low_bits = 0;
-            size_t low_word = 0;
-            const auto append_low = [&](uint64_t value) {
-                low_buffer |= value << low_bits;
-                const unsigned filled = low_bits + b;
-                if (filled >= 64) {
-                    low_data[low_word++] = low_buffer;
-                    low_buffer = filled > 64 ? value >> (64 - low_bits) : 0;
-                    low_bits = filled - 64;
-                } else {
-                    low_bits = filled;
+            // Both packed streams are filled sequentially. Buffer each word
+            // so a completed word needs only one store instead of proxy updates.
+            struct PackedWriter {
+                uint64_t* data;
+                unsigned width;
+                uint64_t buffer = 0;
+                unsigned bits = 0;
+
+                void append(uint64_t value) {
+                    buffer |= value << bits;
+                    const unsigned filled = bits + width;
+                    if (filled >= 64) {
+                        *data++ = buffer;
+                        buffer = filled > 64 ? value >> (64 - bits) : 0;
+                        bits = filled - 64;
+                    } else {
+                        bits = filled;
+                    }
                 }
+
+                void finish() { if (bits) *data = buffer; }
             };
-            const auto finish_low = [&] {
-                if (low_bits) low_data[low_word] = low_buffer;
-            };
+            PackedWriter low_writer{L.data(), b};
 
             if (h == 0) {
                 // All in L - use unsigned arithmetic for efficiency
@@ -311,10 +314,10 @@ namespace gef {
                 
                 if (b > 0) {
                     for (size_t i = 0; i < S.size(); i++) {
-                        append_low(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)));
+                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)));
                     }
                 }
-                finish_low();
+                low_writer.finish();
                 B = nullptr;
                 H.resize(0);
                 return;
@@ -324,6 +327,7 @@ namespace gef {
             // H exactly once and fill H, L and B in the same source scan.
             B = std::make_unique<ExceptionBitVectorType>(N);
             H = sdsl::int_vector<>(h_count, 0, h);
+            PackedWriter high_writer{H.data(), h};
             U last_high = 0;
             size_t h_idx = 0;
             uint64_t* b_data = B->raw_data_ptr();
@@ -332,9 +336,10 @@ namespace gef {
             for (size_t i = 0; i < N; ++i) {
                 const U element = static_cast<U>(S[i]) - static_cast<U>(base);
                 const U high = element >> b;
-                if (b > 0) append_low(element & low_mask);
+                if (b > 0) low_writer.append(element & low_mask);
                 if (i == 0 || high != last_high) {
-                    H[h_idx++] = high;
+                    high_writer.append(high);
+                    ++h_idx;
                     // B was zero-initialized: unchanged high parts need no store.
                     constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
                     const size_t bit = reverse ? 63 - (i & 63) : (i & 63);
@@ -342,7 +347,8 @@ namespace gef {
                 }
                 last_high = high;
             }
-            finish_low();
+            low_writer.finish();
+            high_writer.finish();
             assert(h_idx == h_count);
             if constexpr (RandomAccess) B->enable_rank();
 

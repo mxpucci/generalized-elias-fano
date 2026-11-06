@@ -28,6 +28,12 @@ void check_low_writer() {
                 if (i % 7 == 0) residual = U(~U(0));
                 input[i] = static_cast<T>(U(base) + residual);
             }
+            // Start a new run at the last element, including partial words.
+            if (length > 1 && split < width) {
+                const U previous = U(U(input[length - 2]) - U(base));
+                const U residual = U(previous ^ (U(1) << split));
+                input.back() = static_cast<T>(U(base) + residual);
+            }
             Codec codec(input, gef::BlockParameters<T>{base, uint8_t(width), uint8_t(split)});
             sdsl::int_vector<> expected;
             if (split && length) {
@@ -38,6 +44,22 @@ void check_low_writer() {
             EXPECT_EQ(codec.L.bit_size(), expected.bit_size());
             for (size_t i = 0; i < (expected.bit_size() + 63) / 64; ++i)
                 EXPECT_EQ(codec.L.data()[i], expected.data()[i]) << split << ',' << length << ',' << i;
+            std::vector<U> highs;
+            if (length && split < width) {
+                for (const T value : input) {
+                    const U high = U(U(value) - U(base)) >> split;
+                    if (highs.empty() || high != highs.back()) highs.push_back(high);
+                }
+            }
+            sdsl::int_vector<> expected_high;
+            if (!highs.empty()) {
+                expected_high = sdsl::int_vector<>(highs.size(), 0, width - split);
+                for (size_t i = 0; i < highs.size(); ++i) expected_high[i] = highs[i];
+            }
+            EXPECT_EQ(codec.H.bit_size(), expected_high.bit_size());
+            for (size_t i = 0; i < (expected_high.bit_size() + 63) / 64; ++i)
+                EXPECT_EQ(codec.H.data()[i], expected_high.data()[i])
+                    << split << ',' << length << ',' << i;
             std::vector<T> output(length);
             ASSERT_EQ(codec.get_elements(0, length, output), length);
             EXPECT_EQ(output, input) << split << ',' << length;
