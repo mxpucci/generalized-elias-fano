@@ -83,6 +83,39 @@ void check_packed_roundtrip(const char* name) {
     EXPECT_EQ(codec.size_in_bytes(), loaded.size_in_bytes());
     check_full_and_clipped(loaded, input);
 }
+
+template<typename T>
+void check_every_high_width() {
+    using C = gef::internal::RLE_GEF<T>;
+    const T base = std::numeric_limits<T>::min();
+    for (unsigned high_width = 1; high_width <= 64; ++high_width) {
+        SCOPED_TRACE(::testing::Message() << "high_width=" << high_width);
+        const unsigned split = 64 - high_width;
+        const uint64_t high_mask = width_mask(high_width);
+        const uint64_t low_mask = width_mask(split);
+        uint64_t rng = 0xdca184259fe037b1ULL;
+        auto random = [&] {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            return rng;
+        };
+        uint64_t high = 0;
+        std::vector<T> input(129);
+        for (size_t i = 0; i < input.size(); ++i) {
+            if (i != 0 && i % 2 == 0) {
+                uint64_t next = i == 2 ? high_mask : random() & high_mask;
+                if (next == high) next ^= 1;
+                high = next;
+            }
+            const uint64_t residual = (high << split) | (random() & low_mask);
+            input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+        }
+        // 65 high fields leave a partial final packed word for every h < 64.
+        C codec(input, gef::BlockParameters<T>{base, 64, uint8_t(split)});
+        ASSERT_EQ(codec.H.size(), 65);
+        ASSERT_EQ(codec.H.width(), high_width);
+        check_full_and_clipped(codec, input);
+    }
+}
 }
 
 template<typename T> class RLEMarkerTypes : public ::testing::Test {};
@@ -103,3 +136,6 @@ TEST(RLEMarkerBackends, PackedSDSLRoundtrip) {
 TEST(RLEMarkerBackends, PackedSupportFreeRoundtrip) {
     check_packed_roundtrip<PastaRankBitVector, false>("gef-marker-support-free.bin");
 }
+
+TEST(RLEMarkerPackedHigh, EveryWidthSigned64) { check_every_high_width<int64_t>(); }
+TEST(RLEMarkerPackedHigh, EveryWidthUnsigned64) { check_every_high_width<uint64_t>(); }
