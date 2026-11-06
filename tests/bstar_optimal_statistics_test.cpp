@@ -49,7 +49,7 @@ std::pair<unsigned, unsigned> oracle_splits(const std::vector<T>& values) {
     }
     if (bytes[width] < bytes[best]) best = width;
     // The literal neighborhood must contain an actual global unrounded optimum.
-    EXPECT_EQ(uint64_t(best_bits), uint64_t(*std::min_element(bits.begin(), bits.end())));
+    EXPECT_TRUE(best_bits == *std::min_element(bits.begin(), bits.end()));
 
     // Independently minimize the actual nominal byte objective over ALL splits.
     best = 0;
