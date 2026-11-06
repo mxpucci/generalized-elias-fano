@@ -357,6 +357,22 @@ namespace gef {
             }
         }
 
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static __m256i unpack_window4(const uint64_t* words) {
+            static_assert(SPLIT_POINT > 0 && SPLIT_POINT <= 16 && INDEX + 4 <= 64);
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + 4 * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+            const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+            return _mm256_and_si256(_mm256_srlv_epi64(
+                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+        }
+#endif
+
         template<uint8_t SPLIT_POINT, size_t... INDICES>
         static void unpack_aligned_block(const uint64_t* words, T* output,
                                          uint64_t offset, std::index_sequence<INDICES...>) {
@@ -364,19 +380,9 @@ namespace gef {
             if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16 &&
                           sizeof...(INDICES) == 64) {
                 const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(offset));
-                const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
-                const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
                 ([&] {
                     if constexpr (INDICES % 4 == 0) {
-                        // Four lows fit in one window. A crossing window's
-                        // second word remains inside this complete 64-value block.
-                        constexpr size_t word = (INDICES * SPLIT_POINT) / 64;
-                        constexpr unsigned bit = (INDICES * SPLIT_POINT) % 64;
-                        uint64_t window = words[word] >> bit;
-                        if constexpr (bit + 4 * SPLIT_POINT > 64)
-                            window |= words[word + 1] << (64 - bit);
-                        const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
-                            _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+                        const __m256i lows = unpack_window4<SPLIT_POINT, INDICES>(words);
                         _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDICES),
                             _mm256_add_epi64(base_vector, lows));
                     }
@@ -420,6 +426,42 @@ namespace gef {
             return table;
         }();
 
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        // VPERMD moves pairs of 32-bit lanes as one 64-bit run base.
+        inline static constexpr auto nibble_run_permutations = [] {
+            std::array<std::array<int32_t, 8>, 16> table{};
+            for (unsigned mask = 0; mask < 16; ++mask) {
+                for (unsigned lane = 0; lane < 4; ++lane) {
+                    const unsigned rank = byte_prefix_ranks[mask][lane] - (mask & 1);
+                    table[mask][2 * lane] = 2 * rank;
+                    table[mask][2 * lane + 1] = 2 * rank + 1;
+                }
+            }
+            return table;
+        }();
+
+        template<uint8_t SPLIT_POINT, size_t... GROUPS>
+        static void reconstruct_aligned_block(const uint64_t* words, uint64_t markers,
+                                              const uint64_t* run_bases, T* output,
+                                              std::index_sequence<GROUPS...>) {
+            ([&] {
+                constexpr size_t index = GROUPS * 4;
+                const unsigned mask = (markers >> index) & 15;
+                constexpr uint64_t earlier = (uint64_t(1) << index) - 1;
+                const unsigned preceding = __builtin_popcountll(markers & earlier);
+                // Drop the carry lane when the first value starts a run. The
+                // four values then always select from at most four bases.
+                const auto* bases = run_bases + preceding + (mask & 1);
+                const __m256i highs = _mm256_permutevar8x32_epi32(
+                    _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bases)),
+                    _mm256_loadu_si256(reinterpret_cast<const __m256i*>(nibble_run_permutations[mask].data())));
+                const __m256i lows = unpack_window4<SPLIT_POINT, index>(words);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + index),
+                    _mm256_add_epi64(highs, lows));
+            }(), ...);
+        }
+#endif
+
         template<uint8_t SPLIT_POINT>
         void reconstruct_marker_words(size_t count, T* output) const {
             using U = std::make_unsigned_t<T>;
@@ -432,10 +474,35 @@ namespace gef {
                     value += static_cast<uint64_t>(H[next_high++]) << SPLIT_POINT;
                 return value;
             };
-            std::array<uint64_t, 65> run_bases;
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            constexpr bool fuse = sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16;
+#else
+            constexpr bool fuse = false;
+#endif
+            std::array<uint64_t, fuse ? 68 : 65> run_bases;
+            // The vector path may load up to three unused lanes.
+            if constexpr (fuse) run_bases.fill(0);
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
-                // Reconstruct while this aligned low-bit block is still hot.
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+                if constexpr (fuse) {
+                    const uint64_t markers = bits[position >> 6];
+                    const uint64_t* words = L.data() + ((position * SPLIT_POINT) >> 6);
+                    if (markers == 0) {
+                        unpack_aligned_block<SPLIT_POINT>(words, output + position, carry,
+                                                         std::make_index_sequence<64>{});
+                        continue;
+                    }
+                    const unsigned runs = __builtin_popcountll(markers);
+                    run_bases[0] = carry;
+                    for (unsigned run = 1; run <= runs; ++run)
+                        run_bases[run] = next_base();
+                    reconstruct_aligned_block<SPLIT_POINT>(words, markers, run_bases.data(),
+                                                          output + position, std::make_index_sequence<16>{});
+                    carry = run_bases[runs];
+                    continue;
+                }
+#endif
                 if constexpr (SPLIT_POINT > 0) {
                     unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
                         output + position, 0, std::make_index_sequence<64>{});
