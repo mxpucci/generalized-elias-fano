@@ -259,17 +259,24 @@ namespace gef {
                 // sums and their delimiter counts fit without saturating adds.
                 std::array<size_t, 4> variation{};
                 U previous = 0;
-                for (const T value : S) {
-                    const U residual = static_cast<U>(static_cast<U>(value) - static_cast<U>(min));
-                    U current = residual >> min_b;
-                    U prior = previous;
-                    for (size_t j = 0; j < count; ++j) {
-                        variation[j] += current >= prior ? current - prior : prior - current;
-                        current >>= 1;
-                        prior >>= 1;
+                const auto accumulate = [&]<size_t FixedCount>() {
+                    const size_t candidate_count = FixedCount ? FixedCount : count;
+                    for (const T value : S) {
+                        const U residual = static_cast<U>(static_cast<U>(value) - static_cast<U>(min));
+                        U current = residual >> min_b;
+                        U prior = previous;
+                        for (size_t j = 0; j < candidate_count; ++j) {
+                            variation[j] += current >= prior ? current - prior : prior - current;
+                            current >>= 1;
+                            prior >>= 1;
+                        }
+                        previous = residual >> min_b;
                     }
-                    previous = residual >> min_b;
-                }
+                };
+                // A full paper neighborhood has four candidates. Keep its
+                // bound constant while sharing the scan with clipped edges.
+                if (count == 4) accumulate.template operator()<4>();
+                else accumulate.template operator()<0>();
                 for (size_t j = 0; j < count; ++j) {
                     // Starting from zero, positive-negative equals the final
                     // high part. Subtract before dividing to avoid V+last overflow.
