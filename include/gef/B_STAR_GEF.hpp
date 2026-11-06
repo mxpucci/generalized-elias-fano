@@ -107,7 +107,11 @@ namespace gef {
                 return sizeof(T) + sizeof(uint8_t) * 2;
             }
 
-            const auto bits_to_bytes = [](size_t bits) -> size_t { return (bits + 7) / 8; };
+            if ((b && N > SIZE_MAX / b) ||
+                (b < total_bits && (gap_computation.sum_of_positive_gaps > SIZE_MAX - N ||
+                                    gap_computation.sum_of_negative_gaps > SIZE_MAX - N)))
+                return SIZE_MAX; // This candidate cannot represent its bit vectors.
+            const auto bits_to_bytes = [](size_t bits) -> size_t { return bits / 8 + (bits % 8 != 0); };
             size_t total_bytes = sizeof(T) + sizeof(uint8_t) * 2;
             total_bytes += bits_to_bytes(N * static_cast<size_t>(b));
 
@@ -135,14 +139,13 @@ namespace gef {
         }
 
         template<typename C>
-        static double approximated_optimal_split_point(const C &S, const T min, const T max) {
+        static unsigned __int128 exact_total_variation(const C &S, const T min, const T max) {
             using U = std::make_unsigned_t<T>;
             const U range = static_cast<U>(max) - static_cast<U>(min);
-            if (range == 0 || S.size() == 0) return 0.0;
+            if (range == 0 || S.size() == 0) return 0;
 
             // All magnitudes are at most range. Proving the sum fits once lets
             // the common path use an ordinary, vectorizable word-sized sum.
-            double total_variation;
             if (range <= SIZE_MAX / S.size()) {
                 size_t variation = static_cast<U>(static_cast<U>(S[0]) - static_cast<U>(min));
                 for (size_t i = 1; i < S.size(); ++i) {
@@ -152,7 +155,7 @@ namespace gef {
                         ? static_cast<U>(current - previous)
                         : static_cast<U>(previous - current);
                 }
-                total_variation = static_cast<double>(variation);
+                return variation;
             } else {
                 // Full-width integer inputs need a wider accumulator, not a
                 // saturated approximation (whose two partial sums can wrap).
@@ -164,10 +167,14 @@ namespace gef {
                         ? static_cast<U>(current - previous)
                         : static_cast<U>(previous - current);
                 }
-                total_variation = static_cast<double>(variation);
+                return variation;
             }
-            return total_variation > 0
-                ? std::log2(std::log(2.0) * total_variation / S.size()) : 0.0;
+        }
+
+        template<typename C>
+        static double approximated_optimal_split_point(const C &S, const T min, const T max) {
+            const double variation = static_cast<double>(exact_total_variation(S, min, max));
+            return variation > 0 ? std::log2(std::log(2.0) * variation / S.size()) : 0.0;
         }
 
         template<typename C>
@@ -237,18 +244,12 @@ namespace gef {
 
         template<typename C>
         static std::pair<uint8_t, GapComputation>
-        optimal_split_point(const C &S, const T min, const T max) {
+        optimal_split_point_candidates(const C &S, const T min, const T max,
+                                       const size_t min_b, const size_t max_b) {
             const size_t total_bits = value_width(min, max);
-            if (total_bits == 0) return {0, bitpack_statistics(S.size())};
-
-            const double approx_b = std::clamp(approximated_optimal_split_point(S, min, max),
-                                                0.0, static_cast<double>(total_bits));
-            const size_t min_b = static_cast<size_t>(std::max(0.0, floor(approx_b) - 1));
-            const size_t max_b = static_cast<size_t>(std::min(static_cast<double>(total_bits), ceil(approx_b) + 3));
-
             const size_t count = max_b - min_b + 1;
-            assert(count <= 6);
-            std::array<GapComputation, 6> gap_computation{};
+            assert(count <= 4);
+            std::array<GapComputation, 4> gap_computation{};
             using U = std::make_unsigned_t<T>;
             // min_b <= total_bits-1 for a nonconstant block, even at width 64.
             assert(min_b < sizeof(T) * 8);
@@ -256,7 +257,7 @@ namespace gef {
             if (maximum_high <= (SIZE_MAX - S.size()) / S.size()) {
                 // Every gap is at most maximum_high. This proves all absolute
                 // sums and their delimiter counts fit without saturating adds.
-                std::array<size_t, 6> variation{};
+                std::array<size_t, 4> variation{};
                 U previous = 0;
                 for (const T value : S) {
                     const U residual = static_cast<U>(static_cast<U>(value) - static_cast<U>(min));
@@ -302,6 +303,60 @@ namespace gef {
             }
 
             return {static_cast<uint8_t>(min_b + best_index), gap_computation[best_index]};
+        }
+
+        template<typename C>
+        static std::pair<uint8_t, GapComputation>
+        optimal_split_point(const C &S, const T min, const T max) {
+            const size_t width = value_width(min, max);
+            if (!width) return {0, bitpack_statistics(S.size())};
+            using Wide = unsigned __int128;
+            using U = std::make_unsigned_t<T>;
+            const Wide variation = exact_total_variation(S, min, max);
+            const uint64_t mean = static_cast<uint64_t>(variation / S.size());
+            const size_t center = mean ? std::bit_width(mean) - 1 : 0;
+            // Paper neighborhood: an unrounded bit optimum is among these four
+            // neighbors or raw bit-packing (which the candidate helper includes).
+            const size_t begin = center ? center - 1 : 0;
+            const size_t end = std::min(width - 1, center + 2);
+            auto best = optimal_split_point_candidates(S, min, max, begin, end);
+            size_t best_bytes = evaluate_space(best.second, best.first, width, S.size());
+            const auto ceil_bytes = [](Wide bits) { return bits / 8 + (bits % 8 != 0); };
+            const Wide n = S.size();
+            // The theorem concerns bits; certify every omitted split against
+            // the existing separately rounded byte objective, including ties.
+            for (size_t k = 0; k < width; ++k) {
+                if (k >= begin && k <= end) continue;
+                const Wide scaled = variation >> k;
+                const Wide lower_gap = scaled >= n ? scaled - n + 1 : 0;
+                const Wide payload = std::max(ceil_bytes(n * (k + 2) + lower_gap),
+                                               ceil_bytes(n * k) + 2 * ceil_bytes(n));
+                const Wide lower_bytes = sizeof(T) + sizeof(uint8_t) * 2 + payload;
+                if (lower_bytes > best_bytes || (lower_bytes == best_bytes && k > best.first)) continue;
+
+                // Rare rounding ambiguities need an exact single-candidate scan.
+                // Wide arithmetic avoids saturating a gap sum into a false cost.
+                Wide absolute = 0;
+                U previous = 0;
+                for (const T value : S) {
+                    const U current = static_cast<U>(static_cast<U>(value) - static_cast<U>(min)) >> k;
+                    absolute += current >= previous ? current - previous : previous - current;
+                    previous = current;
+                }
+                const Wide negative = (absolute - previous) / 2;
+                const Wide positive = negative + previous;
+                const Wide bytes = sizeof(T) + sizeof(uint8_t) * 2 + ceil_bytes(n * k) +
+                                   ceil_bytes(n + positive) + ceil_bytes(n + negative);
+                if (bytes < best_bytes || (bytes == best_bytes && k < best.first)) {
+                    if (positive + n > SIZE_MAX || negative + n > SIZE_MAX || n * k > SIZE_MAX) continue;
+                    GapComputation stats{};
+                    stats.sum_of_positive_gaps = static_cast<size_t>(positive);
+                    stats.sum_of_negative_gaps = static_cast<size_t>(negative);
+                    best = {static_cast<uint8_t>(k), stats};
+                    best_bytes = static_cast<size_t>(bytes);
+                }
+            }
+            return best;
         }
 
         static T highPart(const T x, const uint8_t total_bits, const uint8_t highBits) {

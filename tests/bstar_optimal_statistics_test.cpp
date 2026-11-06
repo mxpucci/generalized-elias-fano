@@ -9,36 +9,59 @@
 
 namespace {
 template<typename T>
-unsigned baseline_split(const std::vector<T>& values) {
+std::pair<unsigned, unsigned> oracle_splits(const std::vector<T>& values) {
     using U = std::make_unsigned_t<T>;
+    using Wide = unsigned __int128;
     const auto [lo, hi] = std::minmax_element(values.begin(), values.end());
-    const U range = U(U(*hi) - U(*lo));
-    const unsigned width = std::bit_width(range);
-    if (!width) return 0;
-    unsigned __int128 variation = U(U(values[0]) - U(*lo));
+    const unsigned width = std::bit_width(U(U(*hi) - U(*lo)));
+    if (!width) return {0, 0};
+    Wide variation = U(U(values[0]) - U(*lo));
     for (size_t i = 1; i < values.size(); ++i)
         variation += values[i] >= values[i - 1] ? U(U(values[i]) - U(values[i - 1]))
                                                : U(U(values[i - 1]) - U(values[i]));
-    const double approx = std::clamp(std::log2(std::log(2.0) * double(variation) / values.size()), 0.0, double(width));
-    const unsigned begin = unsigned(std::max(0.0, std::floor(approx) - 1));
-    const unsigned end = unsigned(std::min(double(width), std::ceil(approx) + 3));
-    const auto stats = total_variation_of_shifted_vec_with_multiple_shifts(
-        values, *lo, *hi, uint8_t(begin), uint8_t(end), ExceptionRule::None);
-    const auto cost = [&](const GapComputation& gaps, unsigned b) {
-        const size_t n = gaps.positive_gaps + gaps.negative_gaps;
-        size_t bytes = (n * b + 7) / 8;
-        if (b < width) bytes += (gaps.sum_of_positive_gaps + n + 7) / 8 + (gaps.sum_of_negative_gaps + n + 7) / 8;
-        return bytes;
-    };
-    unsigned best = begin;
-    size_t best_cost = SIZE_MAX;
-    for (unsigned b = begin; b <= end; ++b) {
-        const size_t bytes = cost(stats[b - begin], b);
-        if (bytes < best_cost) { best_cost = bytes; best = b; }
+    const auto ceil_bytes = [](Wide bits) { return bits / 8 + (bits % 8 != 0); };
+    const Wide n = values.size();
+    std::vector<Wide> bits(width + 1), bytes(width + 1);
+    for (unsigned b = 0; b < width; ++b) {
+        U previous = 0;
+        Wide positive = 0, negative = 0;
+        for (const T value : values) {
+            const U current = U(U(value) - U(*lo)) >> b;
+            if (current >= previous) positive += current - previous;
+            else negative += previous - current;
+            previous = current;
+        }
+        bits[b] = n * (b + 2) + positive + negative;
+        bytes[b] = ceil_bytes(n * b) + ceil_bytes(n + positive) + ceil_bytes(n + negative);
     }
-    const size_t raw_cost = (values.size() * width + 7) / 8;
-    if (raw_cost < best_cost) best = width;
-    return best;
+    bits[width] = n * width;
+    bytes[width] = ceil_bytes(bits[width]);
+    const uint64_t mean = uint64_t(variation / n);
+    const unsigned center = mean ? std::bit_width(mean) - 1 : 0;
+    const unsigned begin = center ? center - 1 : 0;
+    const unsigned end = std::min(width - 1, center + 2);
+    unsigned best = begin;
+    Wide best_bits = bits[width];
+    for (unsigned b = begin; b <= end; ++b) {
+        best_bits = std::min(best_bits, bits[b]);
+        if (bytes[b] < bytes[best]) best = b;
+    }
+    if (bytes[width] < bytes[best]) best = width;
+    // The literal neighborhood must contain an actual global unrounded optimum.
+    EXPECT_EQ(uint64_t(best_bits), uint64_t(*std::min_element(bits.begin(), bits.end())));
+
+    // Independently minimize the actual nominal byte objective over ALL splits.
+    best = 0;
+    for (unsigned b = 1; b <= width; ++b)
+        if (bytes[b] < bytes[best]) best = b;
+
+    // Independent original approximate objective: floor/ceil of ln(2)*g/n + raw.
+    const double approx = std::clamp(std::log2(std::log(2.0) * double(variation) / values.size()), 0.0, double(width));
+    const unsigned floor_b = unsigned(std::floor(approx)), ceil_b = unsigned(std::ceil(approx));
+    unsigned approximate = floor_b;
+    if (bytes[ceil_b] < bytes[approximate]) approximate = ceil_b;
+    if (bytes[width] < bytes[approximate]) approximate = width;
+    return {best, approximate};
 }
 
 template<typename T>
@@ -47,24 +70,27 @@ void check(const std::vector<T>& values, bool serialization = false) {
     using Codec = gef::internal::B_STAR_GEF<T>;
     const auto [lo, hi] = std::minmax_element(values.begin(), values.end());
     const unsigned width = std::bit_width(U(U(*hi) - U(*lo)));
-    const unsigned b = baseline_split(values);
-    Codec codec(values, gef::OPTIMAL_SPLIT_POINT);
-    EXPECT_EQ(codec.split_point(), b);
-    Codec reference(values, gef::BlockParameters<T>{*lo, uint8_t(width), uint8_t(b)});
-    EXPECT_EQ(codec.size_in_bytes(), reference.size_in_bytes());
-    std::vector<T> decoded(values.size());
-    ASSERT_EQ(codec.get_elements(0, values.size(), decoded), values.size());
-    EXPECT_EQ(decoded, values);
-    if (serialization) {
-        const auto first = std::filesystem::temp_directory_path() / "gef-opt-stat-first.bin";
-        const auto second = std::filesystem::temp_directory_path() / "gef-opt-stat-second.bin";
-        codec.serialize(first);
-        reference.serialize(second);
-        std::ifstream a(first, std::ios::binary), z(second, std::ios::binary);
-        EXPECT_EQ(std::vector<char>((std::istreambuf_iterator<char>(a)), {}),
-                  std::vector<char>((std::istreambuf_iterator<char>(z)), {}));
-        std::filesystem::remove(first);
-        std::filesystem::remove(second);
+    const auto [optimal, approximate] = oracle_splits(values);
+    for (const auto [strategy, b] : {std::pair{gef::OPTIMAL_SPLIT_POINT, optimal},
+                                     std::pair{gef::APPROXIMATE_SPLIT_POINT, approximate}}) {
+        Codec codec(values, strategy);
+        EXPECT_EQ(codec.split_point(), b);
+        Codec reference(values, gef::BlockParameters<T>{*lo, uint8_t(width), uint8_t(b)});
+        EXPECT_EQ(codec.size_in_bytes(), reference.size_in_bytes());
+        std::vector<T> decoded(values.size());
+        ASSERT_EQ(codec.get_elements(0, values.size(), decoded), values.size());
+        EXPECT_EQ(decoded, values);
+        if (serialization) {
+            const auto first = std::filesystem::temp_directory_path() / "gef-opt-stat-first.bin";
+            const auto second = std::filesystem::temp_directory_path() / "gef-opt-stat-second.bin";
+            codec.serialize(first);
+            reference.serialize(second);
+            std::ifstream a(first, std::ios::binary), z(second, std::ios::binary);
+            EXPECT_EQ(std::vector<char>((std::istreambuf_iterator<char>(a)), {}),
+                      std::vector<char>((std::istreambuf_iterator<char>(z)), {}));
+            std::filesystem::remove(first);
+            std::filesystem::remove(second);
+        }
     }
 }
 
@@ -88,7 +114,7 @@ void check_types() {
 }
 }
 
-TEST(BStarOptimalStatistics, DifferentialByteCostsAndAscendingTies) {
+TEST(BStarOptimalStatistics, PaperTheoremAndGlobalRoundedCosts) {
     for (unsigned length = 2; length <= 5; ++length) {
         const unsigned cases = 1u << (2 * length);
         for (unsigned word = 0; word < cases; ++word) {
@@ -103,4 +129,15 @@ TEST(BStarOptimalStatistics, IntegralWidthsAndFullRange) {
     check_types<int16_t>(); check_types<uint16_t>();
     check_types<int32_t>(); check_types<uint32_t>();
     check_types<int64_t>(); check_types<uint64_t>();
+}
+
+TEST(BStarOptimalStatistics, GlobalByteCertificationAndSparseOutliers) {
+    check(std::vector<int16_t>{4, 0, 4}, true);
+    check(std::vector<uint64_t>{632, 1947, 4505, 7041, 6898}, true);
+    std::vector<int64_t> values(1000, -79);
+    values[500] += int64_t(1) << 20;
+    check(values, true);
+    values.assign(257, -1);
+    values[128] = 0;
+    check(values, true);
 }
