@@ -427,21 +427,37 @@ namespace gef {
         }();
 
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        // VPERMD moves pairs of 32-bit lanes as one 64-bit run base.
+        inline static constexpr auto nibble_run_permutations = [] {
+            std::array<std::array<int32_t, 8>, 16> table{};
+            for (unsigned mask = 0; mask < 16; ++mask) {
+                for (unsigned lane = 0; lane < 4; ++lane) {
+                    const unsigned rank = byte_prefix_ranks[mask][lane] - (mask & 1);
+                    table[mask][2 * lane] = 2 * rank;
+                    table[mask][2 * lane + 1] = 2 * rank + 1;
+                }
+            }
+            return table;
+        }();
+
         template<uint8_t SPLIT_POINT, size_t... GROUPS>
         static void reconstruct_aligned_block(const uint64_t* words, uint64_t markers,
                                               const uint64_t* run_bases, T* output,
                                               std::index_sequence<GROUPS...>) {
-            unsigned preceding = 0;
             ([&] {
-                const auto& ranks = byte_prefix_ranks[(markers >> (GROUPS * 4)) & 15];
-                const uint64_t* bases = run_bases + preceding;
-                const __m256i highs = _mm256_set_epi64x(
-                    std::bit_cast<int64_t>(bases[ranks[3]]), std::bit_cast<int64_t>(bases[ranks[2]]),
-                    std::bit_cast<int64_t>(bases[ranks[1]]), std::bit_cast<int64_t>(bases[ranks[0]]));
-                const __m256i lows = unpack_window4<SPLIT_POINT, GROUPS * 4>(words);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + GROUPS * 4),
+                constexpr size_t index = GROUPS * 4;
+                const unsigned mask = (markers >> index) & 15;
+                constexpr uint64_t earlier = (uint64_t(1) << index) - 1;
+                const unsigned preceding = __builtin_popcountll(markers & earlier);
+                // Drop the carry lane when the first value starts a run. The
+                // four values then always select from at most four bases.
+                const auto* bases = run_bases + preceding + (mask & 1);
+                const __m256i highs = _mm256_permutevar8x32_epi32(
+                    _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bases)),
+                    _mm256_loadu_si256(reinterpret_cast<const __m256i*>(nibble_run_permutations[mask].data())));
+                const __m256i lows = unpack_window4<SPLIT_POINT, index>(words);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + index),
                     _mm256_add_epi64(highs, lows));
-                preceding += ranks[3];
             }(), ...);
         }
 #endif
@@ -458,7 +474,9 @@ namespace gef {
                     value += static_cast<uint64_t>(H[next_high++]) << SPLIT_POINT;
                 return value;
             };
-            std::array<uint64_t, 65> run_bases;
+            // AVX2 may load three unused bases past the last initialized run
+            // in a block. Keep that padding in bounds and defined.
+            std::array<uint64_t, 68> run_bases{};
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
                 const uint64_t markers = bits[position >> 6];
