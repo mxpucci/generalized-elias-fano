@@ -55,6 +55,61 @@ TEST(BStarEngineering, EverySplitAndUnalignedRange) {
     }
 }
 
+namespace {
+template<class T>
+void check_aligned64_reconstruction() {
+    using U = std::make_unsigned_t<T>;
+    constexpr unsigned bits = sizeof(T) * 8;
+    const T base = std::numeric_limits<T>::min();
+    std::mt19937_64 random(672139);
+    for (unsigned split = 1; split < bits; ++split) {
+        const unsigned width = std::min(bits, split + 3);
+        const uint64_t low_mask = (uint64_t(1) << split) - 1;
+        const uint64_t high_mask = (uint64_t(1) << (width - split)) - 1;
+        for (size_t n : {size_t(63), size_t(64), size_t(65), size_t(255), size_t(256), size_t(257), size_t(513)}) {
+            SCOPED_TRACE(::testing::Message() << "bits=" << bits << " signed=" << std::is_signed_v<T>
+                                             << " split=" << split << " n=" << n);
+            std::vector<T> values(n);
+            for (size_t i = 0; i < n; ++i) {
+                // Only three high bits: all widths exercise both unary streams
+                // without allocating impractically large gap vectors.
+                uint64_t residual = ((random() & high_mask) << split) | (random() & low_mask);
+                if (i == 0) residual = 0;
+                if (i == 1) residual = (high_mask << split) | low_mask;
+                values[i] = static_cast<T>(static_cast<U>(base) + static_cast<U>(residual));
+            }
+            const gef::BlockParameters<T> parameters{base, static_cast<uint8_t>(width), static_cast<uint8_t>(split)};
+            gef::internal::B_STAR_GEF<T> codec(values, parameters);
+            const auto check_range = [&](size_t start, size_t requested) {
+                const size_t count = start < n ? std::min(requested, n - start) : 0;
+                std::vector<T> output(count + 2, T(99));
+                // Deliberately offset the destination; no SIMD alignment is part
+                // of the API. Canaries check both sides of every output range.
+                EXPECT_EQ(codec.get_elements_into(start, requested, output.data() + 1), count);
+                EXPECT_TRUE(std::equal(values.begin() + std::min(start, n),
+                                       values.begin() + std::min(start, n) + count, output.begin() + 1));
+                EXPECT_EQ(output.front(), T(99));
+                EXPECT_EQ(output.back(), T(99));
+            };
+            for (size_t start : {size_t(0), size_t(1), size_t(63), size_t(64), size_t(65), size_t(255), size_t(256), n})
+                for (size_t requested : {size_t(0), size_t(63), size_t(64), size_t(65), size_t(256), size_t(257), size_t(1024)})
+                    check_range(start, requested);
+            if (n == 513)
+                for (size_t start = 0; start < 64; ++start) check_range(start, 257);
+        }
+    }
+}
+}
+
+TEST(BStarEngineering, Aligned64Signed8) { check_aligned64_reconstruction<int8_t>(); }
+TEST(BStarEngineering, Aligned64Unsigned8) { check_aligned64_reconstruction<uint8_t>(); }
+TEST(BStarEngineering, Aligned64Signed16) { check_aligned64_reconstruction<int16_t>(); }
+TEST(BStarEngineering, Aligned64Unsigned16) { check_aligned64_reconstruction<uint16_t>(); }
+TEST(BStarEngineering, Aligned64Signed32) { check_aligned64_reconstruction<int32_t>(); }
+TEST(BStarEngineering, Aligned64Unsigned32) { check_aligned64_reconstruction<uint32_t>(); }
+TEST(BStarEngineering, Aligned64Signed64) { check_aligned64_reconstruction<int64_t>(); }
+TEST(BStarEngineering, Aligned64Unsigned64) { check_aligned64_reconstruction<uint64_t>(); }
+
 TEST(BStarEngineering, ConstantAndSingletonUseOnlyMetadata) {
     for (int64_t value : {INT64_MIN, int64_t(-1), int64_t(0), INT64_MAX}) {
         for (size_t n : {size_t(1), size_t(32000)}) {

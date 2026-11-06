@@ -6,14 +6,18 @@
 #define B_STAR_GEF_HPP
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <filesystem>
 #include "sdsl/int_vector.hpp"
 #include <vector>
 #include <type_traits>
+#include <utility>
 #include <chrono>
 #include <stdexcept>
 
@@ -49,6 +53,22 @@ namespace stdx = std::experimental;
 
 namespace gef {
     namespace internal {
+    struct BStarZeroByte {
+        uint8_t count = 0;
+        std::array<uint8_t, 8> positions{};
+    };
+
+    // Shared across value types and bitvector backends. Entries enumerate set
+    // bits in a complemented gap byte, i.e. its zero delimiters in input order.
+    inline constexpr auto B_STAR_ZERO_BYTES = [] {
+        std::array<BStarZeroByte, 256> table{};
+        for (unsigned mask = 0; mask < table.size(); ++mask)
+            for (unsigned bit = 0; bit < 8; ++bit)
+                if (mask & (1u << bit))
+                    table[mask].positions[table[mask].count++] = bit;
+        return table;
+    }();
+
     template<typename T, typename GapBitVectorType = PastaGapBitVector, bool RandomAccess = true>
     class B_STAR_GEF : public IGEF<T> {
     private:
@@ -301,6 +321,48 @@ namespace gef {
                         zeros_ = 0;
                         continue;
                     }
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+                    if constexpr (!GapBitVectorType::reverse_bit_order) {
+                        const auto emit_byte = [&](unsigned shift) __attribute__((always_inline)) {
+                            const auto& entry = B_STAR_ZERO_BYTES[(zeros_ >> shift) & 255];
+                            // Eight slots fit inside this private scratch request.
+                            // Only entry.count become final; later iterations
+                            // overwrite the remaining initialized padding slots
+                            // before read() returns all count valid positions.
+                            // Load exactly the eight initialized offset bytes;
+                            // adjacent table entries need not be readable here.
+                            uint64_t packed;
+                            std::memcpy(&packed, entry.positions.data(), sizeof(packed));
+                            const __m128i bytes = _mm_cvtsi64_si128(std::bit_cast<int64_t>(packed));
+                            const __m256i base = _mm256_set1_epi64x(
+                                std::bit_cast<int64_t>(uint64_t(base_position + shift)));
+                            const __m256i first = _mm256_add_epi64(base, _mm256_cvtepu8_epi64(bytes));
+                            const __m256i second = _mm256_add_epi64(base,
+                                _mm256_cvtepu8_epi64(_mm_srli_si128(bytes, 4)));
+                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i), first);
+                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i + 4), second);
+                            i += entry.count;
+                        };
+                        if (count - i >= 64) {
+                            // Before byte j, at most 8*j positions are final.
+                            // All eight temporary stores therefore fit in the
+                            // 64 available slots, including for empty bytes.
+                            [&]<size_t... Bytes>(std::index_sequence<Bytes...>) __attribute__((always_inline)) {
+                                (emit_byte(8 * Bytes), ...);
+                            }(std::make_index_sequence<8>{});
+                            zeros_ = 0;
+                            continue;
+                        }
+                        if (count - i >= 8) {
+                            const unsigned shift = std::countr_zero(zeros_) & ~7u;
+                            emit_byte(shift);
+                            // shift is at most 56; the final partial request
+                            // stays scalar, so padding delimiters are not used.
+                            zeros_ &= ~(uint64_t(255) << shift);
+                            continue;
+                        }
+                    }
+#endif
                     do {
                         if constexpr (GapBitVectorType::reverse_bit_order) {
                             const unsigned bit = std::countl_zero(zeros_);
@@ -335,6 +397,65 @@ namespace gef {
             }
         }
 
+        // At an element index divisible by 64, the next 64 low parts occupy
+        // exactly SPLIT_POINT words. Constant indices remove per-value offset
+        // and word-crossing decisions without changing the packed representation.
+        template<uint8_t SPLIT_POINT, size_t... I>
+        static void reconstruct_aligned64(const uint64_t* low_data,
+                                          const size_t* plus_positions,
+                                          const size_t* minus_positions,
+                                          std::make_unsigned_t<T> base_u,
+                                          T* output,
+                                          std::index_sequence<I...>) {
+            static_assert(SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8);
+            static_assert(sizeof...(I) == 64);
+            using U = std::make_unsigned_t<T>;
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            if constexpr (sizeof(T) == 8 && sizeof(size_t) == 8) {
+                // Pack four lows directly into registers, avoiding a low-part
+                // scratch array. Both position and output pointers may be unaligned.
+                const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(base_u));
+                ([&] {
+                    if constexpr (I % 4 == 0) {
+                        __m256i lows;
+                        if constexpr (SPLIT_POINT <= 16) {
+                            // Four lows fit in one 64-bit window, even when the
+                            // window spans two packed words. Both words remain
+                            // inside this complete 64-element input block.
+                            constexpr size_t word = (I * SPLIT_POINT) / 64;
+                            constexpr unsigned offset = (I * SPLIT_POINT) % 64;
+                            uint64_t window = low_data[word] >> offset;
+                            if constexpr (offset + 4 * SPLIT_POINT > 64)
+                                window |= low_data[word + 1] << (64 - offset);
+                            const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+                            const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+                            lows = _mm256_and_si256(_mm256_srlv_epi64(
+                                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+                        } else {
+                            lows = _mm256_set_epi64x(
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 3)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 2)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 1)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I)));
+                        }
+                        const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + I));
+                        const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + I));
+                        const __m256i high = _mm256_slli_epi64(_mm256_sub_epi64(plus, minus), SPLIT_POINT);
+                        const __m256i values = _mm256_add_epi64(base_vector, _mm256_or_si256(high, lows));
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + I), values);
+                    }
+                }(), ...);
+            } else
+#endif
+            {
+                ([&] {
+                    const U high = static_cast<U>(plus_positions[I] - minus_positions[I]) << SPLIT_POINT;
+                    const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, I));
+                    output[I] = static_cast<T>(base_u + (high | low));
+                }(), ...);
+            }
+        }
+
         template<uint8_t SPLIT_POINT>
         size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
             constexpr size_t MAX_BATCH = 256;
@@ -364,13 +485,25 @@ namespace gef {
                 const size_t batch = std::min(count - produced, MAX_BATCH);
                 plus.read(plus_positions, batch);
                 minus.read(minus_positions, batch);
-                for (size_t i = 0; i < batch; ++i) {
+                const auto reconstruct_scalar = [&](size_t i) {
                     U high = 0;
                     if constexpr (SPLIT_POINT < sizeof(T) * 8)
                         high = static_cast<U>(plus_positions[i] - minus_positions[i]) << SPLIT_POINT;
                     const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + produced + i));
                     output[produced + i] = static_cast<T>(base_u + (high | low));
+                };
+                size_t i = 0;
+                if constexpr (SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8) {
+                    const size_t prefix = std::min(batch, (64 - ((startIndex + produced) & 63)) & 63);
+                    for (; i < prefix; ++i) reconstruct_scalar(i);
+                    for (; batch - i >= 64; i += 64) {
+                        const uint64_t* block = low_data + ((startIndex + produced + i) / 64) * SPLIT_POINT;
+                        reconstruct_aligned64<SPLIT_POINT>(block, plus_positions + i, minus_positions + i,
+                                                           base_u, output + produced + i,
+                                                           std::make_index_sequence<64>{});
+                    }
                 }
+                for (; i < batch; ++i) reconstruct_scalar(i);
                 produced += batch;
             }
             return count;
