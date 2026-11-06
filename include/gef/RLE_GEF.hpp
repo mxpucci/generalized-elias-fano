@@ -379,8 +379,75 @@ namespace gef {
             }
         }
 
+        inline static constexpr auto byte_prefix_ranks = [] {
+            std::array<std::array<uint8_t, 8>, 256> table{};
+            for (size_t mask = 0; mask < table.size(); ++mask) {
+                uint8_t rank = 0;
+                for (size_t bit = 0; bit < 8; ++bit) {
+                    rank += (mask >> bit) & 1;
+                    table[mask][bit] = rank;
+                }
+            }
+            return table;
+        }();
+
         template<uint8_t SPLIT_POINT>
-        size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
+        void reconstruct_marker_words(size_t count, T* output) const {
+            using U = std::make_unsigned_t<T>;
+            const uint64_t* bits = B->raw_data_ptr();
+            size_t next_high = 0;
+            uint64_t carry = static_cast<uint64_t>(base);
+            auto next_base = [&] {
+                uint64_t value = static_cast<uint64_t>(base);
+                if constexpr (SPLIT_POINT < sizeof(T) * 8)
+                    value += static_cast<uint64_t>(H[next_high++]) << SPLIT_POINT;
+                return value;
+            };
+            std::array<uint64_t, 65> run_bases;
+            size_t position = 0;
+            for (; count - position >= 64; position += 64) {
+                // Reconstruct while this aligned low-bit block is still hot.
+                if constexpr (SPLIT_POINT > 0) {
+                    unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
+                        output + position, 0, std::make_index_sequence<64>{});
+                }
+                const uint64_t markers = bits[position >> 6];
+                const unsigned runs = __builtin_popcountll(markers);
+                run_bases[0] = carry;
+                for (unsigned run = 1; run <= runs; ++run)
+                    run_bases[run] = next_base();
+
+                // Each byte maps its eight values to consecutive high parts.
+                // The preceding rank carries runs across byte boundaries.
+                unsigned preceding = 0;
+                for (unsigned byte = 0; byte < 8; ++byte) {
+                    const auto& ranks = byte_prefix_ranks[(markers >> (byte * 8)) & 255];
+                    T* dst = output + position + byte * 8;
+                    for (unsigned lane = 0; lane < 8; ++lane) {
+                        const uint64_t value = run_bases[preceding + ranks[lane]];
+                        if constexpr (SPLIT_POINT == 0)
+                            dst[lane] = static_cast<T>(value);
+                        else
+                            dst[lane] = static_cast<T>(value + static_cast<U>(dst[lane]));
+                    }
+                    preceding += ranks[7];
+                }
+                carry = run_bases[runs];
+            }
+            if constexpr (SPLIT_POINT > 0)
+                unpack_low_range<SPLIT_POINT>(position, count, output + position, 0);
+            for (; position < count; ++position) {
+                if ((bits[position >> 6] >> (position & 63)) & 1)
+                    carry = next_base();
+                if constexpr (SPLIT_POINT == 0)
+                    output[position] = static_cast<T>(carry);
+                else
+                    output[position] = static_cast<T>(carry + static_cast<U>(output[position]));
+            }
+        }
+
+        template<uint8_t SPLIT_POINT>
+        [[gnu::flatten]] size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
             if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
             const size_t actual = std::min(count, m_num_elements - startIndex);
             const size_t endIndex = startIndex + actual;
@@ -390,9 +457,14 @@ namespace gef {
                 return actual;
             }
 
-            // Separate low-bit unpacking from run reconstruction. The former
-            // uses constant shifts in full blocks; the latter becomes a simple
-            // contiguous add/fill loop, without per-value bit-cursor branches.
+            if constexpr (!ExceptionBitVectorType::reverse_bit_order) {
+                if (startIndex == 0 && actual == m_num_elements && actual >= 64) {
+                    reconstruct_marker_words<SPLIT_POINT>(actual, output);
+                    return actual;
+                }
+            }
+            // Partial ranges retain aligned low-bit unpacking followed by
+            // run reconstruction, without per-value bit-cursor branches.
             if constexpr (SPLIT_POINT > 0) {
                 unpack_low_range<SPLIT_POINT>(startIndex, endIndex, output, 0);
             }

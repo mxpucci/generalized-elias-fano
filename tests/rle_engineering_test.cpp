@@ -104,3 +104,48 @@ TEST(RLEEngineering, SupportFreePointerRanges) {
     std::vector<int64_t> short_output(1);
     EXPECT_THROW(codec.get_elements(1, 2, short_output), std::invalid_argument);
 }
+
+namespace {
+template<bool RandomAccess>
+void check_marker_patterns() {
+    using C = gef::internal::RLE_GEF<int64_t, PastaRankBitVector, RandomAccess>;
+    constexpr int64_t base = std::numeric_limits<int64_t>::min();
+    for (unsigned split : {0u, 1u, 5u, 63u}) {
+        const uint64_t low_mask = (uint64_t(1) << split) - 1;
+        std::vector<int64_t> all_values;
+        uint64_t high = 0;
+        // Every byte mask, including empty and dense words, with run carry
+        // across every byte/word boundary and a final incomplete word.
+        for (size_t i = 0; i < 256 * 64 + 13; ++i) {
+            const unsigned mask = 255 - ((i / 64) & 255);
+            if ((mask >> (i & 7)) & 1) high ^= 1;
+            const uint64_t residual = (high << split) | ((i * 17) & low_mask);
+            all_values.push_back(static_cast<int64_t>(static_cast<uint64_t>(base) + residual));
+        }
+        for (size_t length : {size_t(63), size_t(64), size_t(65), size_t(127),
+                              size_t(128), size_t(129), all_values.size()}) {
+            const std::vector<int64_t> input(all_values.begin(), all_values.begin() + length);
+            C codec(input, gef::BlockParameters<int64_t>{base, uint8_t(split + 1), uint8_t(split)});
+            std::vector<int64_t> output(length + 1, 123456789);
+            ASSERT_EQ(codec.get_elements_into(0, length, output.data()), length);
+            EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin()));
+            EXPECT_EQ(output[length], 123456789);
+            std::fill(output.begin(), output.end(), 123456789);
+            ASSERT_EQ(codec.get_elements(0, length, output), length);
+            EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin()));
+            EXPECT_EQ(output[length], 123456789);
+            for (size_t start : {size_t(1), size_t(63), size_t(64)}) {
+                if (start >= length) continue;
+                const size_t count = length - start;
+                std::fill(output.begin(), output.end(), 123456789);
+                ASSERT_EQ(codec.get_elements_into(start, count, output.data()), count);
+                EXPECT_TRUE(std::equal(input.begin() + start, input.end(), output.begin()));
+                EXPECT_EQ(output[count], 123456789);
+            }
+        }
+    }
+}
+}
+
+TEST(RLEEngineering, MarkerWordPatternsWithRandomAccess) { check_marker_patterns<true>(); }
+TEST(RLEEngineering, MarkerWordPatternsWithoutRandomAccess) { check_marker_patterns<false>(); }
