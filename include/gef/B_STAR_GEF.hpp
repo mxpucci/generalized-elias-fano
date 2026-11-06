@@ -101,8 +101,8 @@ namespace gef {
 
         static size_t evaluate_space(const GapComputation &gap_computation,
                                      const uint8_t b,
-                                     const size_t total_bits) {
-            const size_t N = gap_computation.negative_gaps + gap_computation.positive_gaps;
+                                     const size_t total_bits,
+                                     const size_t N) {
             if (N == 0) {
                 return sizeof(T) + sizeof(uint8_t) * 2;
             }
@@ -186,27 +186,28 @@ namespace gef {
             GapComputation candidates[2]{};
             const U maximum_high = static_cast<U>(static_cast<U>(max) - static_cast<U>(min)) >> floor_b;
             if (maximum_high <= (SIZE_MAX - S.size()) / S.size()) {
-                // The two candidates are adjacent shifts. Compute their sums
-                // together from one residual stream; no exception statistics,
-                // saturating arithmetic, or dynamically allocated vector is needed.
+                // The bound also proves that the total absolute variation fits.
+                // Accumulate just that magnitude for each adjacent split. Since
+                // the first previous high part is zero, positive-negative=last;
+                // recover both stream lengths without per-value direction counts.
+                size_t variation_floor = 0;
+                size_t variation_ceil = 0;
                 U previous = 0;
                 for (const T value : S) {
                     const U current = static_cast<U>(static_cast<U>(value) - static_cast<U>(min)) >> floor_b;
-                    const U positive = current >= previous ? current - previous : 0;
-                    const U negative = previous > current ? previous - current : 0;
-                    candidates[0].sum_of_positive_gaps += positive;
-                    candidates[0].sum_of_negative_gaps += negative;
-                    candidates[0].positive_gaps += current >= previous;
-                    candidates[0].negative_gaps += current < previous;
+                    variation_floor += current >= previous ? current - previous : previous - current;
                     if (ceil_b != floor_b) {
                         const U current_ceil = current >> 1;
                         const U previous_ceil = previous >> 1;
-                        candidates[1].sum_of_positive_gaps += current_ceil >= previous_ceil ? current_ceil - previous_ceil : 0;
-                        candidates[1].sum_of_negative_gaps += previous_ceil > current_ceil ? previous_ceil - current_ceil : 0;
-                        candidates[1].positive_gaps += current_ceil >= previous_ceil;
-                        candidates[1].negative_gaps += current_ceil < previous_ceil;
+                        variation_ceil += current_ceil >= previous_ceil ? current_ceil - previous_ceil : previous_ceil - current_ceil;
                     }
                     previous = current;
+                }
+                candidates[0].sum_of_negative_gaps = (variation_floor - previous) / 2;
+                candidates[0].sum_of_positive_gaps = candidates[0].sum_of_negative_gaps + previous;
+                if (ceil_b != floor_b) {
+                    candidates[1].sum_of_negative_gaps = (variation_ceil - (previous >> 1)) / 2;
+                    candidates[1].sum_of_positive_gaps = candidates[1].sum_of_negative_gaps + (previous >> 1);
                 }
             } else {
                 candidates[0] = variation_of_shifted_vec(S, min, max, floor_b, ExceptionRule::None);
@@ -215,10 +216,10 @@ namespace gef {
             }
 
             uint8_t best_b = floor_b;
-            size_t best_space = evaluate_space(candidates[0], floor_b, total_bits);
+            size_t best_space = evaluate_space(candidates[0], floor_b, total_bits, S.size());
             GapComputation best_stats = candidates[0];
             if (ceil_b != floor_b) {
-                const size_t ceil_space = evaluate_space(candidates[1], ceil_b, total_bits);
+                const size_t ceil_space = evaluate_space(candidates[1], ceil_b, total_bits, S.size());
                 if (ceil_space < best_space) {
                     best_b = ceil_b;
                     best_space = ceil_space;
@@ -228,7 +229,7 @@ namespace gef {
             // With every bit in L, both high-part sums are known to be zero.
             // Evaluating the bitpacking fallback does not require another scan.
             const auto bitpack_stats = bitpack_statistics(S.size());
-            if (evaluate_space(bitpack_stats, total_bits, total_bits) < best_space)
+            if (evaluate_space(bitpack_stats, total_bits, total_bits, S.size()) < best_space)
                 return {total_bits, bitpack_stats};
             return {best_b, best_stats};
         }
@@ -257,7 +258,7 @@ namespace gef {
             size_t best_space = SIZE_MAX;
             for (size_t i = 0; i < gap_computation.size(); i++) {
                 const uint8_t current_b = static_cast<uint8_t>(min_b + i);
-                const size_t space = evaluate_space(gap_computation[i], current_b, total_bits);
+                const size_t space = evaluate_space(gap_computation[i], current_b, total_bits, S.size());
                 if (space < best_space) {
                     best_space = space;
                     best_index = i;
@@ -266,7 +267,7 @@ namespace gef {
 
             const auto total_bits_stats = bitpack_statistics(S.size());
             const size_t total_bits_space =
-                evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits);
+                evaluate_space(total_bits_stats, static_cast<uint8_t>(total_bits), total_bits, S.size());
 
             if (total_bits_space < best_space) {
                 return {static_cast<uint8_t>(total_bits), total_bits_stats};
