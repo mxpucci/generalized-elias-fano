@@ -627,9 +627,16 @@ namespace gef {
                 return;
             }
 
-            auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
-            base = parameters ? parameters->base : *min_it;
-            const T max_val = *max_it;
+            // Independent reductions avoid minmax_element's pairwise branch
+            // and let the compiler vectorize contiguous input scans.
+            auto minimum = *S.begin();
+            auto maximum = minimum;
+            for (const auto value : S) {
+                minimum = std::min(minimum, value);
+                maximum = std::max(maximum, value);
+            }
+            base = parameters ? parameters->base : minimum;
+            const T max_val = maximum;
             
             uint8_t total_bits = value_width(base, max_val);
 
