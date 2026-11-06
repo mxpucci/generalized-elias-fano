@@ -32,10 +32,11 @@ std::pair<unsigned, unsigned> oracle_splits(const std::vector<T>& values) {
             previous = current;
         }
         bits[b] = n * (b + 2) + positive + negative;
-        bytes[b] = ceil_bytes(n * b) + ceil_bytes(n + positive) + ceil_bytes(n + negative);
+        bytes[b] = n * b > SIZE_MAX || n + positive > SIZE_MAX || n + negative > SIZE_MAX
+            ? ~Wide(0) : ceil_bytes(n * b) + ceil_bytes(n + positive) + ceil_bytes(n + negative);
     }
     bits[width] = n * width;
-    bytes[width] = ceil_bytes(bits[width]);
+    bytes[width] = bits[width] > SIZE_MAX ? ~Wide(0) : ceil_bytes(bits[width]);
     const uint64_t mean = uint64_t(variation / n);
     const unsigned center = mean ? std::bit_width(mean) - 1 : 0;
     const unsigned begin = center ? center - 1 : 0;
