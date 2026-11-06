@@ -246,17 +246,45 @@ namespace gef {
             const size_t min_b = static_cast<size_t>(std::max(0.0, floor(approx_b) - 1));
             const size_t max_b = static_cast<size_t>(std::min(static_cast<double>(total_bits), ceil(approx_b) + 3));
 
-            const std::vector<GapComputation> gap_computation =
-                total_variation_of_shifted_vec_with_multiple_shifts(S,
-                                                                    min,
-                                                                    max,
-                                                                    static_cast<uint8_t>(min_b),
-                                                                    static_cast<uint8_t>(max_b),
-                                                                    ExceptionRule::None);
+            const size_t count = max_b - min_b + 1;
+            assert(count <= 6);
+            std::array<GapComputation, 6> gap_computation{};
+            using U = std::make_unsigned_t<T>;
+            // min_b <= total_bits-1 for a nonconstant block, even at width 64.
+            assert(min_b < sizeof(T) * 8);
+            const U maximum_high = static_cast<U>(static_cast<U>(max) - static_cast<U>(min)) >> min_b;
+            if (maximum_high <= (SIZE_MAX - S.size()) / S.size()) {
+                // Every gap is at most maximum_high. This proves all absolute
+                // sums and their delimiter counts fit without saturating adds.
+                std::array<size_t, 6> variation{};
+                U previous = 0;
+                for (const T value : S) {
+                    const U residual = static_cast<U>(static_cast<U>(value) - static_cast<U>(min));
+                    U current = residual >> min_b;
+                    U prior = previous;
+                    for (size_t j = 0; j < count; ++j) {
+                        variation[j] += current >= prior ? current - prior : prior - current;
+                        current >>= 1;
+                        prior >>= 1;
+                    }
+                    previous = residual >> min_b;
+                }
+                for (size_t j = 0; j < count; ++j) {
+                    // Starting from zero, positive-negative equals the final
+                    // high part. Subtract before dividing to avoid V+last overflow.
+                    gap_computation[j].sum_of_negative_gaps = (variation[j] - previous) / 2;
+                    gap_computation[j].sum_of_positive_gaps = gap_computation[j].sum_of_negative_gaps + previous;
+                    previous >>= 1;
+                }
+            } else {
+                const auto generic = total_variation_of_shifted_vec_with_multiple_shifts(
+                    S, min, max, static_cast<uint8_t>(min_b), static_cast<uint8_t>(max_b), ExceptionRule::None);
+                std::copy(generic.begin(), generic.end(), gap_computation.begin());
+            }
 
             size_t best_index = 0;
             size_t best_space = SIZE_MAX;
-            for (size_t i = 0; i < gap_computation.size(); i++) {
+            for (size_t i = 0; i < count; i++) {
                 const uint8_t current_b = static_cast<uint8_t>(min_b + i);
                 const size_t space = evaluate_space(gap_computation[i], current_b, total_bits, S.size());
                 if (space < best_space) {
