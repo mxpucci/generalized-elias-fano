@@ -406,6 +406,11 @@ namespace gef {
             std::array<uint64_t, 65> run_bases;
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
+                // Reconstruct while this aligned low-bit block is still hot.
+                if constexpr (SPLIT_POINT > 0) {
+                    unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
+                        output + position, 0, std::make_index_sequence<64>{});
+                }
                 const uint64_t markers = bits[position >> 6];
                 const unsigned runs = __builtin_popcountll(markers);
                 run_bases[0] = carry;
@@ -429,6 +434,8 @@ namespace gef {
                 }
                 carry = run_bases[runs];
             }
+            if constexpr (SPLIT_POINT > 0)
+                unpack_low_range<SPLIT_POINT>(position, count, output + position, 0);
             for (; position < count; ++position) {
                 if ((bits[position >> 6] >> (position & 63)) & 1)
                     carry = next_base();
@@ -450,17 +457,16 @@ namespace gef {
                 return actual;
             }
 
-            // Separate low-bit unpacking from run reconstruction. The former
-            // uses constant shifts in full blocks; the latter becomes a simple
-            // contiguous add/fill loop, without per-value bit-cursor branches.
-            if constexpr (SPLIT_POINT > 0) {
-                unpack_low_range<SPLIT_POINT>(startIndex, endIndex, output, 0);
-            }
             if constexpr (!ExceptionBitVectorType::reverse_bit_order) {
                 if (startIndex == 0 && actual == m_num_elements && actual >= 64) {
                     reconstruct_marker_words<SPLIT_POINT>(actual, output);
                     return actual;
                 }
+            }
+            // Partial ranges retain aligned low-bit unpacking followed by
+            // run reconstruction, without per-value bit-cursor branches.
+            if constexpr (SPLIT_POINT > 0) {
+                unpack_low_range<SPLIT_POINT>(startIndex, endIndex, output, 0);
             }
             size_t rank = 1;
             if (startIndex != 0) {
