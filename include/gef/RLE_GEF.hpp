@@ -24,6 +24,10 @@
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
 
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#include <immintrin.h>
+#endif
+
 #if __has_include(<experimental/simd>) && !defined(GEF_DISABLE_SIMD)
 #include <experimental/simd>
 namespace stdx = std::experimental;
@@ -356,7 +360,32 @@ namespace gef {
         template<uint8_t SPLIT_POINT, size_t... INDICES>
         static void unpack_aligned_block(const uint64_t* words, T* output,
                                          uint64_t offset, std::index_sequence<INDICES...>) {
-            ((output[INDICES] = static_cast<T>(offset + unpack_aligned_low<SPLIT_POINT, INDICES>(words))), ...);
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16 &&
+                          sizeof...(INDICES) == 64) {
+                const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(offset));
+                const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+                const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+                ([&] {
+                    if constexpr (INDICES % 4 == 0) {
+                        // Four lows fit in one window. A crossing window's
+                        // second word remains inside this complete 64-value block.
+                        constexpr size_t word = (INDICES * SPLIT_POINT) / 64;
+                        constexpr unsigned bit = (INDICES * SPLIT_POINT) % 64;
+                        uint64_t window = words[word] >> bit;
+                        if constexpr (bit + 4 * SPLIT_POINT > 64)
+                            window |= words[word + 1] << (64 - bit);
+                        const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
+                            _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDICES),
+                            _mm256_add_epi64(base_vector, lows));
+                    }
+                }(), ...);
+            } else
+#endif
+            {
+                ((output[INDICES] = static_cast<T>(offset + unpack_aligned_low<SPLIT_POINT, INDICES>(words))), ...);
+            }
         }
 
         template<uint8_t SPLIT_POINT>
