@@ -311,7 +311,7 @@ namespace gef {
                 
                 if (b > 0) {
                     for (size_t i = 0; i < S.size(); i++) {
-                        append_low(static_cast<U>(S[i]) - static_cast<U>(base));
+                        append_low(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)));
                     }
                 }
                 finish_low();

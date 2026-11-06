@@ -33,7 +33,7 @@ void check_low_writer() {
             if (split && length) {
                 expected = sdsl::int_vector<>(length, 0, split);
                 for (size_t i = 0; i < length; ++i)
-                    expected[i] = (U(input[i]) - U(base)) & low_mask;
+                    expected[i] = U(U(input[i]) - U(base)) & low_mask;
             }
             EXPECT_EQ(codec.L.bit_size(), expected.bit_size());
             for (size_t i = 0; i < (expected.bit_size() + 63) / 64; ++i)
@@ -56,7 +56,11 @@ void check_low_writer() {
 }
 }
 
-TEST(RLELowWriter, SignedAndUnsigned32And64BitValues) {
+TEST(RLELowWriter, SignedAndUnsignedIntegralValues) {
+    check_low_writer<int8_t>();
+    check_low_writer<uint8_t>();
+    check_low_writer<int16_t>();
+    check_low_writer<uint16_t>();
     check_low_writer<int32_t>();
     check_low_writer<uint32_t>();
     check_low_writer<int64_t>();
