@@ -474,14 +474,19 @@ namespace gef {
                     value += static_cast<uint64_t>(H[next_high++]) << SPLIT_POINT;
                 return value;
             };
-            // AVX2 may load three unused bases past the last initialized run
-            // in a block. Keep that padding in bounds and defined.
-            std::array<uint64_t, 68> run_bases{};
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            constexpr bool fuse = sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16;
+#else
+            constexpr bool fuse = false;
+#endif
+            std::array<uint64_t, fuse ? 68 : 65> run_bases;
+            // The vector path may load up to three unused lanes.
+            if constexpr (fuse) run_bases.fill(0);
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
-                const uint64_t markers = bits[position >> 6];
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-                if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
+                if constexpr (fuse) {
+                    const uint64_t markers = bits[position >> 6];
                     const uint64_t* words = L.data() + ((position * SPLIT_POINT) >> 6);
                     if (markers == 0) {
                         unpack_aligned_block<SPLIT_POINT>(words, output + position, carry,
@@ -502,6 +507,7 @@ namespace gef {
                     unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
                         output + position, 0, std::make_index_sequence<64>{});
                 }
+                const uint64_t markers = bits[position >> 6];
                 const unsigned runs = __builtin_popcountll(markers);
                 run_bases[0] = carry;
                 for (unsigned run = 1; run <= runs; ++run)
