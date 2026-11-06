@@ -261,11 +261,18 @@ namespace gef {
                     }
                 }
             } else {
-                const auto [min_it, max_it] = std::minmax_element(S.begin(), S.end());
-                base = *min_it;
+                // Independent reductions avoid the pairwise comparison branch
+                // in minmax_element and allow contiguous inputs to vectorize.
+                auto minimum = *S.begin();
+                auto maximum = minimum;
+                for (const auto value : S) {
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                }
+                base = minimum;
                 // Integer width avoids rounding at powers of two and overflow of
                 // max-min+1. A constant block needs only its stored base.
-                const U range = static_cast<U>(*max_it) - static_cast<U>(base);
+                const U range = static_cast<U>(maximum) - static_cast<U>(base);
                 total_bits = static_cast<uint8_t>(std::bit_width(range));
                 b = optimal_split_point(S, total_bits, base, &h_count);
             }
