@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <limits>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -318,6 +319,54 @@ void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name, bo
         }
     }
 }
+
+template<typename T, bool RandomAccess = true>
+void check_wide_high_lookup() {
+    using C = gef::internal::RLE_GEF<T, PastaRankBitVector, RandomAccess>;
+    const std::array<std::pair<unsigned, unsigned>, 9> widths{{
+        {0, 1}, {0, 64}, {1, 63}, {5, 6}, {13, 1},
+        {16, 16}, {17, 19}, {31, 32}, {63, 1}}};
+    for (auto [split, high_width] : widths) {
+        const uint64_t residual_mask = width_mask(split + high_width);
+        const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+            : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+        for (unsigned byte = 0; byte < 256; ++byte) {
+            SCOPED_TRACE(::testing::Message() << "split=" << split << " high=" << high_width
+                << " byte=" << byte << " random_access=" << RandomAccess);
+            // The final byte is preceded by 56 real runs: its wide source
+            // load reaches index63, or index64 for the dense255 exception.
+            // Subsequent zero words read initialized but unselected slots
+            // left from the dense word; no additional H fields exist.
+            const uint64_t target = ((UINT64_C(1) << 56) - 1) | (uint64_t(byte) << 56);
+            const std::array<uint64_t, 5> markers{~uint64_t(0), target, 0, 0, 0};
+            std::vector<T> input(4 * 64 + 13);
+            uint64_t high = 0;
+            for (size_t i = 0; i < input.size(); ++i) {
+                if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1))
+                    high ^= width_mask(high_width);
+                uint64_t low = (i * UINT64_C(0x9e3779b97f4a7c15)) & width_mask(split);
+                if (i == 1) low = width_mask(split);
+                input[i] = std::bit_cast<T>(static_cast<uint64_t>(base) + (high << split) + low);
+            }
+            C codec(input, gef::BlockParameters<T>{base, uint8_t(split + high_width), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
+            ASSERT_EQ(codec.H.width(), high_width);
+            ASSERT_EQ(codec.H.size(), 120 + std::popcount(byte));
+            if (split == 0) ASSERT_EQ(codec.L.size(), 0);
+            for (size_t start : {size_t(0), size_t(1), size_t(63), size_t(64), size_t(65), size_t(128)}) {
+                for (size_t request : {size_t(127), size_t(128), size_t(129), input.size() + 9}) {
+                    const size_t actual = std::min(request, input.size() - start);
+                    std::vector<T> output(actual + 2, T(73));
+                    ASSERT_EQ(codec.get_elements_into(start, request, output.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + start, input.begin() + start + actual,
+                                           output.begin() + 1));
+                    EXPECT_EQ(output.front(), T(73));
+                    EXPECT_EQ(output.back(), T(73));
+                }
+            }
+        }
+    }
+}
 }
 
 template<typename T> class RLEMarkerTypes : public ::testing::Test {};
@@ -381,3 +430,7 @@ TEST(RLEMarkerPartialZero, SupportFreePasta) {
 TEST(RLEMarkerPartialZero, SupportFreeSDSL) {
     check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-zero-sdsl-no-ra.bin", true);
 }
+
+TEST(RLEMarkerWideLookup, Signed64) { check_wide_high_lookup<int64_t>(); }
+TEST(RLEMarkerWideLookup, Unsigned64) { check_wide_high_lookup<uint64_t>(); }
+TEST(RLEMarkerWideLookup, SupportFree) { check_wide_high_lookup<int64_t, false>(); }

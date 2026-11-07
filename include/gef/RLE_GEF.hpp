@@ -517,8 +517,7 @@ namespace gef {
 
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
         template<uint8_t SPLIT_POINT, size_t INDEX>
-        static void reconstruct_window4(const uint64_t* words, const uint64_t* bases,
-                                        const uint8_t* ranks, T* output) {
+        static void reconstruct_window4(const uint64_t* words, __m256i highs, T* output) {
             constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
             constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
             uint64_t window = words[word] >> bit;
@@ -529,6 +528,13 @@ namespace gef {
             const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
             const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
                 _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDEX),
+                               _mm256_add_epi64(highs, lows));
+        }
+
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_window4(const uint64_t* words, const uint64_t* bases,
+                                        const uint8_t* ranks, T* output) {
             // Every selected rank refers to an initialized high base. Unlike
             // a contiguous vector load, this needs no padding after the last run.
             const __m256i highs = _mm256_set_epi64x(
@@ -536,9 +542,18 @@ namespace gef {
                 std::bit_cast<int64_t>(bases[ranks[2]]),
                 std::bit_cast<int64_t>(bases[ranks[1]]),
                 std::bit_cast<int64_t>(bases[ranks[0]]));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDEX),
-                               _mm256_add_epi64(highs, lows));
+            reconstruct_window4<SPLIT_POINT, INDEX>(words, highs, output);
         }
+
+#if defined(__AVX512F__)
+        static __m512i map_high_byte(const uint64_t* bases, const uint8_t* ranks, unsigned markers) {
+            // Rank8 needs the ninth base; dense bytes are already in output order.
+            if (markers == 255) return _mm512_loadu_si512(bases + 1);
+            const __m512i indices = _mm512_cvtepu8_epi64(
+                _mm_loadl_epi64(reinterpret_cast<const __m128i*>(ranks)));
+            return _mm512_permutexvar_epi64(indices, _mm512_loadu_si512(bases));
+        }
+#endif
 
         template<uint8_t SPLIT_POINT, size_t... BYTES>
         static void reconstruct_fused_block(const uint64_t* words, uint64_t markers,
@@ -546,11 +561,23 @@ namespace gef {
                                             std::index_sequence<BYTES...>) {
             unsigned preceding = 0;
             ([&] {
-                const auto& ranks = byte_prefix_ranks[(markers >> (BYTES * 8)) & 255];
-                reconstruct_window4<SPLIT_POINT, BYTES * 8>(
-                    words, bases + preceding, ranks.data(), output);
-                reconstruct_window4<SPLIT_POINT, BYTES * 8 + 4>(
-                    words, bases + preceding, ranks.data() + 4, output);
+                const unsigned byte = (markers >> (BYTES * 8)) & 255;
+                const auto& ranks = byte_prefix_ranks[byte];
+#if defined(__AVX512F__)
+                if constexpr (sizeof(T) == 8) {
+                    const __m512i highs = map_high_byte(bases + preceding, ranks.data(), byte);
+                    reconstruct_window4<SPLIT_POINT, BYTES * 8>(
+                        words, _mm512_castsi512_si256(highs), output);
+                    reconstruct_window4<SPLIT_POINT, BYTES * 8 + 4>(
+                        words, _mm512_extracti64x4_epi64(highs, 1), output);
+                } else
+#endif
+                {
+                    reconstruct_window4<SPLIT_POINT, BYTES * 8>(
+                        words, bases + preceding, ranks.data(), output);
+                    reconstruct_window4<SPLIT_POINT, BYTES * 8 + 4>(
+                        words, bases + preceding, ranks.data() + 4, output);
+                }
                 preceding += ranks[7];
             }(), ...);
         }
@@ -636,6 +663,10 @@ namespace gef {
                 for (; filled < count; ++filled) destination[filled] = next_base();
             };
             std::array<uint64_t, 65> run_bases;
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD)
+            // Wide loads may include unselected trailing slots, never selected padding.
+            if constexpr (sizeof(T) == 8) run_bases.fill(0);
+#endif
             size_t position = begin;
             if constexpr (Partial) {
                 for (; position < count && (position & 63); ++position) {
@@ -674,14 +705,25 @@ namespace gef {
                 // The preceding rank carries runs across byte boundaries.
                 unsigned preceding = 0;
                 for (unsigned byte = 0; byte < 8; ++byte) {
-                    const auto& ranks = byte_prefix_ranks[(markers >> (byte * 8)) & 255];
+                    const unsigned marker_byte = (markers >> (byte * 8)) & 255;
+                    const auto& ranks = byte_prefix_ranks[marker_byte];
                     T* dst = output + (position - begin) + byte * 8;
-                    for (unsigned lane = 0; lane < 8; ++lane) {
-                        const uint64_t value = run_bases[preceding + ranks[lane]];
-                        if constexpr (SPLIT_POINT == 0)
-                            dst[lane] = static_cast<T>(value);
-                        else
-                            dst[lane] = static_cast<T>(value + static_cast<U>(dst[lane]));
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD)
+                    if constexpr (sizeof(T) == 8) {
+                        __m512i values = map_high_byte(run_bases.data() + preceding, ranks.data(), marker_byte);
+                        if constexpr (SPLIT_POINT > 0)
+                            values = _mm512_add_epi64(values, _mm512_loadu_si512(dst));
+                        _mm512_storeu_si512(dst, values);
+                    } else
+#endif
+                    {
+                        for (unsigned lane = 0; lane < 8; ++lane) {
+                            const uint64_t value = run_bases[preceding + ranks[lane]];
+                            if constexpr (SPLIT_POINT == 0)
+                                dst[lane] = static_cast<T>(value);
+                            else
+                                dst[lane] = static_cast<T>(value + static_cast<U>(dst[lane]));
+                        }
                     }
                     preceding += ranks[7];
                 }
