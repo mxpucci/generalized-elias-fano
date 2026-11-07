@@ -116,6 +116,37 @@ void check_every_high_width() {
         check_full_and_clipped(codec, input);
     }
 }
+
+template<typename T>
+void check_narrow_marker_bytes() {
+    using C = gef::internal::RLE_GEF<T>;
+    for (unsigned split = 1; split <= 16; ++split) {
+        const uint64_t low_mask = width_mask(split);
+        const uint64_t residual_mask = width_mask(split + 1);
+        const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+            : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+        for (unsigned byte = 0; byte < 256; ++byte) {
+            SCOPED_TRACE(::testing::Message() << "split=" << split << " byte=" << byte);
+            const uint64_t repeated = byte * 0x0101010101010101ULL;
+            const std::array<uint64_t, 4> markers{
+                0x0123456789abcdefULL, repeated, ~repeated, 1};
+            std::vector<T> input(3 * 64 + 1);
+            uint64_t high = 0;
+            for (size_t i = 0; i < input.size(); ++i) {
+                if ((markers[i / 64] >> (i & 63)) & 1) high ^= 1;
+                const uint64_t residual = (high << split) |
+                    ((i * 0x9e3779b97f4a7c15ULL) & low_mask);
+                input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+            }
+            C codec(input, gef::BlockParameters<T>{base, uint8_t(split + 1), uint8_t(split)});
+            std::vector<T> output(input.size() + 2, T(73));
+            ASSERT_EQ(codec.get_elements_into(0, input.size(), output.data() + 1), input.size());
+            EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
+            EXPECT_EQ(output.front(), T(73));
+            EXPECT_EQ(output.back(), T(73));
+        }
+    }
+}
 }
 
 template<typename T> class RLEMarkerTypes : public ::testing::Test {};
@@ -139,3 +170,6 @@ TEST(RLEMarkerBackends, PackedSupportFreeRoundtrip) {
 
 TEST(RLEMarkerPackedHigh, EveryWidthSigned64) { check_every_high_width<int64_t>(); }
 TEST(RLEMarkerPackedHigh, EveryWidthUnsigned64) { check_every_high_width<uint64_t>(); }
+
+TEST(RLEMarkerBytes, NarrowSigned64) { check_narrow_marker_bytes<int64_t>(); }
+TEST(RLEMarkerBytes, NarrowUnsigned64) { check_narrow_marker_bytes<uint64_t>(); }

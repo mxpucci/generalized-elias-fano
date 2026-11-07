@@ -485,6 +485,47 @@ namespace gef {
             return table;
         }();
 
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_window4(const uint64_t* words, const uint64_t* bases,
+                                        const uint8_t* ranks, T* output) {
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + 4 * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT,
+                                                    SPLIT_POINT, 0);
+            const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+            const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
+                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+            // Every selected rank refers to an initialized high base. Unlike
+            // a contiguous vector load, this needs no padding after the last run.
+            const __m256i highs = _mm256_set_epi64x(
+                std::bit_cast<int64_t>(bases[ranks[3]]),
+                std::bit_cast<int64_t>(bases[ranks[2]]),
+                std::bit_cast<int64_t>(bases[ranks[1]]),
+                std::bit_cast<int64_t>(bases[ranks[0]]));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDEX),
+                               _mm256_add_epi64(highs, lows));
+        }
+
+        template<uint8_t SPLIT_POINT, size_t... BYTES>
+        static void reconstruct_fused_block(const uint64_t* words, uint64_t markers,
+                                            const uint64_t* bases, T* output,
+                                            std::index_sequence<BYTES...>) {
+            unsigned preceding = 0;
+            ([&] {
+                const auto& ranks = byte_prefix_ranks[(markers >> (BYTES * 8)) & 255];
+                reconstruct_window4<SPLIT_POINT, BYTES * 8>(
+                    words, bases + preceding, ranks.data(), output);
+                reconstruct_window4<SPLIT_POINT, BYTES * 8 + 4>(
+                    words, bases + preceding, ranks.data() + 4, output);
+                preceding += ranks[7];
+            }(), ...);
+        }
+#endif
+
         template<uint8_t SPLIT_POINT>
         void reconstruct_marker_words(size_t count, T* output) const {
             using U = std::make_unsigned_t<T>;
@@ -500,6 +541,21 @@ namespace gef {
             std::array<uint64_t, 65> run_bases;
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+                if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
+                    const uint64_t markers = bits[position >> 6];
+                    const unsigned runs = __builtin_popcountll(markers);
+                    run_bases[0] = carry;
+                    for (unsigned run = 1; run <= runs; ++run)
+                        run_bases[run] = next_base();
+                    // Unpack and reconstruct before the only output store.
+                    reconstruct_fused_block<SPLIT_POINT>(
+                        L.data() + ((position * SPLIT_POINT) >> 6), markers,
+                        run_bases.data(), output + position, std::make_index_sequence<8>{});
+                    carry = run_bases[runs];
+                    continue;
+                }
+#endif
                 // Reconstruct while this aligned low-bit block is still hot.
                 if constexpr (SPLIT_POINT > 0) {
                     unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
