@@ -360,7 +360,7 @@ namespace gef {
             if constexpr (SPLIT_POINT == 0) return 0;
             else if constexpr (SPLIT_POINT == 64) return words[index];
             else {
-                const size_t position = index * SPLIT_POINT;
+                const uint64_t position = uint64_t(index) * SPLIT_POINT;
                 const size_t offset = position & 63;
                 uint64_t value = words[position >> 6] >> offset;
                 if (offset + SPLIT_POINT > 64) {
@@ -494,7 +494,7 @@ namespace gef {
                     *output = static_cast<T>(offset + unpack_low<SPLIT_POINT>(words, i));
                 }
                 for (; end - i >= 64; i += 64, output += 64) {
-                    unpack_aligned_block<SPLIT_POINT>(words + ((i * SPLIT_POINT) >> 6),
+                    unpack_aligned_block<SPLIT_POINT>(words + ((uint64_t(i) * SPLIT_POINT) >> 6),
                                                      output, offset, std::make_index_sequence<64>{});
                 }
                 for (; i < end; ++i, ++output) {
@@ -712,7 +712,7 @@ namespace gef {
                     fill_high_bases(run_bases.data() + 1, runs);
                     // Unpack and reconstruct before the only output store.
                     reconstruct_fused_block<SPLIT_POINT>(
-                        L.data() + ((position * SPLIT_POINT) >> 6), markers,
+                        L.data() + ((uint64_t(position) * SPLIT_POINT) >> 6), markers,
                         run_bases.data(), output + (position - begin), std::make_index_sequence<8>{});
                     carry = run_bases[runs];
                     continue;
@@ -720,7 +720,7 @@ namespace gef {
 #endif
                 // Reconstruct while this aligned low-bit block is still hot.
                 if constexpr (SPLIT_POINT > 0) {
-                    unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
+                    unpack_aligned_block<SPLIT_POINT>(L.data() + ((uint64_t(position) * SPLIT_POINT) >> 6),
                         output + (position - begin), 0, std::make_index_sequence<64>{});
                 }
                 const uint64_t markers = bits[position >> 6];
