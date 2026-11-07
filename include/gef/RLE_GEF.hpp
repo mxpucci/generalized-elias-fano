@@ -530,12 +530,30 @@ namespace gef {
         void reconstruct_marker_words(size_t count, T* output) const {
             using U = std::make_unsigned_t<T>;
             const uint64_t* bits = B->raw_data_ptr();
-            size_t next_high = 0;
+            const uint64_t* high_word = H.data();
+            const unsigned high_width = H.width();
+            const uint64_t high_mask = high_width == 64 ? ~uint64_t(0)
+                : (uint64_t(1) << high_width) - 1;
+            unsigned high_offset = 0;
             uint64_t carry = static_cast<uint64_t>(base);
             auto next_base = [&] {
                 uint64_t value = static_cast<uint64_t>(base);
-                if constexpr (SPLIT_POINT < sizeof(T) * 8)
-                    value += static_cast<uint64_t>(H[next_high++]) << SPLIT_POINT;
+                if constexpr (SPLIT_POINT < sizeof(T) * 8) {
+                    uint64_t high;
+                    if (high_width == 64) {
+                        high = *high_word++;
+                    } else {
+                        high = *high_word >> high_offset;
+                        const unsigned end = high_offset + high_width;
+                        // Read the next word only when this valid field crosses.
+                        if (end > 64)
+                            high |= high_word[1] << (64 - high_offset);
+                        high_word += end >> 6;
+                        high_offset = end & 63;
+                        high &= high_mask;
+                    }
+                    value += high << SPLIT_POINT;
+                }
                 return value;
             };
             std::array<uint64_t, 65> run_bases;
