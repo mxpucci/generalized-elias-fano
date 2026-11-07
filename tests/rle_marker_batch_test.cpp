@@ -232,11 +232,35 @@ void check_narrow_marker_bytes() {
                 input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
             }
             C codec(input, gef::BlockParameters<T>{base, uint8_t(split + 1), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
             std::vector<T> output(input.size() + 2, T(73));
             ASSERT_EQ(codec.get_elements_into(0, input.size(), output.data() + 1), input.size());
             EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
             EXPECT_EQ(output.front(), T(73));
             EXPECT_EQ(output.back(), T(73));
+            if (split <= 8) {
+                for (auto [start, request] : std::array<std::pair<size_t, size_t>, 4>{{
+                         {1, 160}, {63, 129}, {64, 128}, {65, input.size() + 9}}}) {
+                    const size_t actual = std::min(request, input.size() - start);
+                    std::vector<T> partial(actual + 2, T(73));
+                    ASSERT_EQ(codec.get_elements_into(start, request, partial.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + start, input.begin() + start + actual,
+                                           partial.begin() + 1));
+                    EXPECT_EQ(partial.front(), T(73));
+                    EXPECT_EQ(partial.back(), T(73));
+                }
+                // Exact complete low blocks leave no allocated tail word to
+                // hide an eager read after the final eight-value window.
+                const std::vector<T> exact(input.begin(), input.end() - 1);
+                C exact_codec(exact, gef::BlockParameters<T>{base, uint8_t(split + 1), uint8_t(split)});
+                for (size_t start : {size_t(0), size_t(64)}) {
+                    std::vector<T> bounded(exact.size() - start + 2, T(73));
+                    ASSERT_EQ(exact_codec.get_elements_into(start, exact.size() + 9, bounded.data() + 1), exact.size() - start);
+                    EXPECT_TRUE(std::equal(exact.begin() + start, exact.end(), bounded.begin() + 1));
+                    EXPECT_EQ(bounded.front(), T(73));
+                    EXPECT_EQ(bounded.back(), T(73));
+                }
+            }
         }
     }
 }
