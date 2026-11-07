@@ -548,17 +548,31 @@ namespace gef {
 #if defined(__AVX512F__)
         template<uint8_t SPLIT_POINT, size_t INDEX>
         static void reconstruct_window8(const uint64_t* words, __m512i highs, T* output) {
-            static_assert(sizeof(T) == 8 && SPLIT_POINT >= 1 && SPLIT_POINT <= 8 && INDEX % 8 == 0 && INDEX <= 56);
+            static_assert(sizeof(T) == 8 && SPLIT_POINT >= 1 && SPLIT_POINT <= 16 && INDEX % 8 == 0 && INDEX <= 56);
             constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
             constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            constexpr unsigned window_values = SPLIT_POINT <= 8 ? 8 : 4;
             uint64_t window = words[word] >> bit;
-            if constexpr (bit + 8 * SPLIT_POINT > 64)
+            if constexpr (bit + window_values * SPLIT_POINT > 64)
                 window |= words[word + 1] << (64 - bit);
-            const __m512i shifts = _mm512_set_epi64(7 * SPLIT_POINT, 6 * SPLIT_POINT,
-                5 * SPLIT_POINT, 4 * SPLIT_POINT, 3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+            __m512i source = _mm512_set1_epi64(std::bit_cast<int64_t>(window));
+            if constexpr (SPLIT_POINT > 8) {
+                // Each half retains the bounded four-value packed window.
+                constexpr size_t upper_word = ((INDEX + 4) * SPLIT_POINT) / 64;
+                constexpr unsigned upper_bit = ((INDEX + 4) * SPLIT_POINT) % 64;
+                uint64_t upper = words[upper_word] >> upper_bit;
+                if constexpr (upper_bit + 4 * SPLIT_POINT > 64)
+                    upper |= words[upper_word + 1] << (64 - upper_bit);
+                source = _mm512_mask_blend_epi64(0xf0, source,
+                    _mm512_set1_epi64(std::bit_cast<int64_t>(upper)));
+            }
+            constexpr unsigned upper_shift = SPLIT_POINT <= 8 ? 4 * SPLIT_POINT : 0;
+            const __m512i shifts = _mm512_set_epi64(upper_shift + 3 * SPLIT_POINT,
+                upper_shift + 2 * SPLIT_POINT, upper_shift + SPLIT_POINT, upper_shift,
+                3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
             const __m512i mask = _mm512_set1_epi64((uint64_t(1) << SPLIT_POINT) - 1);
             const __m512i lows = _mm512_and_si512(_mm512_srlv_epi64(
-                _mm512_set1_epi64(std::bit_cast<int64_t>(window)), shifts), mask);
+                source, shifts), mask);
             _mm512_storeu_si512(output + INDEX, _mm512_add_epi64(highs, lows));
         }
 
@@ -582,14 +596,7 @@ namespace gef {
 #if defined(__AVX512F__)
                 if constexpr (sizeof(T) == 8) {
                     const __m512i highs = map_high_byte(bases + preceding, ranks.data(), byte);
-                    if constexpr (SPLIT_POINT >= 1 && SPLIT_POINT <= 8) {
-                        reconstruct_window8<SPLIT_POINT, BYTES * 8>(words, highs, output);
-                    } else {
-                        reconstruct_window4<SPLIT_POINT, BYTES * 8>(
-                            words, _mm512_castsi512_si256(highs), output);
-                        reconstruct_window4<SPLIT_POINT, BYTES * 8 + 4>(
-                            words, _mm512_extracti64x4_epi64(highs, 1), output);
-                    }
+                    reconstruct_window8<SPLIT_POINT, BYTES * 8>(words, highs, output);
                 } else
 #endif
                 {

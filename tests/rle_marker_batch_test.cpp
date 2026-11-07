@@ -238,7 +238,7 @@ void check_narrow_marker_bytes() {
             EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
             EXPECT_EQ(output.front(), T(73));
             EXPECT_EQ(output.back(), T(73));
-            if (split <= 8) {
+            {
                 for (auto [start, request] : std::array<std::pair<size_t, size_t>, 4>{{
                          {1, 160}, {63, 129}, {64, 128}, {65, input.size() + 9}}}) {
                     const size_t actual = std::min(request, input.size() - start);
