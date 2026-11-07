@@ -66,7 +66,9 @@ void check_packed_ranges() {
 template<typename T>
 void check_exact_low_blocks() {
     using C = gef::internal::RLE_GEF<T>;
-    for (unsigned split : {8u, 16u, 32u}) {
+    std::vector<unsigned> splits{8, 16};
+    for (unsigned split = 17; split <= 32; ++split) splits.push_back(split);
+    for (unsigned split : splits) {
         const uint64_t low_mask = (uint64_t(1) << split) - 1;
         for (size_t count : {size_t(64), size_t(128), size_t(129)}) {
             for (bool with_high : {false, true}) {

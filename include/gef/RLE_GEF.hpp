@@ -357,6 +357,27 @@ namespace gef {
             }
         }
 
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        template<uint8_t SPLIT_POINT, unsigned PHASE, size_t BYTE_BIAS>
+        static __m256i wide_low_shuffle() {
+            static_assert(PHASE + 4 * SPLIT_POINT + 8 * BYTE_BIAS <= 128);
+            // Interior groups share one mask (two for odd widths); only the
+            // final group can need a left-shifted source window.
+            static constexpr auto shuffle = [] {
+                std::array<uint8_t, 32> result{};
+                result.fill(0x80);
+                for (unsigned lane = 0; lane < 4; ++lane) {
+                    const unsigned bit = PHASE + lane * SPLIT_POINT;
+                    const unsigned bytes = ((bit & 7) + SPLIT_POINT + 7) / 8;
+                    for (unsigned byte = 0; byte < bytes; ++byte)
+                        result[lane * 8 + byte] = BYTE_BIAS + bit / 8 + byte;
+                }
+                return result;
+            }();
+            return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(shuffle.data()));
+        }
+#endif
+
         template<uint8_t SPLIT_POINT, size_t... INDICES>
         static void unpack_aligned_block(const uint64_t* words, T* output,
                                          uint64_t offset, std::index_sequence<INDICES...>) {
@@ -377,6 +398,30 @@ namespace gef {
                             lows = _mm256_cvtepu32_epi64(_mm_loadu_si128(
                                 reinterpret_cast<const __m128i*>(bytes + INDICES * 4)));
                         }
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDICES),
+                            _mm256_add_epi64(base_vector, lows));
+                    }
+                }(), ...);
+            } else if constexpr (sizeof(T) == 8 && SPLIT_POINT > 16 && SPLIT_POINT < 32 &&
+                                 sizeof...(INDICES) == 64) {
+                const auto* bytes = reinterpret_cast<const unsigned char*>(words);
+                const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(offset));
+                const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+                ([&] {
+                    if constexpr (INDICES % 4 == 0) {
+                        constexpr size_t first_byte = (INDICES * SPLIT_POINT) / 8;
+                        constexpr unsigned phase = (INDICES * SPLIT_POINT) & 7;
+                        // A complete low block occupies exactly 8*b bytes.
+                        // Clamp the final 16-byte load inside that block.
+                        constexpr size_t load_byte = std::min(first_byte, size_t(8 * SPLIT_POINT - 16));
+                        const __m256i source = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                            reinterpret_cast<const __m128i*>(bytes + load_byte)));
+                        const __m256i shifts = _mm256_set_epi64x((phase + 3 * SPLIT_POINT) & 7,
+                            (phase + 2 * SPLIT_POINT) & 7, (phase + SPLIT_POINT) & 7, phase);
+                        const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
+                            _mm256_shuffle_epi8(source,
+                                wide_low_shuffle<SPLIT_POINT, phase, first_byte - load_byte>()),
+                            shifts), mask);
                         _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDICES),
                             _mm256_add_epi64(base_vector, lows));
                     }
