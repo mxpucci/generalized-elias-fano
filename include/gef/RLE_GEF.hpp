@@ -361,7 +361,27 @@ namespace gef {
         static void unpack_aligned_block(const uint64_t* words, T* output,
                                          uint64_t offset, std::index_sequence<INDICES...>) {
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-            if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16 &&
+            if constexpr (sizeof(T) == 8 && sizeof...(INDICES) == 64 &&
+                          (SPLIT_POINT == 8 || SPLIT_POINT == 16 || SPLIT_POINT == 32)) {
+                const auto* bytes = reinterpret_cast<const unsigned char*>(words);
+                const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(offset));
+                ([&] {
+                    if constexpr (INDICES % 4 == 0) {
+                        __m256i lows;
+                        if constexpr (SPLIT_POINT == 8) {
+                            lows = _mm256_cvtepu8_epi64(_mm_loadu_si32(bytes + INDICES));
+                        } else if constexpr (SPLIT_POINT == 16) {
+                            lows = _mm256_cvtepu16_epi64(_mm_loadl_epi64(
+                                reinterpret_cast<const __m128i*>(bytes + INDICES * 2)));
+                        } else {
+                            lows = _mm256_cvtepu32_epi64(_mm_loadu_si128(
+                                reinterpret_cast<const __m128i*>(bytes + INDICES * 4)));
+                        }
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + INDICES),
+                            _mm256_add_epi64(base_vector, lows));
+                    }
+                }(), ...);
+            } else if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16 &&
                           sizeof...(INDICES) == 64) {
                 const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(offset));
                 const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);

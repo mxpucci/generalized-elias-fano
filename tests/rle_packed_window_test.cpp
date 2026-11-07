@@ -10,7 +10,7 @@ void check_packed_ranges() {
     constexpr unsigned bits = sizeof(T) * 8;
     using C = gef::internal::RLE_GEF<T>;
     std::vector<unsigned> splits;
-    for (unsigned split = 0; split <= std::min(17u, bits); ++split)
+    for (unsigned split = 0; split <= std::min(33u, bits); ++split)
         splits.push_back(split);
     for (unsigned split : {bits - 1, bits})
         if (std::find(splits.begin(), splits.end(), split) == splits.end())
@@ -62,9 +62,38 @@ void check_packed_ranges() {
         }
     }
 }
+
+template<typename T>
+void check_exact_low_blocks() {
+    using C = gef::internal::RLE_GEF<T>;
+    for (unsigned split : {8u, 16u, 32u}) {
+        const uint64_t low_mask = (uint64_t(1) << split) - 1;
+        for (size_t count : {size_t(64), size_t(128), size_t(129)}) {
+            for (bool with_high : {false, true}) {
+                SCOPED_TRACE(::testing::Message() << "split=" << split << " count=" << count
+                                                 << " high=" << with_high);
+                const T base = std::numeric_limits<T>::min();
+                std::vector<T> input(count);
+                for (size_t i = 0; i < count; ++i) {
+                    uint64_t residual = (i * 0x9e3779b97f4a7c15ULL) & low_mask;
+                    if (with_high && (i / 7) % 2) residual |= uint64_t(1) << split;
+                    input[i] = static_cast<T>(uint64_t(base) + residual);
+                }
+                C codec(input, gef::BlockParameters<T>{base, uint8_t(split + with_high), uint8_t(split)});
+                std::vector<T> output(count + 2, T(73));
+                ASSERT_EQ(codec.get_elements_into(0, count, output.data() + 1), count);
+                EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
+                EXPECT_EQ(output.front(), T(73));
+                EXPECT_EQ(output.back(), T(73));
+            }
+        }
+    }
+}
 }
 
 TEST(RLEPackedWindow, Signed64) { check_packed_ranges<int64_t>(); }
 TEST(RLEPackedWindow, Unsigned64) { check_packed_ranges<uint64_t>(); }
 TEST(RLEPackedWindow, Signed32Fallback) { check_packed_ranges<int32_t>(); }
 TEST(RLEPackedWindow, Unsigned16Fallback) { check_packed_ranges<uint16_t>(); }
+TEST(RLEPackedWindow, ExactBlocksSigned64) { check_exact_low_blocks<int64_t>(); }
+TEST(RLEPackedWindow, ExactBlocksUnsigned64) { check_exact_low_blocks<uint64_t>(); }
