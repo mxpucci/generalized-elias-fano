@@ -556,8 +556,8 @@ namespace gef {
         }
 #endif
 
-        template<uint8_t SPLIT_POINT>
-        void reconstruct_marker_words(size_t count, T* output) const {
+        template<uint8_t SPLIT_POINT, bool Partial = false>
+        void reconstruct_marker_words(size_t count, T* output, size_t startIndex = 0) const {
             using U = std::make_unsigned_t<T>;
             const uint64_t* bits = B->raw_data_ptr();
             const uint64_t* high_word = H.data();
@@ -566,6 +566,22 @@ namespace gef {
                 : (uint64_t(1) << high_width) - 1;
             unsigned high_offset = 0;
             uint64_t carry = static_cast<uint64_t>(base);
+            const size_t begin = Partial ? startIndex : 0;
+            if constexpr (Partial) {
+                count += begin;
+                if constexpr (RandomAccess) {
+                    if (begin != 0) {
+                        // Cursor precedes B[begin], which the decoder consumes
+                        // inclusively even when begin is a marker-word boundary.
+                        const size_t preceding = B->rank_unchecked(begin);
+                        const size_t high_bit = preceding * high_width;
+                        high_word += high_bit >> 6;
+                        high_offset = high_bit & 63;
+                        if (preceding != 0)
+                            carry += static_cast<uint64_t>(H[preceding - 1]) << SPLIT_POINT;
+                    }
+                }
+            }
             auto next_base = [&] {
                 uint64_t value = static_cast<uint64_t>(base);
                 if constexpr (SPLIT_POINT < sizeof(T) * 8) {
@@ -620,7 +636,15 @@ namespace gef {
                 for (; filled < count; ++filled) destination[filled] = next_base();
             };
             std::array<uint64_t, 65> run_bases;
-            size_t position = 0;
+            size_t position = begin;
+            if constexpr (Partial) {
+                for (; position < count && (position & 63); ++position) {
+                    if ((bits[position >> 6] >> (position & 63)) & 1)
+                        carry = next_base();
+                    output[position - begin] = static_cast<T>(carry +
+                        unpack_low<SPLIT_POINT>(L.data(), position));
+                }
+            }
             for (; count - position >= 64; position += 64) {
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
                 if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
@@ -631,7 +655,7 @@ namespace gef {
                     // Unpack and reconstruct before the only output store.
                     reconstruct_fused_block<SPLIT_POINT>(
                         L.data() + ((position * SPLIT_POINT) >> 6), markers,
-                        run_bases.data(), output + position, std::make_index_sequence<8>{});
+                        run_bases.data(), output + (position - begin), std::make_index_sequence<8>{});
                     carry = run_bases[runs];
                     continue;
                 }
@@ -639,7 +663,7 @@ namespace gef {
                 // Reconstruct while this aligned low-bit block is still hot.
                 if constexpr (SPLIT_POINT > 0) {
                     unpack_aligned_block<SPLIT_POINT>(L.data() + ((position * SPLIT_POINT) >> 6),
-                        output + position, 0, std::make_index_sequence<64>{});
+                        output + (position - begin), 0, std::make_index_sequence<64>{});
                 }
                 const uint64_t markers = bits[position >> 6];
                 const unsigned runs = __builtin_popcountll(markers);
@@ -651,7 +675,7 @@ namespace gef {
                 unsigned preceding = 0;
                 for (unsigned byte = 0; byte < 8; ++byte) {
                     const auto& ranks = byte_prefix_ranks[(markers >> (byte * 8)) & 255];
-                    T* dst = output + position + byte * 8;
+                    T* dst = output + (position - begin) + byte * 8;
                     for (unsigned lane = 0; lane < 8; ++lane) {
                         const uint64_t value = run_bases[preceding + ranks[lane]];
                         if constexpr (SPLIT_POINT == 0)
@@ -663,12 +687,15 @@ namespace gef {
                 }
                 carry = run_bases[runs];
             }
-            if constexpr (SPLIT_POINT > 0)
+            if constexpr (SPLIT_POINT > 0 && !Partial)
                 unpack_low_range<SPLIT_POINT>(position, count, output + position, 0);
             for (; position < count; ++position) {
                 if ((bits[position >> 6] >> (position & 63)) & 1)
                     carry = next_base();
-                if constexpr (SPLIT_POINT == 0)
+                if constexpr (Partial)
+                    output[position - begin] = static_cast<T>(carry +
+                        unpack_low<SPLIT_POINT>(L.data(), position));
+                else if constexpr (SPLIT_POINT == 0)
                     output[position] = static_cast<T>(carry);
                 else
                     output[position] = static_cast<T>(carry + static_cast<U>(output[position]));
@@ -691,6 +718,16 @@ namespace gef {
                     reconstruct_marker_words<SPLIT_POINT>(actual, output);
                     return actual;
                 }
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+                if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
+                    // At most 63 leading values leave at least one aligned
+                    // marker word. Keep smaller ranges on their existing path.
+                    if (actual >= 128) {
+                        reconstruct_marker_words<SPLIT_POINT, true>(actual, output, startIndex);
+                        return actual;
+                    }
+                }
+#endif
             }
             // Partial ranges retain aligned low-bit unpacking followed by
             // run reconstruction, without per-value bit-cursor branches.

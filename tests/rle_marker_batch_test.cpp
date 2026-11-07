@@ -239,6 +239,82 @@ void check_narrow_marker_bytes() {
         }
     }
 }
+
+template<typename T, typename BitVector = PastaRankBitVector, bool RandomAccess = true>
+void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name) {
+    using C = gef::internal::RLE_GEF<T, BitVector, RandomAccess>;
+    for (unsigned split : {1u, 5u, 8u, 13u, 16u}) {
+        for (unsigned high_width : {1u, 3u, 6u, 10u, 16u, 31u, 48u, 63u}) {
+            if (split + high_width > 64) continue;
+            if (!exhaustive && (split != 5 || high_width != 6)) continue;
+            const uint64_t residual_mask = width_mask(split + high_width);
+            const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+                : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+            // Dense/sparse words surround empty words; the final H field is
+            // consumed before two empty words and the partial final word.
+            const std::array<uint64_t, 9> markers{
+                0x8102040810204083ULL, 0, ~uint64_t(0), 0x8000000000000001ULL,
+                0, ~uint64_t(0), 0, 0, 0};
+            std::vector<T> input(8 * 64 + 13);
+            uint64_t high = 0;
+            for (size_t i = 0; i < input.size(); ++i) {
+                if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1))
+                    high ^= width_mask(high_width);
+                const uint64_t residual = (high << split) |
+                    ((i * 0x9e3779b97f4a7c15ULL) & width_mask(split));
+                input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+            }
+            C codec(input, gef::BlockParameters<T>{base, uint8_t(split + high_width), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
+            ASSERT_EQ(codec.H.width(), high_width);
+            ASSERT_GT(codec.h, 0);
+            auto check = [&](const C& tested) {
+                auto range = [&](size_t start, size_t requested) {
+                    SCOPED_TRACE(::testing::Message() << "split=" << split << " high=" << high_width
+                        << " start=" << start << " count=" << requested);
+                    const size_t actual = start < input.size()
+                        ? std::min(requested, input.size() - start) : 0;
+                    const T sentinel = T(73);
+                    std::vector<T> output(requested + 2, sentinel);
+                    ASSERT_EQ(tested.get_elements_into(start, requested, output.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + std::min(start, input.size()),
+                        input.begin() + std::min(start, input.size()) + actual, output.begin() + 1));
+                    EXPECT_EQ(output.front(), sentinel);
+                    EXPECT_TRUE(std::all_of(output.begin() + actual + 1, output.end(),
+                        [=](T value) { return value == sentinel; }));
+                    std::fill(output.begin(), output.end(), sentinel);
+                    ASSERT_EQ(tested.get_elements(start, requested, output), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + std::min(start, input.size()),
+                        input.begin() + std::min(start, input.size()) + actual, output.begin()));
+                    EXPECT_TRUE(std::all_of(output.begin() + actual, output.end(),
+                        [=](T value) { return value == sentinel; }));
+                };
+                // Every initial word phase, including starts exactly on a
+                // marker, and both sides of the partial-decoder length gate.
+                for (size_t start = 0; start < 128; ++start)
+                    for (size_t count : {size_t(127), size_t(128), size_t(129), size_t(160), size_t(257)})
+                        range(start, count);
+                for (size_t start : {size_t(255), size_t(256), size_t(257), size_t(383), size_t(384),
+                                     size_t(385), size_t(447), size_t(448), size_t(449), size_t(512), input.size()})
+                    for (size_t count : {size_t(0), size_t(1), size_t(80), size_t(128), input.size() + 9})
+                        range(start, count);
+                range(0, input.size());
+            };
+            check(codec);
+            if (split == 5 && high_width == 6) {
+                const auto path = std::filesystem::temp_directory_path() / roundtrip_name;
+                codec.serialize(path);
+                C loaded;
+                loaded.load(path);
+                std::filesystem::remove(path);
+                ASSERT_EQ(loaded.b, split);
+                ASSERT_EQ(loaded.H.width(), high_width);
+                EXPECT_EQ(loaded.size_in_bytes(), codec.size_in_bytes());
+                check(loaded);
+            }
+        }
+    }
+}
 }
 
 template<typename T> class RLEMarkerTypes : public ::testing::Test {};
@@ -270,3 +346,19 @@ TEST(RLEMarkerPackedHigh, BatchOffsetsSigned64) { check_high_batch_offsets<int64
 TEST(RLEMarkerPackedHigh, BatchOffsetsUnsigned64) { check_high_batch_offsets<uint64_t>(); }
 TEST(RLEMarkerPackedHigh, FusedBatchOffsetsSigned64) { check_fused_high_batch_offsets<int64_t>(); }
 TEST(RLEMarkerPackedHigh, FusedBatchOffsetsUnsigned64) { check_fused_high_batch_offsets<uint64_t>(); }
+
+TEST(RLEMarkerPartial, Signed64) {
+    check_partial_marker_ranges<int64_t>(true, "gef-partial-signed.bin");
+}
+TEST(RLEMarkerPartial, Unsigned64) {
+    check_partial_marker_ranges<uint64_t>(true, "gef-partial-unsigned.bin");
+}
+TEST(RLEMarkerPartial, SDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector>(false, "gef-partial-sdsl.bin");
+}
+TEST(RLEMarkerPartial, SupportFreePasta) {
+    check_partial_marker_ranges<int64_t, PastaRankBitVector, false>(false, "gef-partial-no-ra.bin");
+}
+TEST(RLEMarkerPartial, SupportFreeSDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-sdsl-no-ra.bin");
+}
