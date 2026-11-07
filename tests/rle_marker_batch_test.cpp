@@ -241,12 +241,15 @@ void check_narrow_marker_bytes() {
 }
 
 template<typename T, typename BitVector = PastaRankBitVector, bool RandomAccess = true>
-void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name) {
+void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name, bool zero_split = false) {
     using C = gef::internal::RLE_GEF<T, BitVector, RandomAccess>;
-    for (unsigned split : {1u, 5u, 8u, 13u, 16u}) {
-        for (unsigned high_width : {1u, 3u, 6u, 10u, 16u, 31u, 48u, 63u}) {
+    for (unsigned split : {0u, 1u, 5u, 8u, 13u, 16u}) {
+        if ((split == 0) != zero_split) continue;
+        for (unsigned high_width : {1u, 3u, 6u, 10u, 16u, 17u, 19u, 31u, 32u, 48u, 63u, 64u}) {
+            const bool zero_width = high_width == 17 || high_width == 19 || high_width == 32 || high_width == 64;
+            if (zero_width != zero_split) continue;
             if (split + high_width > 64) continue;
-            if (!exhaustive && (split != 5 || high_width != 6)) continue;
+            if (!exhaustive && !zero_split && (split != 5 || high_width != 6)) continue;
             const uint64_t residual_mask = width_mask(split + high_width);
             const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
                 : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
@@ -301,7 +304,7 @@ void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name) {
                 range(0, input.size());
             };
             check(codec);
-            if (split == 5 && high_width == 6) {
+            if (zero_split || (split == 5 && high_width == 6)) {
                 const auto path = std::filesystem::temp_directory_path() / roundtrip_name;
                 codec.serialize(path);
                 C loaded;
@@ -361,4 +364,20 @@ TEST(RLEMarkerPartial, SupportFreePasta) {
 }
 TEST(RLEMarkerPartial, SupportFreeSDSL) {
     check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-sdsl-no-ra.bin");
+}
+
+TEST(RLEMarkerPartialZero, Signed64) {
+    check_partial_marker_ranges<int64_t>(true, "gef-partial-zero-signed.bin", true);
+}
+TEST(RLEMarkerPartialZero, Unsigned64) {
+    check_partial_marker_ranges<uint64_t>(true, "gef-partial-zero-unsigned.bin", true);
+}
+TEST(RLEMarkerPartialZero, SDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector>(false, "gef-partial-zero-sdsl.bin", true);
+}
+TEST(RLEMarkerPartialZero, SupportFreePasta) {
+    check_partial_marker_ranges<int64_t, PastaRankBitVector, false>(false, "gef-partial-zero-no-ra.bin", true);
+}
+TEST(RLEMarkerPartialZero, SupportFreeSDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-zero-sdsl-no-ra.bin", true);
 }

@@ -719,7 +719,7 @@ namespace gef {
                     return actual;
                 }
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
-                if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
+                if constexpr (sizeof(T) == 8 && SPLIT_POINT <= 16) {
                     // At most 63 leading values leave at least one aligned
                     // marker word. Keep smaller ranges on their existing path.
                     if (actual >= 128) {
