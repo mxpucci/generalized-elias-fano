@@ -196,3 +196,102 @@ TEST(BStarEngineering, ApproximationStillComparesOnlyAdjacentCandidatesAndBitpac
         check_all_accesses(codec, values);
     }
 }
+
+namespace {
+template<class T>
+void check_loaded_position_differences() {
+    using U = std::make_unsigned_t<T>;
+    const T base = std::is_signed_v<T> ? std::numeric_limits<T>::lowest()
+                                     : static_cast<T>(std::numeric_limits<T>::max() - 4096);
+    const auto path = std::filesystem::temp_directory_path() /
+        (std::is_signed_v<T> ? "gef-bstar-loaded-positions-signed.bin"
+                             : "gef-bstar-loaded-positions-unsigned.bin");
+    for (unsigned split : {0u, 1u, 3u, 17u, 31u, 63u}) {
+        for (size_t n : {size_t(7), size_t(8), size_t(9), size_t(63), size_t(64),
+                         size_t(65), size_t(255), size_t(256), size_t(257), size_t(513)}) {
+            SCOPED_TRACE(::testing::Message() << "split=" << split << " n=" << n);
+            // A loaded stream need not prove that plus-minus is nonnegative.
+            // Preserve its original unsigned-64 subtraction even in the
+            // bounded-position path, including scalar and aligned64 output.
+            std::vector<int64_t> highs(n);
+            size_t positive = 0, negative = 0;
+            int64_t previous = 0;
+            for (size_t i = 0; i < n; ++i) {
+                highs[i] = static_cast<int64_t>((i * 7) % 17) - 8;
+                const int64_t gap = highs[i] - previous;
+                if (gap > 0) positive += static_cast<size_t>(gap);
+                else negative += static_cast<size_t>(-gap);
+                previous = highs[i];
+            }
+            PastaGapBitVector plus(n + positive), minus(n + negative);
+            gef::FastBitWriter<false> plus_writer(plus.raw_data_ptr());
+            gef::FastBitWriter<false> minus_writer(minus.raw_data_ptr());
+            sdsl::int_vector<> lows(split ? n : 0, 0, split ? split : 1);
+            std::vector<T> values(n);
+            const uint64_t mask = split == 64 ? UINT64_MAX : (uint64_t(1) << split) - 1;
+            previous = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const int64_t gap = highs[i] - previous;
+                if (gap > 0) plus_writer.set_ones_range(static_cast<uint64_t>(gap));
+                else if (gap < 0) minus_writer.set_ones_range(static_cast<uint64_t>(-gap));
+                plus_writer.skip_zeros(1);
+                minus_writer.skip_zeros(1);
+                const uint64_t low = (i * UINT64_C(0x9e3779b97f4a7c15)) & mask;
+                if (split) lows[i] = low;
+                const uint64_t high = split < 64 ? static_cast<uint64_t>(highs[i]) << split : 0;
+                values[i] = static_cast<T>(static_cast<U>(base) + (high | low));
+                previous = highs[i];
+            }
+            {
+                std::ofstream output(path, std::ios::binary);
+                const uint8_t h = 1, b = static_cast<uint8_t>(split);
+                output.write(reinterpret_cast<const char*>(&h), sizeof(h));
+                output.write(reinterpret_cast<const char*>(&b), sizeof(b));
+                output.write(reinterpret_cast<const char*>(&n), sizeof(n));
+                output.write(reinterpret_cast<const char*>(&base), sizeof(base));
+                if (split) lows.serialize(output);
+                plus.serialize(output);
+                minus.serialize(output);
+            }
+            gef::internal::B_STAR_GEF<T> loaded;
+            {
+                std::ifstream input(path, std::ios::binary);
+                loaded.load(input);
+            }
+            check_all_accesses(loaded, values);
+            loaded.serialize(path);
+            gef::internal::B_STAR_GEF<T> reloaded;
+            {
+                std::ifstream input(path, std::ios::binary);
+                reloaded.load(input);
+            }
+            check_all_accesses(reloaded, values);
+        }
+    }
+    std::filesystem::remove(path);
+}
+
+#if SIZE_MAX == UINT64_MAX
+// The requested prefix is stored normally. Advertising a long unused suffix
+// exercises the general position path without allocating a half-gigabyte gap.
+class LargePositionGap : public SDSLBitVector {
+public:
+    using SDSLBitVector::SDSLBitVector;
+    explicit LargePositionGap(SDSLBitVector&& other) : SDSLBitVector(std::move(other)) {}
+    size_t size() const override { return size_t(UINT32_MAX) + 1; }
+};
+#endif
+}
+
+TEST(BStarEngineering, LoadedPositionDifferencesSigned64) { check_loaded_position_differences<int64_t>(); }
+TEST(BStarEngineering, LoadedPositionDifferencesUnsigned64) { check_loaded_position_differences<uint64_t>(); }
+
+#if SIZE_MAX == UINT64_MAX
+TEST(BStarEngineering, LargeGapPositionFallback) {
+    std::vector<uint64_t> values(513);
+    for (size_t i = 0; i < values.size(); ++i) values[i] = ((i * 7) % 31) * 8 + i % 8;
+    gef::internal::B_STAR_GEF<uint64_t, LargePositionGap> codec(
+        values, gef::BlockParameters<uint64_t>{0, 8, 3});
+    check_all_accesses(codec, values);
+}
+#endif
