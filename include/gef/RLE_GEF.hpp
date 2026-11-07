@@ -574,7 +574,7 @@ namespace gef {
                         // Cursor precedes B[begin], which the decoder consumes
                         // inclusively even when begin is a marker-word boundary.
                         const size_t preceding = B->rank_unchecked(begin);
-                        const size_t high_bit = preceding * high_width;
+                        const uint64_t high_bit = uint64_t(preceding) * high_width;
                         high_word += high_bit >> 6;
                         high_offset = high_bit & 63;
                         if (preceding != 0)
