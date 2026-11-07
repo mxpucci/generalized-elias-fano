@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <limits>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -231,11 +232,162 @@ void check_narrow_marker_bytes() {
                 input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
             }
             C codec(input, gef::BlockParameters<T>{base, uint8_t(split + 1), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
             std::vector<T> output(input.size() + 2, T(73));
             ASSERT_EQ(codec.get_elements_into(0, input.size(), output.data() + 1), input.size());
             EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
             EXPECT_EQ(output.front(), T(73));
             EXPECT_EQ(output.back(), T(73));
+            {
+                for (auto [start, request] : std::array<std::pair<size_t, size_t>, 4>{{
+                         {1, 160}, {63, 129}, {64, 128}, {65, input.size() + 9}}}) {
+                    const size_t actual = std::min(request, input.size() - start);
+                    std::vector<T> partial(actual + 2, T(73));
+                    ASSERT_EQ(codec.get_elements_into(start, request, partial.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + start, input.begin() + start + actual,
+                                           partial.begin() + 1));
+                    EXPECT_EQ(partial.front(), T(73));
+                    EXPECT_EQ(partial.back(), T(73));
+                }
+                // Exact complete low blocks leave no allocated tail word to
+                // hide an eager read after the final eight-value window.
+                const std::vector<T> exact(input.begin(), input.end() - 1);
+                C exact_codec(exact, gef::BlockParameters<T>{base, uint8_t(split + 1), uint8_t(split)});
+                for (size_t start : {size_t(0), size_t(64)}) {
+                    std::vector<T> bounded(exact.size() - start + 2, T(73));
+                    ASSERT_EQ(exact_codec.get_elements_into(start, exact.size() + 9, bounded.data() + 1), exact.size() - start);
+                    EXPECT_TRUE(std::equal(exact.begin() + start, exact.end(), bounded.begin() + 1));
+                    EXPECT_EQ(bounded.front(), T(73));
+                    EXPECT_EQ(bounded.back(), T(73));
+                }
+            }
+        }
+    }
+}
+
+template<typename T, typename BitVector = PastaRankBitVector, bool RandomAccess = true>
+void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name, bool zero_split = false) {
+    using C = gef::internal::RLE_GEF<T, BitVector, RandomAccess>;
+    for (unsigned split : {0u, 1u, 5u, 8u, 13u, 16u}) {
+        if ((split == 0) != zero_split) continue;
+        for (unsigned high_width : {1u, 3u, 6u, 10u, 16u, 17u, 19u, 31u, 32u, 48u, 63u, 64u}) {
+            const bool zero_width = high_width == 17 || high_width == 19 || high_width == 32 || high_width == 64;
+            if (zero_width != zero_split) continue;
+            if (split + high_width > 64) continue;
+            if (!exhaustive && !zero_split && (split != 5 || high_width != 6)) continue;
+            const uint64_t residual_mask = width_mask(split + high_width);
+            const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+                : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+            // Dense/sparse words surround empty words; the final H field is
+            // consumed before two empty words and the partial final word.
+            const std::array<uint64_t, 9> markers{
+                0x8102040810204083ULL, 0, ~uint64_t(0), 0x8000000000000001ULL,
+                0, ~uint64_t(0), 0, 0, 0};
+            std::vector<T> input(8 * 64 + 13);
+            uint64_t high = 0;
+            for (size_t i = 0; i < input.size(); ++i) {
+                if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1))
+                    high ^= width_mask(high_width);
+                const uint64_t residual = (high << split) |
+                    ((i * 0x9e3779b97f4a7c15ULL) & width_mask(split));
+                input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+            }
+            C codec(input, gef::BlockParameters<T>{base, uint8_t(split + high_width), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
+            ASSERT_EQ(codec.H.width(), high_width);
+            ASSERT_GT(codec.h, 0);
+            auto check = [&](const C& tested) {
+                auto range = [&](size_t start, size_t requested) {
+                    SCOPED_TRACE(::testing::Message() << "split=" << split << " high=" << high_width
+                        << " start=" << start << " count=" << requested);
+                    const size_t actual = start < input.size()
+                        ? std::min(requested, input.size() - start) : 0;
+                    const T sentinel = T(73);
+                    std::vector<T> output(requested + 2, sentinel);
+                    ASSERT_EQ(tested.get_elements_into(start, requested, output.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + std::min(start, input.size()),
+                        input.begin() + std::min(start, input.size()) + actual, output.begin() + 1));
+                    EXPECT_EQ(output.front(), sentinel);
+                    EXPECT_TRUE(std::all_of(output.begin() + actual + 1, output.end(),
+                        [=](T value) { return value == sentinel; }));
+                    std::fill(output.begin(), output.end(), sentinel);
+                    ASSERT_EQ(tested.get_elements(start, requested, output), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + std::min(start, input.size()),
+                        input.begin() + std::min(start, input.size()) + actual, output.begin()));
+                    EXPECT_TRUE(std::all_of(output.begin() + actual, output.end(),
+                        [=](T value) { return value == sentinel; }));
+                };
+                // Every initial word phase, including starts exactly on a
+                // marker, and both sides of the partial-decoder length gate.
+                for (size_t start = 0; start < 128; ++start)
+                    for (size_t count : {size_t(127), size_t(128), size_t(129), size_t(160), size_t(257)})
+                        range(start, count);
+                for (size_t start : {size_t(255), size_t(256), size_t(257), size_t(383), size_t(384),
+                                     size_t(385), size_t(447), size_t(448), size_t(449), size_t(512), input.size()})
+                    for (size_t count : {size_t(0), size_t(1), size_t(80), size_t(128), input.size() + 9})
+                        range(start, count);
+                range(0, input.size());
+            };
+            check(codec);
+            if (zero_split || (split == 5 && high_width == 6)) {
+                const auto path = std::filesystem::temp_directory_path() / roundtrip_name;
+                codec.serialize(path);
+                C loaded;
+                loaded.load(path);
+                std::filesystem::remove(path);
+                ASSERT_EQ(loaded.b, split);
+                ASSERT_EQ(loaded.H.width(), high_width);
+                EXPECT_EQ(loaded.size_in_bytes(), codec.size_in_bytes());
+                check(loaded);
+            }
+        }
+    }
+}
+
+template<typename T, bool RandomAccess = true>
+void check_wide_high_lookup() {
+    using C = gef::internal::RLE_GEF<T, PastaRankBitVector, RandomAccess>;
+    const std::array<std::pair<unsigned, unsigned>, 9> widths{{
+        {0, 1}, {0, 64}, {1, 63}, {5, 6}, {13, 1},
+        {16, 16}, {17, 19}, {31, 32}, {63, 1}}};
+    for (auto [split, high_width] : widths) {
+        const uint64_t residual_mask = width_mask(split + high_width);
+        const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+            : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+        for (unsigned byte = 0; byte < 256; ++byte) {
+            SCOPED_TRACE(::testing::Message() << "split=" << split << " high=" << high_width
+                << " byte=" << byte << " random_access=" << RandomAccess);
+            // The final byte is preceded by 56 real runs: its wide source
+            // load reaches index63, or index64 for the dense255 exception.
+            // Subsequent zero words read initialized but unselected slots
+            // left from the dense word; no additional H fields exist.
+            const uint64_t target = ((UINT64_C(1) << 56) - 1) | (uint64_t(byte) << 56);
+            const std::array<uint64_t, 5> markers{~uint64_t(0), target, 0, 0, 0};
+            std::vector<T> input(4 * 64 + 13);
+            uint64_t high = 0;
+            for (size_t i = 0; i < input.size(); ++i) {
+                if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1))
+                    high ^= width_mask(high_width);
+                uint64_t low = (i * UINT64_C(0x9e3779b97f4a7c15)) & width_mask(split);
+                if (i == 1) low = width_mask(split);
+                input[i] = std::bit_cast<T>(static_cast<uint64_t>(base) + (high << split) + low);
+            }
+            C codec(input, gef::BlockParameters<T>{base, uint8_t(split + high_width), uint8_t(split)});
+            ASSERT_EQ(codec.b, split);
+            ASSERT_EQ(codec.H.width(), high_width);
+            ASSERT_EQ(codec.H.size(), 120 + std::popcount(byte));
+            if (split == 0) ASSERT_EQ(codec.L.size(), 0);
+            for (size_t start : {size_t(0), size_t(1), size_t(63), size_t(64), size_t(65), size_t(128)}) {
+                for (size_t request : {size_t(127), size_t(128), size_t(129), input.size() + 9}) {
+                    const size_t actual = std::min(request, input.size() - start);
+                    std::vector<T> output(actual + 2, T(73));
+                    ASSERT_EQ(codec.get_elements_into(start, request, output.data() + 1), actual);
+                    EXPECT_TRUE(std::equal(input.begin() + start, input.begin() + start + actual,
+                                           output.begin() + 1));
+                    EXPECT_EQ(output.front(), T(73));
+                    EXPECT_EQ(output.back(), T(73));
+                }
+            }
         }
     }
 }
@@ -270,3 +422,39 @@ TEST(RLEMarkerPackedHigh, BatchOffsetsSigned64) { check_high_batch_offsets<int64
 TEST(RLEMarkerPackedHigh, BatchOffsetsUnsigned64) { check_high_batch_offsets<uint64_t>(); }
 TEST(RLEMarkerPackedHigh, FusedBatchOffsetsSigned64) { check_fused_high_batch_offsets<int64_t>(); }
 TEST(RLEMarkerPackedHigh, FusedBatchOffsetsUnsigned64) { check_fused_high_batch_offsets<uint64_t>(); }
+
+TEST(RLEMarkerPartial, Signed64) {
+    check_partial_marker_ranges<int64_t>(true, "gef-partial-signed.bin");
+}
+TEST(RLEMarkerPartial, Unsigned64) {
+    check_partial_marker_ranges<uint64_t>(true, "gef-partial-unsigned.bin");
+}
+TEST(RLEMarkerPartial, SDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector>(false, "gef-partial-sdsl.bin");
+}
+TEST(RLEMarkerPartial, SupportFreePasta) {
+    check_partial_marker_ranges<int64_t, PastaRankBitVector, false>(false, "gef-partial-no-ra.bin");
+}
+TEST(RLEMarkerPartial, SupportFreeSDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-sdsl-no-ra.bin");
+}
+
+TEST(RLEMarkerPartialZero, Signed64) {
+    check_partial_marker_ranges<int64_t>(true, "gef-partial-zero-signed.bin", true);
+}
+TEST(RLEMarkerPartialZero, Unsigned64) {
+    check_partial_marker_ranges<uint64_t>(true, "gef-partial-zero-unsigned.bin", true);
+}
+TEST(RLEMarkerPartialZero, SDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector>(false, "gef-partial-zero-sdsl.bin", true);
+}
+TEST(RLEMarkerPartialZero, SupportFreePasta) {
+    check_partial_marker_ranges<int64_t, PastaRankBitVector, false>(false, "gef-partial-zero-no-ra.bin", true);
+}
+TEST(RLEMarkerPartialZero, SupportFreeSDSL) {
+    check_partial_marker_ranges<int64_t, SDSLBitVector, false>(false, "gef-partial-zero-sdsl-no-ra.bin", true);
+}
+
+TEST(RLEMarkerWideLookup, Signed64) { check_wide_high_lookup<int64_t>(); }
+TEST(RLEMarkerWideLookup, Unsigned64) { check_wide_high_lookup<uint64_t>(); }
+TEST(RLEMarkerWideLookup, SupportFree) { check_wide_high_lookup<int64_t, false>(); }
