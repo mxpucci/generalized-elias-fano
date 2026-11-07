@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/RLE_GEF.hpp"
 #include <array>
+#include <bit>
 #include <filesystem>
 #include <limits>
 #include <type_traits>
@@ -88,8 +89,9 @@ template<typename T>
 void check_every_high_width() {
     using C = gef::internal::RLE_GEF<T>;
     const T base = std::numeric_limits<T>::min();
-    const std::array<std::pair<size_t, size_t>, 7> cases{{
-        {1, 1}, {2, 1}, {3, 1}, {63, 1}, {64, 1}, {65, 1}, {65, 2}}};
+    const std::array<std::pair<size_t, size_t>, 12> cases{{
+        {1, 1}, {2, 1}, {3, 1}, {4, 1}, {5, 1}, {7, 1},
+        {8, 1}, {9, 1}, {63, 1}, {64, 1}, {65, 1}, {65, 2}}};
     for (unsigned high_width = 1; high_width <= 64; ++high_width) {
         SCOPED_TRACE(::testing::Message() << "high_width=" << high_width);
         const unsigned split = 64 - high_width;
@@ -120,6 +122,89 @@ void check_every_high_width() {
             ASSERT_EQ(codec.H.size(), high_count);
             ASSERT_EQ(codec.H.width(), high_width);
             check_full_and_clipped(codec, input);
+        }
+    }
+}
+
+template<typename T>
+void check_high_batch_offsets() {
+    using C = gef::internal::RLE_GEF<T>;
+    const T base = std::numeric_limits<T>::min();
+    for (unsigned high_width = 1; high_width <= 16; ++high_width) {
+        const unsigned split = 64 - high_width;
+        const uint64_t high_mask = width_mask(high_width);
+        const uint64_t low_mask = width_mask(split);
+        for (unsigned prefix_runs : {1u, 2u, 3u}) {
+            for (uint64_t tail : {uint64_t(0), uint64_t(1)}) {
+                SCOPED_TRACE(::testing::Message() << "high_width=" << high_width
+                    << " prefix_runs=" << prefix_runs << " tail=" << tail);
+                // A short first high group leaves a nonzero bit offset for
+                // the next word's dense batches, even at high width 16.
+                const std::array<uint64_t, 4> markers{
+                    (uint64_t(1) << prefix_runs) - 1, ~uint64_t(0), 0, tail};
+                std::vector<T> input(3 * 64 + 1);
+                uint64_t high = 0;
+                for (size_t i = 0; i < input.size(); ++i) {
+                    if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1)) high ^= high_mask;
+                    const uint64_t residual = (high << split) |
+                        ((i * 0x9e3779b97f4a7c15ULL) & low_mask);
+                    input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+                }
+                C codec(input, gef::BlockParameters<T>{base, 64, uint8_t(split)});
+                ASSERT_EQ(codec.H.size(), prefix_runs + 64 + tail);
+                ASSERT_EQ(codec.H.width(), high_width);
+                std::vector<T> output(input.size() + 2, T(73));
+                ASSERT_EQ(codec.get_elements_into(0, input.size(), output.data() + 1), input.size());
+                EXPECT_TRUE(std::equal(input.begin(), input.end(), output.begin() + 1));
+                EXPECT_EQ(output.front(), T(73));
+                EXPECT_EQ(output.back(), T(73));
+            }
+        }
+    }
+}
+
+template<typename T>
+void check_fused_high_batch_offsets() {
+    using C = gef::internal::RLE_GEF<T>;
+    for (unsigned split : {1u, 5u, 8u, 13u, 16u}) {
+        for (unsigned high_width : {3u, 6u, 10u, 16u}) {
+            const uint64_t high_mask = width_mask(high_width);
+            const uint64_t low_mask = width_mask(split);
+            const uint64_t residual_mask = width_mask(split + high_width);
+            const T base = std::is_signed_v<T> ? std::numeric_limits<T>::min()
+                : static_cast<T>(std::numeric_limits<T>::max() - residual_mask);
+            for (unsigned prefix_runs : {1u, 2u, 3u}) {
+                for (uint64_t tail : {uint64_t(0), uint64_t(1), uint64_t(1) << 12, uint64_t(0x1555)}) {
+                    SCOPED_TRACE(::testing::Message() << "split=" << split << " high_width=" << high_width
+                        << " prefix_runs=" << prefix_runs << " tail=" << tail);
+                    // Small low splits select the fused C4 path. Prefix H counts
+                    // leave the next dense word at distinct packed-H offsets;
+                    // the zero word and scalar tail check carry/cursor handoff.
+                    const std::array<uint64_t, 4> markers{
+                        (uint64_t(1) << prefix_runs) - 1, ~uint64_t(0), 0, tail};
+                    std::vector<T> input(3 * 64 + 13);
+                    uint64_t high = 0;
+                    for (size_t i = 0; i < input.size(); ++i) {
+                        if (i != 0 && ((markers[i / 64] >> (i & 63)) & 1)) high ^= high_mask;
+                        const uint64_t residual = (high << split) |
+                            ((i * 0x9e3779b97f4a7c15ULL) & low_mask);
+                        input[i] = static_cast<T>(static_cast<uint64_t>(base) + residual);
+                    }
+                    C codec(input, gef::BlockParameters<T>{base, uint8_t(split + high_width), uint8_t(split)});
+                    ASSERT_EQ(codec.H.size(), prefix_runs + 64 + std::popcount(tail));
+                    ASSERT_EQ(codec.H.width(), high_width);
+                    ASSERT_EQ(codec.b, split);
+                    for (size_t requested : {size_t(64), size_t(128), size_t(192), input.size(), input.size() + 9}) {
+                        const size_t count = std::min(requested, input.size());
+                        std::vector<T> output(count + 2, T(73));
+                        ASSERT_EQ(codec.get_elements_into(0, requested, output.data() + 1), count);
+                        EXPECT_TRUE(std::equal(input.begin(), input.begin() + count, output.begin() + 1));
+                        EXPECT_EQ(output.front(), T(73));
+                        EXPECT_EQ(output.back(), T(73));
+                    }
+                    check_full_and_clipped(codec, input);
+                }
+            }
         }
     }
 }
@@ -180,3 +265,8 @@ TEST(RLEMarkerPackedHigh, EveryWidthUnsigned64) { check_every_high_width<uint64_
 
 TEST(RLEMarkerBytes, NarrowSigned64) { check_narrow_marker_bytes<int64_t>(); }
 TEST(RLEMarkerBytes, NarrowUnsigned64) { check_narrow_marker_bytes<uint64_t>(); }
+
+TEST(RLEMarkerPackedHigh, BatchOffsetsSigned64) { check_high_batch_offsets<int64_t>(); }
+TEST(RLEMarkerPackedHigh, BatchOffsetsUnsigned64) { check_high_batch_offsets<uint64_t>(); }
+TEST(RLEMarkerPackedHigh, FusedBatchOffsetsSigned64) { check_fused_high_batch_offsets<int64_t>(); }
+TEST(RLEMarkerPackedHigh, FusedBatchOffsetsUnsigned64) { check_fused_high_batch_offsets<uint64_t>(); }

@@ -556,6 +556,39 @@ namespace gef {
                 }
                 return value;
             };
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            const __m256i high_shifts = _mm256_set_epi64x(3 * high_width, 2 * high_width,
+                                                         high_width, 0);
+            const __m256i high_mask_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(high_mask));
+            const __m256i base_vector = _mm256_set1_epi64x(
+                std::bit_cast<int64_t>(static_cast<uint64_t>(base)));
+            const unsigned group_bits = 4 * high_width;
+#endif
+            auto fill_high_bases = [&](uint64_t* destination, unsigned count) {
+                unsigned filled = 0;
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+                if constexpr (sizeof(T) == 8 && SPLIT_POINT < 64) {
+                    if (high_width <= 16) {
+                        for (; count - filled >= 4; filled += 4) {
+                            // Four real fields fit in one 64-bit window. Only
+                            // their actual crossing can require a second word.
+                            uint64_t window = *high_word >> high_offset;
+                            const unsigned end = high_offset + group_bits;
+                            if (end > 64)
+                                window |= high_word[1] << (64 - high_offset);
+                            high_word += end >> 6;
+                            high_offset = end & 63;
+                            const __m256i highs = _mm256_and_si256(_mm256_srlv_epi64(
+                                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), high_shifts),
+                                high_mask_vector);
+                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(destination + filled),
+                                _mm256_add_epi64(base_vector, _mm256_slli_epi64(highs, SPLIT_POINT)));
+                        }
+                    }
+                }
+#endif
+                for (; filled < count; ++filled) destination[filled] = next_base();
+            };
             std::array<uint64_t, 65> run_bases;
             size_t position = 0;
             for (; count - position >= 64; position += 64) {
@@ -564,8 +597,7 @@ namespace gef {
                     const uint64_t markers = bits[position >> 6];
                     const unsigned runs = __builtin_popcountll(markers);
                     run_bases[0] = carry;
-                    for (unsigned run = 1; run <= runs; ++run)
-                        run_bases[run] = next_base();
+                    fill_high_bases(run_bases.data() + 1, runs);
                     // Unpack and reconstruct before the only output store.
                     reconstruct_fused_block<SPLIT_POINT>(
                         L.data() + ((position * SPLIT_POINT) >> 6), markers,
@@ -582,8 +614,7 @@ namespace gef {
                 const uint64_t markers = bits[position >> 6];
                 const unsigned runs = __builtin_popcountll(markers);
                 run_bases[0] = carry;
-                for (unsigned run = 1; run <= runs; ++run)
-                    run_bases[run] = next_base();
+                fill_high_bases(run_bases.data() + 1, runs);
 
                 // Each byte maps its eight values to consecutive high parts.
                 // The preceding rank carries runs across byte boundaries.
