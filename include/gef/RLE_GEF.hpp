@@ -789,9 +789,9 @@ namespace gef {
                 }
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
                 if constexpr (sizeof(T) == 8 && SPLIT_POINT <= 16) {
-                    // At most 63 leading values leave at least one aligned
-                    // marker word. Keep smaller ranges on their existing path.
-                    if (actual >= 128) {
+                    // Use the marker kernel when a complete aligned word
+                    // remains after the scalar prefix.
+                    if (actual >= 64 && ((64 - (startIndex & 63)) & 63) <= actual - 64) {
                         reconstruct_marker_words<SPLIT_POINT, true>(actual, output, startIndex);
                         return actual;
                     }

@@ -320,7 +320,7 @@ void check_partial_marker_ranges(bool exhaustive, const char* roundtrip_name, bo
                 // Every initial word phase, including starts exactly on a
                 // marker, and both sides of the partial-decoder length gate.
                 for (size_t start = 0; start < 128; ++start)
-                    for (size_t count : {size_t(127), size_t(128), size_t(129), size_t(160), size_t(257)})
+                    for (size_t count : {size_t(63), size_t(64), size_t(65), size_t(80), size_t(127), size_t(128), size_t(129), size_t(160), size_t(257)})
                         range(start, count);
                 for (size_t start : {size_t(255), size_t(256), size_t(257), size_t(383), size_t(384),
                                      size_t(385), size_t(447), size_t(448), size_t(449), size_t(512), input.size()})
