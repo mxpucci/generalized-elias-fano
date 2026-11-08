@@ -421,10 +421,11 @@ namespace gef {
                             if (count - i >= 64) {
                                 const __m512i offsets = _mm512_setr_epi32(
                                     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                                __m512i positions = _mm512_add_epi32(offsets, _mm512_set1_epi32(
+                                    static_cast<int32_t>(base_position)));
                                 const auto emit_packet = [&](unsigned shift) __attribute__((always_inline)) {
                                     const unsigned mask = static_cast<unsigned>((zeros_ >> shift) & 65535);
-                                    const __m512i positions = _mm512_add_epi32(offsets, _mm512_set1_epi32(
-                                        static_cast<int32_t>(base_position + shift)));
+                                    if (shift) positions = _mm512_add_epi32(positions, _mm512_set1_epi32(16));
                                     _mm512_mask_compressstoreu_epi32(out + i, static_cast<__mmask16>(mask), positions);
                                     i += std::popcount(mask);
                                 };
