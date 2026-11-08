@@ -399,7 +399,9 @@ namespace gef {
 
             // The caller requests no more delimiters than remain in the codec.
             // Thus padding bits are never returned, and no sentinel word is read.
-            void read(size_t* out, size_t count) {
+            template<typename Position>
+            void read(Position* out, size_t count) {
+                static_assert(std::is_same_v<Position, size_t> || std::is_same_v<Position, uint32_t>);
                 size_t i = 0;
                 while (i < count) {
                     while (zeros_ == 0) zeros_ = ~data_[++word_];
@@ -407,13 +409,36 @@ namespace gef {
                     // Expand a full delimiter word without per-value bit scans.
                     if (zeros_ == UINT64_MAX && count - i >= 64) {
                         for (size_t offset = 0; offset < 64; ++offset)
-                            out[i + offset] = base_position + offset;
+                            out[i + offset] = static_cast<Position>(base_position + offset);
                         i += 64;
                         zeros_ = 0;
                         continue;
                     }
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
                     if constexpr (!GapBitVectorType::reverse_bit_order) {
+#if defined(__AVX512F__)
+                        if constexpr (sizeof(Position) == 4) {
+                            if (count - i >= 64) {
+                                const __m512i offsets = _mm512_setr_epi32(
+                                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                                __m512i positions = _mm512_add_epi32(offsets, _mm512_set1_epi32(
+                                    static_cast<int32_t>(base_position)));
+                                const auto emit_packet = [&](unsigned shift) __attribute__((always_inline)) {
+                                    const unsigned mask = static_cast<unsigned>((zeros_ >> shift) & 65535);
+                                    if (shift) positions = _mm512_add_epi32(positions, _mm512_set1_epi32(16));
+                                    _mm512_mask_compressstoreu_epi32(out + i, static_cast<__mmask16>(mask), positions);
+                                    i += std::popcount(mask);
+                                };
+                                // Four packets write at most the 64 available slots.
+                                // zeros_ already excludes delimiters before the cursor.
+                                [&]<size_t... Packets>(std::index_sequence<Packets...>) __attribute__((always_inline)) {
+                                    (emit_packet(16 * Packets), ...);
+                                }(std::make_index_sequence<4>{});
+                                zeros_ = 0;
+                                continue;
+                            }
+                        }
+#endif
                         const auto emit_byte = [&](unsigned shift) __attribute__((always_inline)) {
                             const auto& entry = B_STAR_ZERO_BYTES[(zeros_ >> shift) & 255];
                             // Eight slots fit inside this private scratch request.
@@ -425,13 +450,20 @@ namespace gef {
                             uint64_t packed;
                             std::memcpy(&packed, entry.positions.data(), sizeof(packed));
                             const __m128i bytes = _mm_cvtsi64_si128(std::bit_cast<int64_t>(packed));
-                            const __m256i base = _mm256_set1_epi64x(
-                                std::bit_cast<int64_t>(uint64_t(base_position + shift)));
-                            const __m256i first = _mm256_add_epi64(base, _mm256_cvtepu8_epi64(bytes));
-                            const __m256i second = _mm256_add_epi64(base,
-                                _mm256_cvtepu8_epi64(_mm_srli_si128(bytes, 4)));
-                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i), first);
-                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i + 4), second);
+                            if constexpr (sizeof(Position) == 4) {
+                                const __m256i base = _mm256_set1_epi32(std::bit_cast<int32_t>(
+                                    static_cast<uint32_t>(base_position + shift)));
+                                _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i),
+                                    _mm256_add_epi32(base, _mm256_cvtepu8_epi32(bytes)));
+                            } else {
+                                const __m256i base = _mm256_set1_epi64x(
+                                    std::bit_cast<int64_t>(uint64_t(base_position + shift)));
+                                const __m256i first = _mm256_add_epi64(base, _mm256_cvtepu8_epi64(bytes));
+                                const __m256i second = _mm256_add_epi64(base,
+                                    _mm256_cvtepu8_epi64(_mm_srli_si128(bytes, 4)));
+                                _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i), first);
+                                _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i + 4), second);
+                            }
                             i += entry.count;
                         };
                         if (count - i >= 64) {
@@ -457,10 +489,10 @@ namespace gef {
                     do {
                         if constexpr (GapBitVectorType::reverse_bit_order) {
                             const unsigned bit = std::countl_zero(zeros_);
-                            out[i++] = base_position + bit;
+                            out[i++] = static_cast<Position>(base_position + bit);
                             zeros_ ^= uint64_t(1) << (63 - bit);
                         } else {
-                            out[i++] = base_position + std::countr_zero(zeros_);
+                            out[i++] = static_cast<Position>(base_position + std::countr_zero(zeros_));
                             zeros_ &= zeros_ - 1;
                         }
                     } while (zeros_ && i < count);
@@ -476,8 +508,8 @@ namespace gef {
                 return data[index];
             } else {
                 constexpr uint64_t mask = (uint64_t(1) << SPLIT_POINT) - 1;
-                const size_t bit_position = index * SPLIT_POINT;
-                const size_t word = bit_position >> 6;
+                const uint64_t bit_position = static_cast<uint64_t>(index) * SPLIT_POINT;
+                const size_t word = static_cast<size_t>(bit_position >> 6);
                 const unsigned offset = bit_position & 63;
                 uint64_t value = data[word] >> offset;
                 if constexpr (64 % SPLIT_POINT != 0) {
@@ -488,19 +520,69 @@ namespace gef {
             }
         }
 
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_low8(const uint64_t* words, const uint32_t* plus_positions,
+                                     const uint32_t* minus_positions, __m512i base_vector, T* output) {
+            static_assert(sizeof(T) == 8 && sizeof(size_t) == 8 && SPLIT_POINT >= 1 &&
+                          SPLIT_POINT <= 16 && INDEX % 8 == 0 && INDEX <= 56);
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            constexpr unsigned window_values = SPLIT_POINT <= 8 ? 8 : 4;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + window_values * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            __m512i source = _mm512_set1_epi64(std::bit_cast<int64_t>(window));
+            if constexpr (SPLIT_POINT > 8) {
+                // Each half stays inside its bounded four-field low window.
+                constexpr size_t upper_word = ((INDEX + 4) * SPLIT_POINT) / 64;
+                constexpr unsigned upper_bit = ((INDEX + 4) * SPLIT_POINT) % 64;
+                uint64_t upper = words[upper_word] >> upper_bit;
+                if constexpr (upper_bit + 4 * SPLIT_POINT > 64)
+                    upper |= words[upper_word + 1] << (64 - upper_bit);
+                source = _mm512_mask_blend_epi64(0xf0, source,
+                    _mm512_set1_epi64(std::bit_cast<int64_t>(upper)));
+            }
+            constexpr unsigned upper_shift = SPLIT_POINT <= 8 ? 4 * SPLIT_POINT : 0;
+            const __m512i shifts = _mm512_set_epi64(upper_shift + 3 * SPLIT_POINT,
+                upper_shift + 2 * SPLIT_POINT, upper_shift + SPLIT_POINT, upper_shift,
+                3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+            const __m512i mask = _mm512_set1_epi64((uint64_t(1) << SPLIT_POINT) - 1);
+            const __m512i lows = _mm512_and_si512(_mm512_srlv_epi64(source, shifts), mask);
+            const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + INDEX));
+            const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + INDEX));
+            // Parent's BOTH-stream INT32 guard also bounds negative differences.
+            const __m512i high = _mm512_slli_epi64(
+                _mm512_cvtepi32_epi64(_mm256_sub_epi32(plus, minus)), SPLIT_POINT);
+            _mm512_storeu_si512(output + INDEX,
+                _mm512_add_epi64(base_vector, _mm512_or_si512(high, lows)));
+        }
+#endif
+
         // At an element index divisible by 64, the next 64 low parts occupy
         // exactly SPLIT_POINT words. Constant indices remove per-value offset
         // and word-crossing decisions without changing the packed representation.
-        template<uint8_t SPLIT_POINT, size_t... I>
+        template<uint8_t SPLIT_POINT, typename Position, size_t... I>
         static void reconstruct_aligned64(const uint64_t* low_data,
-                                          const size_t* plus_positions,
-                                          const size_t* minus_positions,
+                                          const Position* plus_positions,
+                                          const Position* minus_positions,
                                           std::make_unsigned_t<T> base_u,
                                           T* output,
                                           std::index_sequence<I...>) {
             static_assert(SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8);
             static_assert(sizeof...(I) == 64);
             using U = std::make_unsigned_t<T>;
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+            if constexpr (sizeof(T) == 8 && sizeof(size_t) == 8 && sizeof(Position) == 4 &&
+                          !GapBitVectorType::reverse_bit_order && SPLIT_POINT <= 16) {
+                const __m512i base_vector = _mm512_set1_epi64(std::bit_cast<int64_t>(base_u));
+                ([&] {
+                    if constexpr (I % 8 == 0)
+                        reconstruct_low8<SPLIT_POINT, I>(low_data, plus_positions, minus_positions, base_vector, output);
+                }(), ...);
+                return;
+            }
+#endif
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
             if constexpr (sizeof(T) == 8 && sizeof(size_t) == 8) {
                 // Pack four lows directly into registers, avoiding a low-part
@@ -529,9 +611,20 @@ namespace gef {
                                 static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 1)),
                                 static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I)));
                         }
-                        const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + I));
-                        const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + I));
-                        const __m256i high = _mm256_slli_epi64(_mm256_sub_epi64(plus, minus), SPLIT_POINT);
+                        __m256i difference;
+                        if constexpr (sizeof(Position) == 4) {
+                            const __m128i plus = _mm_loadu_si128(reinterpret_cast<const __m128i*>(plus_positions + I));
+                            const __m128i minus = _mm_loadu_si128(reinterpret_cast<const __m128i*>(minus_positions + I));
+                            // Both absolute positions fit [0, INT32_MAX], so
+                            // their signed difference fits int32, even for
+                            // loaded streams whose plus-minus is negative.
+                            difference = _mm256_cvtepi32_epi64(_mm_sub_epi32(plus, minus));
+                        } else {
+                            const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + I));
+                            const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + I));
+                            difference = _mm256_sub_epi64(plus, minus);
+                        }
+                        const __m256i high = _mm256_slli_epi64(difference, SPLIT_POINT);
                         const __m256i values = _mm256_add_epi64(base_vector, _mm256_or_si256(high, lows));
                         _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + I), values);
                     }
@@ -540,46 +633,38 @@ namespace gef {
 #endif
             {
                 ([&] {
-                    const U high = static_cast<U>(plus_positions[I] - minus_positions[I]) << SPLIT_POINT;
+                    const U high = static_cast<U>(static_cast<size_t>(plus_positions[I]) -
+                                                  static_cast<size_t>(minus_positions[I])) << SPLIT_POINT;
                     const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, I));
                     output[I] = static_cast<T>(base_u + (high | low));
                 }(), ...);
             }
         }
 
-        template<uint8_t SPLIT_POINT>
-        size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
-            constexpr size_t MAX_BATCH = 256;
-            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
-            count = std::min(count, m_num_elements - startIndex);
+        template<uint8_t SPLIT_POINT, typename Position>
+        size_t decode_position_ranges(size_t startIndex, size_t count, T* output) const {
+            constexpr size_t MAX_BATCH = sizeof(Position) < sizeof(size_t) ? 2048 : 256;
             using U = std::make_unsigned_t<T>;
             const U base_u = static_cast<U>(base);
             const uint64_t* low_data = L.data();
-
-            if (h == 0) {
-                if constexpr (SPLIT_POINT == 0) {
-                    std::fill_n(output, count, base);
-                } else {
-                    for (size_t i = 0; i < count; ++i)
-                        output[i] = static_cast<T>(base_u + static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + i)));
-                }
-                return count;
-            }
-
             const size_t plus_start = startIndex ? G_plus->select0(startIndex) + 1 : 0;
             const size_t minus_start = startIndex ? G_minus->select0(startIndex) + 1 : 0;
             ZeroPositionReader plus(G_plus->raw_data_ptr(), plus_start);
             ZeroPositionReader minus(G_minus->raw_data_ptr(), minus_start);
-            alignas(64) size_t plus_positions[MAX_BATCH];
-            alignas(64) size_t minus_positions[MAX_BATCH];
+            alignas(64) Position plus_positions[MAX_BATCH];
+            alignas(64) Position minus_positions[MAX_BATCH];
+            // End the first batch on a low-block boundary; later batches stay aligned.
+            const size_t first_batch = MAX_BATCH -
+                ((SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8) ? (startIndex & 63) : 0);
             for (size_t produced = 0; produced < count;) {
-                const size_t batch = std::min(count - produced, MAX_BATCH);
+                const size_t batch = std::min(count - produced, produced == 0 ? first_batch : MAX_BATCH);
                 plus.read(plus_positions, batch);
                 minus.read(minus_positions, batch);
                 const auto reconstruct_scalar = [&](size_t i) {
                     U high = 0;
                     if constexpr (SPLIT_POINT < sizeof(T) * 8)
-                        high = static_cast<U>(plus_positions[i] - minus_positions[i]) << SPLIT_POINT;
+                        high = static_cast<U>(static_cast<size_t>(plus_positions[i]) -
+                                              static_cast<size_t>(minus_positions[i])) << SPLIT_POINT;
                     const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + produced + i));
                     output[produced + i] = static_cast<T>(base_u + (high | low));
                 };
@@ -598,6 +683,33 @@ namespace gef {
                 produced += batch;
             }
             return count;
+        }
+
+        template<uint8_t SPLIT_POINT>
+        size_t get_elements_worker(size_t startIndex, size_t count, T* output) const {
+            if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
+            count = std::min(count, m_num_elements - startIndex);
+            using U = std::make_unsigned_t<T>;
+            if (h == 0) {
+                if constexpr (SPLIT_POINT == 0) {
+                    std::fill_n(output, count, base);
+                } else {
+                    const U base_u = static_cast<U>(base);
+                    const uint64_t* low_data = L.data();
+                    for (size_t i = 0; i < count; ++i)
+                        output[i] = static_cast<T>(base_u + static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + i)));
+                }
+                return count;
+            }
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+            if constexpr (sizeof(T) == 8 && !GapBitVectorType::reverse_bit_order) {
+                // Bound absolute bit positions, including the last word's
+                // speculative byte slots; partition element count is not enough.
+                if (G_plus->size() <= INT32_MAX && G_minus->size() <= INT32_MAX)
+                    return decode_position_ranges<SPLIT_POINT, uint32_t>(startIndex, count, output);
+            }
+#endif
+            return decode_position_ranges<SPLIT_POINT, size_t>(startIndex, count, output);
         }
 
     public:

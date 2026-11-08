@@ -102,3 +102,73 @@ TEST(BStarByteReader, PublicOptimalReloadAcrossPartitionBoundary) {
     ASSERT_TRUE(std::equal(values.begin() + 31999, values.end(), out.begin()));
     ASSERT_EQ(out[values.size() - 31999], INT64_MIN);
 }
+
+namespace {
+template<class T>
+void check_packet_pairs() {
+    using U = std::make_unsigned_t<T>;
+    constexpr std::array<unsigned, 8> bytes{0, 1, 0x80, 0x81, 0x55, 0xaa, 0xfe, 0xff};
+    for (unsigned low_byte : bytes) for (unsigned high_byte : bytes) {
+        SCOPED_TRACE(::testing::Message() << low_byte << "," << high_byte);
+        const uint64_t packet = low_byte | (high_byte << 8);
+        const uint64_t word = packet | ((packet ^ 0xffff) << 16) |
+            ((packet ^ 0x8001) << 32) | (packet << 48);
+        // Independently chosen adjacent bytes, empty/full packets and words,
+        // then a partial final physical word. Scalar scanning is the oracle.
+        const std::array<uint64_t, 8> zeros{word, 0, UINT64_MAX, ~word,
+            word ^ UINT64_C(0x55aa00ffff000081), UINT64_MAX, 0x101, 0x8001};
+        std::vector<uint64_t> highs;
+        for (size_t w = 0; w < zeros.size(); ++w)
+            for (unsigned bit = 0; bit < 64; ++bit)
+                if ((zeros[w] >> bit) & 1) highs.push_back(w * 64 + bit - highs.size());
+        for (bool descending : {false, true}) for (unsigned split : {0u, 3u, 16u}) {
+            const T base = std::numeric_limits<T>::lowest();
+            const U mask = (U(1) << split) - 1;
+            std::vector<T> values(highs.size());
+            for (size_t i = 0; i < values.size(); ++i) {
+                const U high = descending ? highs.back() - highs[i] : highs[i];
+                values[i] = static_cast<T>(static_cast<U>(base) +
+                    ((high << split) | (static_cast<U>(i * 73) & mask)));
+            }
+            gef::internal::B_STAR_GEF<T> codec(values,
+                gef::BlockParameters<T>{base, uint8_t(split + 10), uint8_t(split)});
+            check_ranges(codec, values);
+            for (size_t start : {size_t(15), size_t(16), size_t(17), size_t(31),
+                                 size_t(32), size_t(47), size_t(48), values.size() - 1}) {
+                for (size_t request : {size_t(0), size_t(1), size_t(7), size_t(15),
+                                       size_t(16), size_t(63), size_t(64), size_t(65), size_t(257)}) {
+                    const size_t actual = std::min(request, values.size() - start);
+                    std::vector<T> out(actual + 2, T(99));
+                    ASSERT_EQ(codec.get_elements_into(start, request, out.data() + 1), actual);
+                    ASSERT_TRUE(std::equal(values.begin() + start, values.begin() + start + actual, out.begin() + 1));
+                    ASSERT_EQ(out.front(), T(99));
+                    ASSERT_EQ(out.back(), T(99));
+                }
+            }
+        }
+    }
+}
+}
+
+TEST(BStarByteReader, IndependentPacketBytesSigned64) { check_packet_pairs<int64_t>(); }
+TEST(BStarByteReader, IndependentPacketBytesUnsigned64) { check_packet_pairs<uint64_t>(); }
+
+TEST(BStarByteReader, EveryPhaseAtBatchEndpoints) {
+    for (unsigned split : {3u, 7u, 16u}) {
+        std::vector<uint64_t> values(8193);
+        for (size_t i = 0; i < values.size(); ++i)
+            values[i] = (((i * 7) % 31) << split) | (i * 73 & ((uint64_t(1) << split) - 1));
+        gef::internal::B_STAR_GEF<uint64_t> codec(values,
+            gef::BlockParameters<uint64_t>{0, uint8_t(split + 5), uint8_t(split)});
+        for (size_t capacity : {size_t(256), size_t(512), size_t(1024), size_t(2048), size_t(4096)}) for (size_t start = 0; start < 64; ++start) {
+            const size_t endpoint = capacity - start;
+            for (size_t request : {endpoint - 1, endpoint, endpoint + 1}) {
+                std::vector<uint64_t> out(request + 2, UINT64_MAX);
+                ASSERT_EQ(codec.get_elements_into(start, request, out.data() + 1), request);
+                ASSERT_TRUE(std::equal(values.begin() + start, values.begin() + start + request, out.begin() + 1));
+                ASSERT_EQ(out.front(), UINT64_MAX);
+                ASSERT_EQ(out.back(), UINT64_MAX);
+            }
+        }
+    }
+}
