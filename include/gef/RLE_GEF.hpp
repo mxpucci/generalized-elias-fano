@@ -706,8 +706,13 @@ namespace gef {
         // run before the block, high width <= 14 (four fields per 8-byte
         // load), or <= 28 with WIDE_HIGHS (two fields per load), and eight
         // real fields after the carried run.
+        // Out of line on purpose: get_elements_worker is [[gnu::flatten]], so
+        // inlining this kernel would copy it into every split point's decoder
+        // at each call site and more than double compile time (allocated_size_test
+        // at -O3: 65 s before this kernel, 148 s inlined, 98 s out of line) for a
+        // 4-5% gain on long ranges.
         template<uint8_t SPLIT_POINT, bool WIDE_HIGHS, size_t... BYTES>
-        static void reconstruct_block_by_bytes(const uint64_t* low_words, const char* high_bytes,
+        [[gnu::noinline]] static void reconstruct_block_by_bytes(const uint64_t* low_words, const char* high_bytes,
                                                unsigned high_width, __m512i high_shifts,
                                                __m512i high_mask, __m512i base_vector,
                                                uint64_t markers, size_t runs, T* output,
