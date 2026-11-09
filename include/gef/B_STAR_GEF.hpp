@@ -987,10 +987,11 @@ namespace gef {
 
                 // Special case: no high bits, only L is needed.
                 if (b > 0) {
-                    for (size_t i = 0; i < N; ++i) {
-                        using U = std::make_unsigned_t<T>;
-                        L[i] = static_cast<U>(S[i]) - static_cast<U>(base);
-                    }
+                    using U = std::make_unsigned_t<T>;
+                    PackedBitWriter low_writer(L.data());
+                    for (size_t i = 0; i < N; ++i)
+                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)), b);
+                    low_writer.finish();
                 }
                 G_plus = nullptr;
                 G_minus = nullptr;
@@ -1031,62 +1032,49 @@ namespace gef {
             using U = std::make_unsigned_t<T>;
             const U low_mask = b ? (U(~U(0)) >> (sizeof(T) * 8 - b)) : U(0);
             
-            uint64_t* g_plus_data = G_plus->raw_data_ptr();
-            uint64_t* g_minus_data = G_minus->raw_data_ptr();
-
-            FastBitWriter<GapBitVectorType::reverse_bit_order> plus_writer(g_plus_data);
-            FastBitWriter<GapBitVectorType::reverse_bit_order> minus_writer(g_minus_data);
-            U lastHighBits = 0;
-
-            // L writer state
-            uint64_t* l_data = L.data();
-            uint64_t l_buffer = 0;
-            uint8_t l_bits = 0;
-            size_t l_word_idx = 0;
-
-            for (size_t i = 0; i < N; ++i) {
-                const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
-                
-                // Store low part
-                if (b > 0) [[likely]] {
-                    uint64_t val = static_cast<uint64_t>(element_u & low_mask);
-                    l_buffer |= (val << l_bits);
-                    if (l_bits + b >= 64) {
-                        l_data[l_word_idx++] = l_buffer;
-                        if (l_bits + b > 64) {
-                            l_buffer = val >> (64 - l_bits);
-                            l_bits = l_bits + b - 64;
-                        } else {
-                            l_buffer = 0;
-                            l_bits = 0;
-                        }
-                    } else {
-                        l_bits += b;
-                    }
+            PackedBitWriter low_writer(L.data());
+            if constexpr (GapBitVectorType::reverse_bit_order) {
+                // MSB-first gap backends keep the generic writer, which sets
+                // ones in place in the zero-initialized vectors.
+                FastBitWriter<true> plus_writer(G_plus->raw_data_ptr());
+                FastBitWriter<true> minus_writer(G_minus->raw_data_ptr());
+                U lastHighBits = 0;
+                for (size_t i = 0; i < N; ++i) {
+                    const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                    if (b > 0) low_writer.append(static_cast<uint64_t>(element_u & low_mask), b);
+                    const U currentHighBits = element_u >> b;
+                    if (currentHighBits > lastHighBits)
+                        plus_writer.set_ones_range(static_cast<uint64_t>(currentHighBits - lastHighBits));
+                    else if (currentHighBits < lastHighBits)
+                        minus_writer.set_ones_range(static_cast<uint64_t>(lastHighBits - currentHighBits));
+                    plus_writer.skip_zeros(1);
+                    minus_writer.skip_zeros(1);
+                    lastHighBits = currentHighBits;
                 }
-
-                // Compute high part and gap
-                const U currentHighBits = element_u >> b;
-                const int64_t gap = static_cast<int64_t>(currentHighBits) - static_cast<int64_t>(lastHighBits);
-
-                // Write gap encoding using inline bit operations (no virtual calls)
-                if (gap > 0) {
-                    plus_writer.set_ones_range(static_cast<uint64_t>(gap));
-                } else if (gap < 0) {
-                    minus_writer.set_ones_range(static_cast<uint64_t>(-gap));
+                low_writer.finish();
+            } else {
+            // Register writers store each word once it is full. Rise and fall
+            // are computed without a branch on the sign of the gap.
+            PackedBitWriter plus_writer(G_plus->raw_data_ptr());
+            PackedBitWriter minus_writer(G_minus->raw_data_ptr());
+            const auto populate = [&](auto with_lows) {
+                U lastHighBits = 0;
+                for (size_t i = 0; i < N; ++i) {
+                    const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                    if constexpr (with_lows) low_writer.append(static_cast<uint64_t>(element_u & low_mask), b);
+                    // G+ holds the unary code of each rise, G- of each fall.
+                    const U currentHighBits = element_u >> b;
+                    const U top = std::max(currentHighBits, lastHighBits);
+                    plus_writer.append_unary(top - lastHighBits);
+                    minus_writer.append_unary(top - currentHighBits);
+                    lastHighBits = currentHighBits;
                 }
-                // Note: gap == 0 means no ones to write
-                
-                // Write terminators (always 0)
-                minus_writer.skip_zeros(1);
-                plus_writer.skip_zeros(1);
-
-                lastHighBits = currentHighBits;
-            }
-            
-            // Flush L buffer
-            if (b > 0 && l_bits > 0) {
-                l_data[l_word_idx] = l_buffer;
+            };
+            if (b > 0) populate(std::true_type{});
+            else populate(std::false_type{});
+            plus_writer.finish();
+            minus_writer.finish();
+            low_writer.finish();
             }
             // ===== END POPULATION PHASE =====
 
