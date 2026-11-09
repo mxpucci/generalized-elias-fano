@@ -126,13 +126,33 @@ namespace gef {
         static uint8_t optimal_split_point(const C& S, const uint8_t total_bits, const T min,
                                            size_t* selected_runs = nullptr) {
             using U = std::make_unsigned_t<T>;
-            std::array<size_t, sizeof(T) * 8 + 1> lcp_frequencies{};
-            for (size_t i = 1; i < S.size(); i++) {
-                const uint8_t lcp = LCP(static_cast<T>(static_cast<U>(S[i]) - static_cast<U>(min)),
-                                        static_cast<T>(static_cast<U>(S[i - 1]) - static_cast<U>(min)),
-                                        total_bits);
-                ++lcp_frequencies[lcp];
+            constexpr size_t W = sizeof(T) * 8;
+            // Adjacent values share a high part at split b exactly when their
+            // XOR is below 2^b, so count XOR bit widths (= total_bits - LCP).
+            // Four interleaved histograms keep consecutive increments of the
+            // same width from serializing through memory.
+            std::array<std::array<size_t, W + 1>, 4> width_counts{};
+            const auto residual = [&](size_t i) -> U {
+                return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(min));
+            };
+            const auto width_of = [&](size_t i) -> unsigned {
+                const uint64_t difference = static_cast<U>(residual(i) ^ residual(i - 1));
+#if defined(__LZCNT__)
+                // lzcnt is defined for 0. std::bit_width tests for 0 first, and
+                // GCC turns that test into a branch on S[i] == S[i - 1].
+                return 64 - static_cast<unsigned>(_lzcnt_u64(difference));
+#else
+                return static_cast<unsigned>(std::bit_width(difference));
+#endif
+            };
+            size_t i = 1;
+            for (; i + 4 <= S.size(); i += 4) {
+                ++width_counts[0][width_of(i)];
+                ++width_counts[1][width_of(i + 1)];
+                ++width_counts[2][width_of(i + 2)];
+                ++width_counts[3][width_of(i + 3)];
             }
+            for (; i < S.size(); ++i) ++width_counts[0][width_of(i)];
 
             size_t best_b = total_bits;
             size_t best_space = total_bits * S.size();
@@ -140,7 +160,11 @@ namespace gef {
             size_t rank_h = 1; // B[0] marks the first run
             for (uint8_t h_val = 1; h_val <= total_bits; h_val++) {
                 const uint8_t b = total_bits - h_val;
-                rank_h += lcp_frequencies[h_val - 1];
+                // Pairs whose XOR has exactly b + 1 bits start a new run at b
+                // but not at b + 1 (LCP = h_val - 1).
+                const size_t width = b + 1;
+                rank_h += width_counts[0][width] + width_counts[1][width] +
+                          width_counts[2][width] + width_counts[3][width];
                 const size_t space = S.size() * (b + 1) + rank_h * h_val;
                 if (space < best_space) {
                     best_space = space;
