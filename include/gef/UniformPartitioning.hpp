@@ -365,10 +365,8 @@ public:
              throw std::out_of_range("index out of range in UniformPartitioning");
         }
         
-        // Division and modulo are expensive - but necessary here
-        // Compiler will optimize to shift+mask if K is power of 2
-        const size_t partition_index = index / K;
-        const size_t index_in_partition = index % K;
+        const size_t partition_index = divide_by_K(index);
+        const size_t index_in_partition = index - partition_index * K;
         
         // Partitions store concrete Compressor objects by value. Qualifying the
         // call avoids a redundant virtual dispatch and exposes the access path.
@@ -425,6 +423,23 @@ public:
     }
 
 private:
+    // index / K as a multiply-high. Compilers usually do this themselves, but
+    // may emit a hardware divide (tens of cycles) where they optimize for size,
+    // e.g. when the access loop is inlined into main(). With M = ceil(2^64 / K)
+    // the quotient is exact for index < 2^32: the error term index*(M*K-2^64)
+    // / (K*2^64) is below 2^-32 < 1/K, so no integer boundary is crossed.
+    static size_t divide_by_K(size_t index) {
+#if defined(__SIZEOF_INT128__)
+        if constexpr (K > 1 && K < (size_t(1) << 32) && sizeof(size_t) == 8) {
+            constexpr unsigned __int128 two_64 = static_cast<unsigned __int128>(1) << 64;
+            constexpr uint64_t M = static_cast<uint64_t>((two_64 + K - 1) / K);
+            if (index < (size_t(1) << 32)) [[likely]]
+                return static_cast<size_t>((static_cast<unsigned __int128>(index) * M) >> 64);
+        }
+#endif
+        return index / K;
+    }
+
     // Using std::optional allows O(1) indexed construction without default-constructing Compressors.
     // resize(N) on vector<optional<T>> just creates N empty optionals (trivially cheap).
     // This enables true constant throughput regardless of partition count.
