@@ -147,6 +147,50 @@ namespace gef {
             set_ones_range(1);
         }
     };
+
+    /**
+     * @brief Sequential writer of fields of up to 64 bits, lowest bit first.
+     *
+     * Fields are merged into a register word without data-dependent branches;
+     * a word is stored once it is full. That test is the only branch, and it
+     * is taken at most once per 64 written bits, so it stays cheap even when
+     * field widths vary with the data. Fields of width 0 are allowed.
+     */
+    class PackedBitWriter {
+    private:
+        uint64_t* data_;
+        uint64_t buffer_ = 0;
+        unsigned bits_ = 0;
+
+    public:
+        explicit PackedBitWriter(uint64_t* data) : data_(data) {}
+
+        /// Appends the low `width` bits of value; requires value < 2^width, width <= 64.
+        __attribute__((always_inline)) inline void append(uint64_t value, unsigned width) {
+            buffer_ |= value << bits_;
+            const unsigned filled = bits_ + width;
+            if (filled >= 64) {
+                *data_++ = buffer_;
+                // The bits of value that did not fit (0 if all did).
+                buffer_ = (value >> 1) >> (63 - bits_);
+            }
+            bits_ = filled & 63;
+        }
+
+        /// Appends `count` ones followed by a zero.
+        __attribute__((always_inline)) inline void append_unary(uint64_t count) {
+            while (count >= 64) [[unlikely]] {
+                append(~0ULL, 64);
+                count -= 64;
+            }
+            append((uint64_t(1) << count) - 1, static_cast<unsigned>(count) + 1);
+        }
+
+        /// Stores a partially filled last word.
+        void finish() {
+            if (bits_) *data_ = buffer_;
+        }
+    };
 } // namespace gef
 
 #endif // GEF_FAST_BIT_WRITER_HPP

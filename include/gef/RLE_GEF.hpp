@@ -126,13 +126,33 @@ namespace gef {
         static uint8_t optimal_split_point(const C& S, const uint8_t total_bits, const T min,
                                            size_t* selected_runs = nullptr) {
             using U = std::make_unsigned_t<T>;
-            std::array<size_t, sizeof(T) * 8 + 1> lcp_frequencies{};
-            for (size_t i = 1; i < S.size(); i++) {
-                const uint8_t lcp = LCP(static_cast<T>(static_cast<U>(S[i]) - static_cast<U>(min)),
-                                        static_cast<T>(static_cast<U>(S[i - 1]) - static_cast<U>(min)),
-                                        total_bits);
-                ++lcp_frequencies[lcp];
+            constexpr size_t W = sizeof(T) * 8;
+            // Adjacent values share a high part at split b exactly when their
+            // XOR is below 2^b, so count XOR bit widths (= total_bits - LCP).
+            // Four interleaved histograms keep consecutive increments of the
+            // same width from serializing through memory.
+            std::array<std::array<size_t, W + 1>, 4> width_counts{};
+            const auto residual = [&](size_t i) -> U {
+                return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(min));
+            };
+            const auto width_of = [&](size_t i) -> unsigned {
+                const uint64_t difference = static_cast<U>(residual(i) ^ residual(i - 1));
+#if defined(__LZCNT__)
+                // lzcnt is defined for 0. std::bit_width tests for 0 first, and
+                // GCC turns that test into a branch on S[i] == S[i - 1].
+                return 64 - static_cast<unsigned>(_lzcnt_u64(difference));
+#else
+                return static_cast<unsigned>(std::bit_width(difference));
+#endif
+            };
+            size_t i = 1;
+            for (; i + 4 <= S.size(); i += 4) {
+                ++width_counts[0][width_of(i)];
+                ++width_counts[1][width_of(i + 1)];
+                ++width_counts[2][width_of(i + 2)];
+                ++width_counts[3][width_of(i + 3)];
             }
+            for (; i < S.size(); ++i) ++width_counts[0][width_of(i)];
 
             size_t best_b = total_bits;
             size_t best_space = total_bits * S.size();
@@ -140,7 +160,11 @@ namespace gef {
             size_t rank_h = 1; // B[0] marks the first run
             for (uint8_t h_val = 1; h_val <= total_bits; h_val++) {
                 const uint8_t b = total_bits - h_val;
-                rank_h += lcp_frequencies[h_val - 1];
+                // Pairs whose XOR has exactly b + 1 bits start a new run at b
+                // but not at b + 1 (LCP = h_val - 1).
+                const size_t width = b + 1;
+                rank_h += width_counts[0][width] + width_counts[1][width] +
+                          width_counts[2][width] + width_counts[3][width];
                 const size_t space = S.size() * (b + 1) + rank_h * h_val;
                 if (space < best_space) {
                     best_space = space;
@@ -344,29 +368,8 @@ namespace gef {
                 L = sdsl::int_vector<>(0);
             }
 
-            // Both packed streams are filled sequentially. Buffer each word
-            // so a completed word needs only one store instead of proxy updates.
-            struct PackedWriter {
-                uint64_t* data;
-                unsigned width;
-                uint64_t buffer = 0;
-                unsigned bits = 0;
-
-                void append(uint64_t value) {
-                    buffer |= value << bits;
-                    const unsigned filled = bits + width;
-                    if (filled >= 64) {
-                        *data++ = buffer;
-                        buffer = filled > 64 ? value >> (64 - bits) : 0;
-                        bits = filled - 64;
-                    } else {
-                        bits = filled;
-                    }
-                }
-
-                void finish() { if (bits) *data = buffer; }
-            };
-            PackedWriter low_writer{L.data(), b};
+            // Both packed streams are filled sequentially by register writers.
+            PackedBitWriter low_writer(L.data());
 
             if (h == 0) {
                 // All in L - use unsigned arithmetic for efficiency
@@ -374,7 +377,7 @@ namespace gef {
                 
                 if (b > 0) {
                     for (size_t i = 0; i < S.size(); i++) {
-                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)));
+                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)), b);
                     }
                 }
                 low_writer.finish();
@@ -388,26 +391,39 @@ namespace gef {
             // H exactly once and fill H, L and B in the same source scan.
             B = std::make_unique<ExceptionBitVectorType>(N);
             H = sdsl::int_vector<>(h_count, 0, h);
-            PackedWriter high_writer{H.data(), h};
-            U last_high = 0;
+            PackedBitWriter high_writer(H.data());
             size_t h_idx = 0;
             uint64_t* b_data = B->raw_data_ptr();
             const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
-
-            for (size_t i = 0; i < N; ++i) {
-                const U element = static_cast<U>(S[i]) - static_cast<U>(base);
-                const U high = element >> b;
-                if (b > 0) low_writer.append(element & low_mask);
-                if (i == 0 || high != last_high) {
-                    high_writer.append(high);
-                    ++h_idx;
-                    // B was zero-initialized: unchanged high parts need no store.
-                    constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
-                    const size_t bit = reverse ? 63 - (i & 63) : (i & 63);
-                    b_data[i >> 6] |= uint64_t(1) << bit;
+            // Elements are processed in blocks of 64, one word of B: the
+            // element loop appends lows and collects run starts in a register,
+            // then the run starts' high parts are appended by iterating the set
+            // bits. No branch depends on whether a single element starts a run.
+            static_assert(!ExceptionBitVectorType::reverse_bit_order,
+                          "B words and the run-start iteration assume the lowest bit first");
+            const auto high_of = [&](size_t i) -> U {
+                return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)) >> b;
+            };
+            const auto fill = [&](auto with_lows) {
+                U last_high = ~high_of(0);
+                for (size_t start = 0; start < N; start += 64) {
+                    const size_t count = std::min<size_t>(64, N - start);
+                    uint64_t marks = 0;
+                    for (size_t j = 0; j < count; ++j) {
+                        const U element = static_cast<U>(S[start + j]) - static_cast<U>(base);
+                        if constexpr (with_lows) low_writer.append(element & low_mask, b);
+                        const U high = element >> b;
+                        marks |= uint64_t(high != last_high) << j;
+                        last_high = high;
+                    }
+                    b_data[start >> 6] = marks;
+                    h_idx += std::popcount(marks);
+                    for (uint64_t pending = marks; pending; pending &= pending - 1)
+                        high_writer.append(high_of(start + std::countr_zero(pending)), h);
                 }
-                last_high = high;
-            }
+            };
+            if (b > 0) fill(std::true_type{});
+            else fill(std::false_type{});
             low_writer.finish();
             high_writer.finish();
             assert(h_idx == h_count);
