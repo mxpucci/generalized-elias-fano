@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstring>
 #include <iostream>
 #include <cmath>
 #include <fstream>
@@ -23,8 +24,9 @@
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
+#include "../datastructures/HalfBlockRank.hpp"
 
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if (defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)) || defined(__BMI2__)
 #include <immintrin.h>
 #endif
 
@@ -37,8 +39,34 @@ namespace stdx = std::experimental;
 namespace gef {
     namespace internal {
     template<typename T, typename ExceptionBitVectorType = PastaRankBitVector, bool RandomAccess = true>
-    class RLE_GEF : public IGEF<T> {
+    class alignas(64) RLE_GEF : public IGEF<T> {
+        // Two zero words standing in for L when b == 0, so a low part can be
+        // read without a branch on b.
+        static constexpr uint64_t NO_WORDS[2] = {0, 0};
+
     public:
+        // Everything operator[] reads comes first, so that with the cache-line
+        // alignment of the class a query touches one line of the object.
+
+        // Rank over B for random access when B is small enough; larger B
+        // use the bitvector's own rank support.
+        HalfBlockRank run_rank;
+
+        // L.data() (or NO_WORDS when b == 0) and H.data(); see refresh_views().
+        const uint64_t* low_words = NO_WORDS;
+        const uint64_t* high_words = NO_WORDS;
+
+        /**
+         * The minimum of the encoded sequence, so that we store the shifted sequence
+         * that falls in the range [0, max S - base]
+         * This tricks may boost compression and allows us to implicitly store negative numbers
+         */
+        T base;
+
+        // The split point that rules which bits are stored in H and in L
+        uint8_t b;
+        uint8_t h;
+
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
         std::unique_ptr<ExceptionBitVectorType> B;
 
@@ -48,17 +76,13 @@ namespace gef {
         // low parts
         sdsl::int_vector<> L;
 
-        // The split point that rules which bits are stored in H and in L
-        uint8_t b;
-        uint8_t h;
         size_t m_num_elements;
 
-        /**
-         * The minimum of the encoded sequence, so that we store the shifted sequence
-         * that falls in the range [0, max S - base]
-         * This tricks may boost compression and allows us to implicitly store negative numbers
-         */
-        T base;
+        // Re-derives the cached word pointers after L or H change.
+        void refresh_views() {
+            low_words = b > 0 ? L.data() : NO_WORDS;
+            high_words = H.data();
+        }
 
         /**
          * The longest common prefix of two integers x and y represented on total_bits
@@ -143,6 +167,32 @@ namespace gef {
             return static_cast<T>(static_cast<std::make_unsigned_t<T>>(x) & mask);
         }
 
+        static constexpr bool own_rank_capable =
+            RandomAccess && !ExceptionBitVectorType::reverse_bit_order &&
+            requires(const ExceptionBitVectorType& bits) { { bits.raw_data_ptr() } -> std::convertible_to<const uint64_t*>; };
+
+        void enable_random_access() {
+            if constexpr (RandomAccess) {
+                run_rank.clear();
+                if constexpr (own_rank_capable) {
+                    if (HalfBlockRank::supports(B->size())) {
+                        run_rank.build(B->raw_data_ptr(), B->size());
+                        // Streams written by earlier versions carry the
+                        // bitvector's own support; it would be unused here.
+                        if constexpr (requires { B->disable_support(); }) B->disable_support();
+                        return;
+                    }
+                }
+                B->enable_rank();
+            }
+        }
+
+        // Number of runs starting in [0, index): ones of B before index.
+        [[gnu::always_inline]] size_t runs_before(size_t index) const {
+            if (run_rank.enabled()) [[likely]] return run_rank.rank1(index);
+            return B->rank_unchecked(index);
+        }
+
     public:
         using IGEF<T>::serialize;
         using IGEF<T>::load;
@@ -150,27 +200,26 @@ namespace gef {
         ~RLE_GEF() override = default;
 
         // Default constructor
-        RLE_GEF() : h(0), b(0), m_num_elements(0), base(0) {
+        RLE_GEF() : base(0), b(0), h(0), m_num_elements(0) {
         }
 
         // 2. Copy Constructor
         RLE_GEF(const RLE_GEF &other)
             : IGEF<T>(other), // Slicing is not an issue here as IGEF has no data
+              base(other.base),
+              b(other.b),
+              h(other.h),
               H(other.H),
               L(other.L),
-              h(other.h),
-              b(other.b),
-              m_num_elements(other.m_num_elements),
-              base(other.base) {
+              m_num_elements(other.m_num_elements) {
             if (other.h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(*other.B);
-                if constexpr (RandomAccess) {
-                    B->enable_rank();
-                }
+                enable_random_access();
 
             } else {
                 B = nullptr;
             }
+            refresh_views();
         }
 
         // Friend swap function for copy-and-swap idiom
@@ -183,6 +232,9 @@ namespace gef {
             swap(first.b, second.b);
             swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
+            swap(first.run_rank, second.run_rank);
+            swap(first.low_words, second.low_words);
+            swap(first.high_words, second.high_words);
         }
 
         // 3. Copy Assignment Operator (using copy-and-swap idiom)
@@ -197,17 +249,21 @@ namespace gef {
         // 4. Move Constructor
         RLE_GEF(RLE_GEF &&other) noexcept
             : IGEF<T>(std::move(other)),
+              run_rank(std::move(other.run_rank)),
+              base(other.base),
+              b(other.b),
+              h(other.h),
               B(std::move(other.B)),
               H(std::move(other.H)),
               L(std::move(other.L)),
-              h(other.h),
-              b(other.b),
-              m_num_elements(other.m_num_elements),
-              base(other.base) {
+              m_num_elements(other.m_num_elements) {
             // Leave the moved-from object in a valid, empty state
             other.h = 0;
             other.m_num_elements = 0;
             other.base = T{};
+            // The vectors moved with their buffers; re-derive both views.
+            refresh_views();
+            other.refresh_views();
         }
 
 
@@ -217,10 +273,13 @@ namespace gef {
                 B = std::move(other.B);
                 H = std::move(other.H);
                 L = std::move(other.L);
+                run_rank = std::move(other.run_rank);
                 h = other.h;
                 b = other.b;
                 m_num_elements = other.m_num_elements;
                 base = other.base;
+                refresh_views();
+                other.refresh_views();
             }
             return *this;
         }
@@ -241,6 +300,7 @@ namespace gef {
                 h = 0;
                 base = T{};
                 B = nullptr;
+                refresh_views();
                 return;
             }
 
@@ -320,6 +380,7 @@ namespace gef {
                 low_writer.finish();
                 B = nullptr;
                 H.resize(0);
+                refresh_views();
                 return;
             }
 
@@ -350,11 +411,38 @@ namespace gef {
             low_writer.finish();
             high_writer.finish();
             assert(h_idx == h_count);
-            if constexpr (RandomAccess) B->enable_rank();
-
+            enable_random_access();
+            refresh_views();
         }
 
     private:
+        // Field `index` of width-bit values packed in `words` (width = 0 reads
+        // 0 from two readable words) without data-dependent branches: the
+        // field may span two words, and sdsl allocates one word past the last.
+        [[gnu::always_inline]] static uint64_t read_field(const uint64_t* words, uint8_t width, size_t index) {
+            const uint64_t bit = static_cast<uint64_t>(index) * width;
+#if defined(__BMI2__)
+            if constexpr (std::endian::native == std::endian::little) {
+                // Fields of at most 57 bits lie within the eight bytes starting
+                // at their first byte: one unaligned load. Widths are fixed per
+                // vector, so this branch is predicted.
+                if (width <= 57) [[likely]] {
+                    uint64_t bytes;
+                    std::memcpy(&bytes, reinterpret_cast<const char*>(words) + (bit >> 3), sizeof(bytes));
+                    return _bzhi_u64(bytes >> (bit & 7), width);
+                }
+            }
+#endif
+            const unsigned offset = bit & 63;
+            const uint64_t* word = words + (bit >> 6);
+            const uint64_t window = (word[0] >> offset) | ((word[1] << 1) << (63 - offset));
+#if defined(__BMI2__)
+            return _bzhi_u64(window, width); // width >= 64 keeps every bit
+#else
+            return width >= 64 ? window : window & ((uint64_t(1) << width) - 1);
+#endif
+        }
+
         template<uint8_t SPLIT_POINT>
         static uint64_t unpack_low(const uint64_t* words, size_t index) {
             if constexpr (SPLIT_POINT == 0) return 0;
@@ -627,7 +715,7 @@ namespace gef {
                     if (begin != 0) {
                         // Cursor precedes B[begin], which the decoder consumes
                         // inclusively even when begin is a marker-word boundary.
-                        const size_t preceding = B->rank_unchecked(begin);
+                        const size_t preceding = runs_before(begin);
                         const uint64_t high_bit = uint64_t(preceding) * high_width;
                         high_word += high_bit >> 6;
                         high_offset = high_bit & 63;
@@ -805,7 +893,7 @@ namespace gef {
             }
             size_t rank = 1;
             if (startIndex != 0) {
-                if constexpr (RandomAccess) rank = B->rank_unchecked(startIndex + 1);
+                if constexpr (RandomAccess) rank = runs_before(startIndex + 1);
             }
             const uint64_t* bits = B->raw_data_ptr();
             const size_t word_limit = (endIndex + 63) / 64;
@@ -889,21 +977,16 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->get_elements_into(0, n, out.data()); });
             }
-            // Case 1: No high bits are used (h=0).
-            // All information is stored in the L vector. Reconstruction is trivial.
-            if (h == 0) [[unlikely]] {
-                if (b == 0) [[unlikely]] return base;
-                return base + L[index];
-            }
-
             using U = std::make_unsigned_t<T>;
-            // Initiate L access early to hide memory latency
-            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
+            const U low = static_cast<U>(read_field(low_words, b, index));
+            // No high bits (h == 0): the low part is the whole offset.
+            if (h == 0) [[unlikely]]
+                return static_cast<T>(static_cast<U>(base) + low);
 
             // Rank identifies the containing run for both a run's first value
             // and its remaining values; inspecting B[index] is redundant.
-            const size_t rank = B->rank_unchecked(index + 1);
-            const U high = static_cast<U>(H[rank - 1]);
+            const size_t rank = runs_before(index + 1);
+            const U high = static_cast<U>(read_field(high_words, h, rank - 1));
             return static_cast<T>(static_cast<U>(base) + (low | (high << b)));
         }
 
@@ -940,13 +1023,12 @@ namespace gef {
             H.load(ifs);
             if (h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
-                if constexpr (RandomAccess) {
-                    B->enable_rank();
-                }
-
+                enable_random_access();
             } else {
                 B = nullptr;
+                run_rank.clear();
             }
+            refresh_views();
         }
 
         [[nodiscard]] size_t size() const override {
@@ -994,13 +1076,15 @@ namespace gef {
         [[nodiscard]] size_t allocated_size_in_bytes() const
             requires requires(const ExceptionBitVectorType& bits) { bits.allocated_size_in_bytes(); } {
             return sizeof(*this) + sdsl_allocated_payload_bytes(H) +
-                sdsl_allocated_payload_bytes(L) + (B ? B->allocated_size_in_bytes() : 0);
+                sdsl_allocated_payload_bytes(L) + (B ? B->allocated_size_in_bytes() : 0) +
+                run_rank.allocated_size_in_bytes();
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
             size_t total_bytes = 0;
             if (B) {
                 total_bytes += B->size_in_bytes();
+                total_bytes += run_rank.size_in_bytes();
             }
             total_bytes += sdsl::size_in_bytes(L);
             total_bytes += sdsl::size_in_bytes(H);
