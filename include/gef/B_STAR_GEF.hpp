@@ -103,6 +103,12 @@ namespace gef {
                     if (PairedZeroSelect::supports(m_num_elements, G_plus->size(), G_minus->size())) {
                         zero_select.build(G_plus->raw_data_ptr(), G_plus->size(),
                                           G_minus->raw_data_ptr(), G_minus->size(), m_num_elements);
+                        // Streams written before this index existed carry the
+                        // bitvectors' own support; it would be unused here.
+                        if constexpr (requires { G_plus->disable_support(); }) {
+                            G_plus->disable_support();
+                            G_minus->disable_support();
+                        }
                         return;
                     }
                 }

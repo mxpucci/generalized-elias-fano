@@ -213,6 +213,10 @@ public:
         }
     }
 
+    // Drops the rank/select support, e.g. when the owner indexes the bits
+    // itself. Loading a stream serialized with support rebuilds it.
+    void disable_support() { support_.reset(); }
+
     // ---- Sizes ----
 
     size_t size() const override { return bv_.size(); }

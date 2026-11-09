@@ -266,3 +266,37 @@ TEST(PairedZeroSelectBStar, PartitionedCodecs) {
     expect_decodes(gef::B_STAR_GEF<int64_t, 100000>(values), values);
     expect_decodes(gef::PARTITIONED_B_STAR_GEF<int64_t>(values), values);
 }
+
+TEST(PairedZeroSelectBStar, LoadsStreamsWithSerializedPastaSupport) {
+    // Earlier versions enabled Pasta select0 on every gap vector, so their
+    // streams set the per-bitvector support flag. Loading such a stream must
+    // decode identically and must not keep (or count) the unused support.
+    std::mt19937_64 rng(606);
+    const auto values = random_walk<int64_t>(20000, 0, 40, rng);
+    const int64_t base = *std::min_element(values.begin(), values.end());
+    // b == 0: the stream is h, b, size, base, then G+ and G- (no L).
+    const gef::BlockParameters<int64_t> parameters{base, 12, 0};
+    for (auto v : values) ASSERT_LT(v - base, 4096);
+    gef::internal::B_STAR_GEF<int64_t> codec(values, parameters);
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("paired_zero_select_flag_" + std::to_string(::getpid()) + ".bin");
+    codec.serialize(path);
+    std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+    size_t offset = 2 + sizeof(size_t) + sizeof(int64_t);
+    for (int side = 0; side < 2; ++side) {
+        size_t bits = 0;
+        file.seekg(offset);
+        file.read(reinterpret_cast<char*>(&bits), sizeof(bits));
+        file.seekp(offset + sizeof(bits));
+        const bool has_support = true;
+        file.write(reinterpret_cast<const char*>(&has_support), sizeof(has_support));
+        offset += sizeof(bits) + sizeof(bool) + ((bits >> 6) + 1) * sizeof(uint64_t);
+    }
+    file.close();
+    ASSERT_EQ(std::filesystem::file_size(path), offset);
+    gef::internal::B_STAR_GEF<int64_t> loaded;
+    loaded.load(path);
+    std::filesystem::remove(path);
+    expect_decodes(loaded, values);
+    EXPECT_EQ(loaded.size_in_bytes(), codec.size_in_bytes());
+}
