@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstring>
 #include <iostream>
 #include <cmath>
 #include <fstream>
@@ -25,7 +26,7 @@
 #include "../datastructures/PastaBitVector.hpp"
 #include "../datastructures/HalfBlockRank.hpp"
 
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if (defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)) || defined(__BMI2__)
 #include <immintrin.h>
 #endif
 
@@ -39,6 +40,10 @@ namespace gef {
     namespace internal {
     template<typename T, typename ExceptionBitVectorType = PastaRankBitVector, bool RandomAccess = true>
     class RLE_GEF : public IGEF<T> {
+        // Two zero words standing in for L when b == 0, so a low part can be
+        // read without a branch on b.
+        static constexpr uint64_t NO_WORDS[2] = {0, 0};
+
     public:
         // Bit-vector such that B[i] = 1 <==> highPart(i) != highPart(i - 1)
         std::unique_ptr<ExceptionBitVectorType> B;
@@ -386,6 +391,33 @@ namespace gef {
         }
 
     private:
+        // Field `index` of width-bit values packed in `words` (width = 0 reads
+        // 0 from two readable words) without data-dependent branches: the
+        // field may span two words, and sdsl allocates one word past the last.
+        [[gnu::always_inline]] static uint64_t read_field(const uint64_t* words, uint8_t width, size_t index) {
+            const uint64_t bit = static_cast<uint64_t>(index) * width;
+#if defined(__BMI2__)
+            if constexpr (std::endian::native == std::endian::little) {
+                // Fields of at most 57 bits lie within the eight bytes starting
+                // at their first byte: one unaligned load. Widths are fixed per
+                // vector, so this branch is predicted.
+                if (width <= 57) [[likely]] {
+                    uint64_t bytes;
+                    std::memcpy(&bytes, reinterpret_cast<const char*>(words) + (bit >> 3), sizeof(bytes));
+                    return _bzhi_u64(bytes >> (bit & 7), width);
+                }
+            }
+#endif
+            const unsigned offset = bit & 63;
+            const uint64_t* word = words + (bit >> 6);
+            const uint64_t window = (word[0] >> offset) | ((word[1] << 1) << (63 - offset));
+#if defined(__BMI2__)
+            return _bzhi_u64(window, width); // width >= 64 keeps every bit
+#else
+            return width >= 64 ? window : window & ((uint64_t(1) << width) - 1);
+#endif
+        }
+
         template<uint8_t SPLIT_POINT>
         static uint64_t unpack_low(const uint64_t* words, size_t index) {
             if constexpr (SPLIT_POINT == 0) return 0;
@@ -920,21 +952,22 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->get_elements_into(0, n, out.data()); });
             }
-            // Case 1: No high bits are used (h=0).
-            // All information is stored in the L vector. Reconstruction is trivial.
-            if (h == 0) [[unlikely]] {
-                if (b == 0) [[unlikely]] return base;
-                return base + L[index];
-            }
-
             using U = std::make_unsigned_t<T>;
-            // Initiate L access early to hide memory latency
-            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
+            // Choose the word pointer arithmetically: compilers otherwise
+            // branch on b, which mispredicts when b == 0 partitions interleave.
+            const uintptr_t has_low = uintptr_t(0) - static_cast<uintptr_t>(b != 0);
+            const uint64_t* low_words = reinterpret_cast<const uint64_t*>(
+                (reinterpret_cast<uintptr_t>(L.data()) & has_low) |
+                (reinterpret_cast<uintptr_t>(NO_WORDS) & ~has_low));
+            const U low = static_cast<U>(read_field(low_words, b, index));
+            // No high bits (h == 0): the low part is the whole offset.
+            if (h == 0) [[unlikely]]
+                return static_cast<T>(static_cast<U>(base) + low);
 
             // Rank identifies the containing run for both a run's first value
             // and its remaining values; inspecting B[index] is redundant.
             const size_t rank = runs_before(index + 1);
-            const U high = static_cast<U>(H[rank - 1]);
+            const U high = static_cast<U>(read_field(H.data(), h, rank - 1));
             return static_cast<T>(static_cast<U>(base) + (low | (high << b)));
         }
 
