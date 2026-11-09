@@ -368,29 +368,8 @@ namespace gef {
                 L = sdsl::int_vector<>(0);
             }
 
-            // Both packed streams are filled sequentially. Buffer each word
-            // so a completed word needs only one store instead of proxy updates.
-            struct PackedWriter {
-                uint64_t* data;
-                unsigned width;
-                uint64_t buffer = 0;
-                unsigned bits = 0;
-
-                void append(uint64_t value) {
-                    buffer |= value << bits;
-                    const unsigned filled = bits + width;
-                    if (filled >= 64) {
-                        *data++ = buffer;
-                        buffer = filled > 64 ? value >> (64 - bits) : 0;
-                        bits = filled - 64;
-                    } else {
-                        bits = filled;
-                    }
-                }
-
-                void finish() { if (bits) *data = buffer; }
-            };
-            PackedWriter low_writer{L.data(), b};
+            // Both packed streams are filled sequentially by register writers.
+            PackedBitWriter low_writer(L.data());
 
             if (h == 0) {
                 // All in L - use unsigned arithmetic for efficiency
@@ -398,7 +377,7 @@ namespace gef {
                 
                 if (b > 0) {
                     for (size_t i = 0; i < S.size(); i++) {
-                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)));
+                        low_writer.append(static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)), b);
                     }
                 }
                 low_writer.finish();
@@ -412,26 +391,39 @@ namespace gef {
             // H exactly once and fill H, L and B in the same source scan.
             B = std::make_unique<ExceptionBitVectorType>(N);
             H = sdsl::int_vector<>(h_count, 0, h);
-            PackedWriter high_writer{H.data(), h};
-            U last_high = 0;
+            PackedBitWriter high_writer(H.data());
             size_t h_idx = 0;
             uint64_t* b_data = B->raw_data_ptr();
             const U low_mask = (b > 0) ? ((U(1) << b) - 1) : 0;
-
-            for (size_t i = 0; i < N; ++i) {
-                const U element = static_cast<U>(S[i]) - static_cast<U>(base);
-                const U high = element >> b;
-                if (b > 0) low_writer.append(element & low_mask);
-                if (i == 0 || high != last_high) {
-                    high_writer.append(high);
-                    ++h_idx;
-                    // B was zero-initialized: unchanged high parts need no store.
-                    constexpr bool reverse = ExceptionBitVectorType::reverse_bit_order;
-                    const size_t bit = reverse ? 63 - (i & 63) : (i & 63);
-                    b_data[i >> 6] |= uint64_t(1) << bit;
+            // Elements are processed in blocks of 64, one word of B: the
+            // element loop appends lows and collects run starts in a register,
+            // then the run starts' high parts are appended by iterating the set
+            // bits. No branch depends on whether a single element starts a run.
+            static_assert(!ExceptionBitVectorType::reverse_bit_order,
+                          "B words and the run-start iteration assume the lowest bit first");
+            const auto high_of = [&](size_t i) -> U {
+                return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(base)) >> b;
+            };
+            const auto fill = [&](auto with_lows) {
+                U last_high = ~high_of(0);
+                for (size_t start = 0; start < N; start += 64) {
+                    const size_t count = std::min<size_t>(64, N - start);
+                    uint64_t marks = 0;
+                    for (size_t j = 0; j < count; ++j) {
+                        const U element = static_cast<U>(S[start + j]) - static_cast<U>(base);
+                        if constexpr (with_lows) low_writer.append(element & low_mask, b);
+                        const U high = element >> b;
+                        marks |= uint64_t(high != last_high) << j;
+                        last_high = high;
+                    }
+                    b_data[start >> 6] = marks;
+                    h_idx += std::popcount(marks);
+                    for (uint64_t pending = marks; pending; pending &= pending - 1)
+                        high_writer.append(high_of(start + std::countr_zero(pending)), h);
                 }
-                last_high = high;
-            }
+            };
+            if (b > 0) fill(std::true_type{});
+            else fill(std::false_type{});
             low_writer.finish();
             high_writer.finish();
             assert(h_idx == h_count);
