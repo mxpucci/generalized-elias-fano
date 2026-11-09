@@ -25,7 +25,7 @@
 
 
 // SIMD intrinsics for optimized bit operations
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if (defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)) || defined(__BMI2__)
 #include <immintrin.h>
 #elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
 #include <arm_neon.h>
@@ -48,6 +48,7 @@ namespace stdx = std::experimental;
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
+#include "../datastructures/PairedZeroSelect.hpp"
 #include "FastBitWriter.hpp"
 
 
@@ -86,6 +87,70 @@ namespace gef {
 
         // low parts
         sdsl::int_vector<> L;
+
+        // Random-access select0 index over G_plus/G_minus for partitions with
+        // few enough elements; larger ones use the bitvectors' own select0.
+        PairedZeroSelect zero_select;
+
+        static constexpr bool compact_select_capable =
+            RandomAccess && !GapBitVectorType::reverse_bit_order &&
+            requires(const GapBitVectorType& bits) { { bits.raw_data_ptr() } -> std::convertible_to<const uint64_t*>; };
+
+        void enable_random_access() {
+            if constexpr (RandomAccess) {
+                zero_select.clear();
+                if constexpr (compact_select_capable) {
+                    if (PairedZeroSelect::supports(m_num_elements, G_plus->size(), G_minus->size())) {
+                        zero_select.build(G_plus->raw_data_ptr(), G_plus->size(),
+                                          G_minus->raw_data_ptr(), G_minus->size(), m_num_elements);
+                        // Streams written before this index existed carry the
+                        // bitvectors' own support; it would be unused here.
+                        if constexpr (requires { G_plus->disable_support(); }) {
+                            G_plus->disable_support();
+                            G_minus->disable_support();
+                        }
+                        return;
+                    }
+                }
+                G_plus->enable_select0();
+                G_minus->enable_select0();
+            }
+        }
+
+        // L[index] without data-dependent branches: the field may span two
+        // words, and sdsl allocates one word past the last one. With b == 0 a
+        // zero mask discards a read from a static two-word stand-in.
+        [[gnu::always_inline]] uint64_t read_low_unchecked(size_t index) const {
+            static constexpr uint64_t no_low_words[2] = {0, 0};
+            // Select the pointer arithmetically: compilers otherwise branch on
+            // b, which mispredicts when partitions with b == 0 are interleaved.
+            const uintptr_t has_low = uintptr_t(0) - static_cast<uintptr_t>(b != 0);
+            const uint64_t* words = reinterpret_cast<const uint64_t*>(
+                (reinterpret_cast<uintptr_t>(L.data()) & has_low) |
+                (reinterpret_cast<uintptr_t>(no_low_words) & ~has_low));
+            const uint64_t bit = static_cast<uint64_t>(index) * b;
+            const unsigned offset = bit & 63;
+            const uint64_t* word = words + (bit >> 6);
+            const uint64_t window = (word[0] >> offset) | ((word[1] << 1) << (63 - offset));
+#if defined(__BMI2__)
+            return _bzhi_u64(window, b); // b >= 64 keeps every bit
+#else
+            return b >= 64 ? window : window & ((uint64_t(1) << b) - 1);
+#endif
+        }
+
+        // Position of the rank-th (1-based) zero of G_plus (side 0) or G_minus (side 1).
+        size_t gap_select0(size_t side, size_t rank) const {
+            if (zero_select.enabled()) return zero_select.select0(side, rank);
+            return side ? G_minus->select0(rank) : G_plus->select0(rank);
+        }
+
+        [[gnu::noinline]] std::pair<size_t, size_t> gap_select0_pair_general(size_t rank) const {
+            if constexpr (requires { G_plus->select0_pair_unchecked(*G_minus, rank); })
+                return G_plus->select0_pair_unchecked(*G_minus, rank);
+            else
+                return {G_plus->select0_unchecked(rank), G_minus->select0_unchecked(rank)};
+        }
 
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
@@ -647,8 +712,8 @@ namespace gef {
             using U = std::make_unsigned_t<T>;
             const U base_u = static_cast<U>(base);
             const uint64_t* low_data = L.data();
-            const size_t plus_start = startIndex ? G_plus->select0(startIndex) + 1 : 0;
-            const size_t minus_start = startIndex ? G_minus->select0(startIndex) + 1 : 0;
+            const size_t plus_start = startIndex ? gap_select0(0, startIndex) + 1 : 0;
+            const size_t minus_start = startIndex ? gap_select0(1, startIndex) + 1 : 0;
             ZeroPositionReader plus(G_plus->raw_data_ptr(), plus_start);
             ZeroPositionReader minus(G_minus->raw_data_ptr(), minus_start);
             alignas(64) Position plus_positions[MAX_BATCH];
@@ -732,14 +797,8 @@ namespace gef {
               base(other.base) {
             if (other.h > 0) {
                 G_plus = std::make_unique<GapBitVectorType>(*other.G_plus);
-                if constexpr (RandomAccess) {
-                    G_plus->enable_select0();
-                }
-
                 G_minus = std::make_unique<GapBitVectorType>(*other.G_minus);
-                if constexpr (RandomAccess) {
-                    G_minus->enable_select0();
-                }
+                enable_random_access();
             } else {
                 G_plus = nullptr;
                 G_minus = nullptr;
@@ -756,6 +815,7 @@ namespace gef {
             swap(first.base, second.base);
             swap(first.G_plus, second.G_plus);
             swap(first.G_minus, second.G_minus);
+            swap(first.zero_select, second.zero_select);
         }
 
         // 3. Copy Assignment Operator (using copy-and-swap idiom)
@@ -773,6 +833,7 @@ namespace gef {
               G_plus(std::move(other.G_plus)),
               G_minus(std::move(other.G_minus)),
               L(std::move(other.L)),
+              zero_select(std::move(other.zero_select)),
               h(other.h),
               b(other.b),
               m_num_elements(other.m_num_elements),
@@ -792,6 +853,7 @@ namespace gef {
                 G_plus = std::move(other.G_plus);
                 G_minus = std::move(other.G_minus);
                 L = std::move(other.L);
+                zero_select = std::move(other.zero_select);
                 h = other.h;
                 b = other.b;
                 m_num_elements = other.m_num_elements;
@@ -1017,10 +1079,7 @@ namespace gef {
             // ===== END POPULATION PHASE =====
 
             // Enable select0 support (rank not needed, operator[] only uses select0)
-            if constexpr (RandomAccess) {
-                G_plus->enable_select0();
-                G_minus->enable_select0();
-            }
+            enable_random_access();
 
             if (metrics) {
                 double population_seconds = std::chrono::duration<double>(clock::now() - population_start).count();
@@ -1117,26 +1176,16 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
             }
-            if (h == 0) [[unlikely]]
-                return base + (b > 0 ? L[index] : 0);
-            
             using U = std::make_unsigned_t<T>;
-
-            // Initiate L access early to hide memory latency while computing select0
-            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
+            const U low = static_cast<U>(read_low_unchecked(index));
+            if (h == 0) [[unlikely]]
+                return static_cast<T>(static_cast<U>(base) + low);
 
             const size_t zero_rank = index + 1;
-            // Stage the two independent select queries together when the
-            // backend supports it; other bitvectors retain their scalar path.
-            size_t pos_gaps, neg_gaps;
-            if constexpr (requires { G_plus->select0_pair_unchecked(*G_minus, zero_rank); }) {
-                const auto positions = G_plus->select0_pair_unchecked(*G_minus, zero_rank);
-                pos_gaps = positions.first - zero_rank;
-                neg_gaps = positions.second - zero_rank;
-            } else {
-                pos_gaps = G_plus->select0_unchecked(zero_rank) - zero_rank;
-                neg_gaps = G_minus->select0_unchecked(zero_rank) - zero_rank;
-            }
+            const auto positions = zero_select.enabled() ? zero_select.select0_pair(zero_rank)
+                                                         : gap_select0_pair_general(zero_rank);
+            const size_t pos_gaps = positions.first - zero_rank;
+            const size_t neg_gaps = positions.second - zero_rank;
 
             const U high_u = static_cast<U>(
                 static_cast<long long>(pos_gaps) - static_cast<long long>(neg_gaps));
@@ -1177,17 +1226,12 @@ namespace gef {
             
             if (h > 0) {
                 G_plus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                if constexpr (RandomAccess) {
-                    G_plus->enable_select0();
-                }
-
                 G_minus = std::make_unique<GapBitVectorType>(GapBitVectorType::load(ifs));
-                if constexpr (RandomAccess) {
-                    G_minus->enable_select0();
-                }
+                enable_random_access();
             } else {
                 G_plus = nullptr;
                 G_minus = nullptr;
+                zero_select.clear();
             }
         }
 
@@ -1201,7 +1245,8 @@ namespace gef {
             requires requires(const GapBitVectorType& bits) { bits.allocated_size_in_bytes(); } {
             return sizeof(*this) + sdsl_allocated_payload_bytes(L) +
                 (G_plus ? G_plus->allocated_size_in_bytes() : 0) +
-                (G_minus ? G_minus->allocated_size_in_bytes() : 0);
+                (G_minus ? G_minus->allocated_size_in_bytes() : 0) +
+                zero_select.allocated_size_in_bytes();
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
@@ -1209,6 +1254,7 @@ namespace gef {
             if (h > 0) {
                 total_bytes += G_plus->size_in_bytes();
                 total_bytes += G_minus->size_in_bytes();
+                total_bytes += zero_select.size_in_bytes();
             }
             total_bytes += sdsl::size_in_bytes(L);
             total_bytes += sizeof(base);
