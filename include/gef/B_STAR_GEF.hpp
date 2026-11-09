@@ -262,19 +262,26 @@ namespace gef {
                 // Accumulate just that magnitude for each adjacent split. Since
                 // the first previous high part is zero, positive-negative=last;
                 // recover both stream lengths without per-value direction counts.
-                size_t variation_floor = 0;
-                size_t variation_ceil = 0;
-                U previous = 0;
-                for (const T value : S) {
-                    const U current = static_cast<U>(static_cast<U>(value) - static_cast<U>(min)) >> floor_b;
-                    variation_floor += current >= previous ? current - previous : previous - current;
-                    if (ceil_b != floor_b) {
-                        const U current_ceil = current >> 1;
-                        const U previous_ceil = previous >> 1;
-                        variation_ceil += current_ceil >= previous_ceil ? current_ceil - previous_ceil : previous_ceil - current_ceil;
+                // Each previous high part is re-read from S, so no value is
+                // carried between iterations and the scan vectorizes.
+                const auto high = [&](size_t i) -> U {
+                    return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(min)) >> floor_b;
+                };
+                const auto distance = [](U x, U y) -> U { return x >= y ? x - y : y - x; };
+                size_t variation_floor = high(0);
+                size_t variation_ceil = high(0) >> 1;
+                if (ceil_b != floor_b) {
+                    for (size_t i = 1; i < S.size(); ++i) {
+                        const U current = high(i);
+                        const U previous = high(i - 1);
+                        variation_floor += distance(current, previous);
+                        variation_ceil += distance(current >> 1, previous >> 1);
                     }
-                    previous = current;
+                } else {
+                    for (size_t i = 1; i < S.size(); ++i)
+                        variation_floor += distance(high(i), high(i - 1));
                 }
+                const U previous = high(S.size() - 1);
                 candidates[0].sum_of_negative_gaps = (variation_floor - previous) / 2;
                 candidates[0].sum_of_positive_gaps = candidates[0].sum_of_negative_gaps + previous;
                 if (ceil_b != floor_b) {
@@ -323,25 +330,30 @@ namespace gef {
                 // Every gap is at most maximum_high. This proves all absolute
                 // sums and their delimiter counts fit without saturating adds.
                 std::array<size_t, 4> variation{};
-                U previous = 0;
+                // The first previous high part is zero. Later ones are re-read
+                // from S, so no value is carried between iterations and the scan
+                // vectorizes.
+                const auto high = [&](size_t i) -> U {
+                    return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(min)) >> min_b;
+                };
                 const auto accumulate = [&]<size_t FixedCount>() {
                     const size_t candidate_count = FixedCount ? FixedCount : count;
-                    for (const T value : S) {
-                        const U residual = static_cast<U>(static_cast<U>(value) - static_cast<U>(min));
-                        U current = residual >> min_b;
-                        U prior = previous;
+                    for (size_t j = 0; j < candidate_count; ++j) variation[j] = high(0) >> j;
+                    for (size_t i = 1; i < S.size(); ++i) {
+                        U current = high(i);
+                        U prior = high(i - 1);
                         for (size_t j = 0; j < candidate_count; ++j) {
                             variation[j] += current >= prior ? current - prior : prior - current;
                             current >>= 1;
                             prior >>= 1;
                         }
-                        previous = residual >> min_b;
                     }
                 };
                 // A full paper neighborhood has four candidates. Keep its
                 // bound constant while sharing the scan with clipped edges.
                 if (count == 4) accumulate.template operator()<4>();
                 else accumulate.template operator()<0>();
+                U previous = high(S.size() - 1);
                 for (size_t j = 0; j < count; ++j) {
                     // Starting from zero, positive-negative equals the final
                     // high part. Subtract before dividing to avoid V+last overflow.
