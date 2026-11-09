@@ -23,6 +23,7 @@
 #include "../datastructures/IBitVector.hpp"
 #include "../datastructures/SDSLBitVector.hpp"
 #include "../datastructures/PastaBitVector.hpp"
+#include "../datastructures/HalfBlockRank.hpp"
 
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
 #include <immintrin.h>
@@ -47,6 +48,10 @@ namespace gef {
 
         // low parts
         sdsl::int_vector<> L;
+
+        // Rank over B for random access when B is small enough; larger B
+        // use the bitvector's own rank support.
+        HalfBlockRank run_rank;
 
         // The split point that rules which bits are stored in H and in L
         uint8_t b;
@@ -143,6 +148,32 @@ namespace gef {
             return static_cast<T>(static_cast<std::make_unsigned_t<T>>(x) & mask);
         }
 
+        static constexpr bool own_rank_capable =
+            RandomAccess && !ExceptionBitVectorType::reverse_bit_order &&
+            requires(const ExceptionBitVectorType& bits) { { bits.raw_data_ptr() } -> std::convertible_to<const uint64_t*>; };
+
+        void enable_random_access() {
+            if constexpr (RandomAccess) {
+                run_rank.clear();
+                if constexpr (own_rank_capable) {
+                    if (HalfBlockRank::supports(B->size())) {
+                        run_rank.build(B->raw_data_ptr(), B->size());
+                        // Streams written by earlier versions carry the
+                        // bitvector's own support; it would be unused here.
+                        if constexpr (requires { B->disable_support(); }) B->disable_support();
+                        return;
+                    }
+                }
+                B->enable_rank();
+            }
+        }
+
+        // Number of runs starting in [0, index): ones of B before index.
+        [[gnu::always_inline]] size_t runs_before(size_t index) const {
+            if (run_rank.enabled()) [[likely]] return run_rank.rank1(index);
+            return B->rank_unchecked(index);
+        }
+
     public:
         using IGEF<T>::serialize;
         using IGEF<T>::load;
@@ -150,7 +181,7 @@ namespace gef {
         ~RLE_GEF() override = default;
 
         // Default constructor
-        RLE_GEF() : h(0), b(0), m_num_elements(0), base(0) {
+        RLE_GEF() : b(0), h(0), m_num_elements(0), base(0) {
         }
 
         // 2. Copy Constructor
@@ -158,15 +189,13 @@ namespace gef {
             : IGEF<T>(other), // Slicing is not an issue here as IGEF has no data
               H(other.H),
               L(other.L),
-              h(other.h),
               b(other.b),
+              h(other.h),
               m_num_elements(other.m_num_elements),
               base(other.base) {
             if (other.h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(*other.B);
-                if constexpr (RandomAccess) {
-                    B->enable_rank();
-                }
+                enable_random_access();
 
             } else {
                 B = nullptr;
@@ -183,6 +212,7 @@ namespace gef {
             swap(first.b, second.b);
             swap(first.m_num_elements, second.m_num_elements);
             swap(first.base, second.base);
+            swap(first.run_rank, second.run_rank);
         }
 
         // 3. Copy Assignment Operator (using copy-and-swap idiom)
@@ -200,8 +230,9 @@ namespace gef {
               B(std::move(other.B)),
               H(std::move(other.H)),
               L(std::move(other.L)),
-              h(other.h),
+              run_rank(std::move(other.run_rank)),
               b(other.b),
+              h(other.h),
               m_num_elements(other.m_num_elements),
               base(other.base) {
             // Leave the moved-from object in a valid, empty state
@@ -217,6 +248,7 @@ namespace gef {
                 B = std::move(other.B);
                 H = std::move(other.H);
                 L = std::move(other.L);
+                run_rank = std::move(other.run_rank);
                 h = other.h;
                 b = other.b;
                 m_num_elements = other.m_num_elements;
@@ -350,8 +382,7 @@ namespace gef {
             low_writer.finish();
             high_writer.finish();
             assert(h_idx == h_count);
-            if constexpr (RandomAccess) B->enable_rank();
-
+            enable_random_access();
         }
 
     private:
@@ -627,7 +658,7 @@ namespace gef {
                     if (begin != 0) {
                         // Cursor precedes B[begin], which the decoder consumes
                         // inclusively even when begin is a marker-word boundary.
-                        const size_t preceding = B->rank_unchecked(begin);
+                        const size_t preceding = runs_before(begin);
                         const uint64_t high_bit = uint64_t(preceding) * high_width;
                         high_word += high_bit >> 6;
                         high_offset = high_bit & 63;
@@ -805,7 +836,7 @@ namespace gef {
             }
             size_t rank = 1;
             if (startIndex != 0) {
-                if constexpr (RandomAccess) rank = B->rank_unchecked(startIndex + 1);
+                if constexpr (RandomAccess) rank = runs_before(startIndex + 1);
             }
             const uint64_t* bits = B->raw_data_ptr();
             const size_t word_limit = (endIndex + 63) / 64;
@@ -902,7 +933,7 @@ namespace gef {
 
             // Rank identifies the containing run for both a run's first value
             // and its remaining values; inspecting B[index] is redundant.
-            const size_t rank = B->rank_unchecked(index + 1);
+            const size_t rank = runs_before(index + 1);
             const U high = static_cast<U>(H[rank - 1]);
             return static_cast<T>(static_cast<U>(base) + (low | (high << b)));
         }
@@ -940,12 +971,10 @@ namespace gef {
             H.load(ifs);
             if (h > 0) {
                 B = std::make_unique<ExceptionBitVectorType>(ExceptionBitVectorType::load(ifs));
-                if constexpr (RandomAccess) {
-                    B->enable_rank();
-                }
-
+                enable_random_access();
             } else {
                 B = nullptr;
+                run_rank.clear();
             }
         }
 
@@ -994,13 +1023,15 @@ namespace gef {
         [[nodiscard]] size_t allocated_size_in_bytes() const
             requires requires(const ExceptionBitVectorType& bits) { bits.allocated_size_in_bytes(); } {
             return sizeof(*this) + sdsl_allocated_payload_bytes(H) +
-                sdsl_allocated_payload_bytes(L) + (B ? B->allocated_size_in_bytes() : 0);
+                sdsl_allocated_payload_bytes(L) + (B ? B->allocated_size_in_bytes() : 0) +
+                run_rank.allocated_size_in_bytes();
         }
 
         [[nodiscard]] size_t size_in_bytes() const override {
             size_t total_bytes = 0;
             if (B) {
                 total_bytes += B->size_in_bytes();
+                total_bytes += run_rank.size_in_bytes();
             }
             total_bytes += sdsl::size_in_bytes(L);
             total_bytes += sdsl::size_in_bytes(H);
