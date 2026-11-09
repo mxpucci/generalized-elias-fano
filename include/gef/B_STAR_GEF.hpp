@@ -25,7 +25,7 @@
 
 
 // SIMD intrinsics for optimized bit operations
-#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+#if (defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)) || defined(__BMI2__)
 #include <immintrin.h>
 #elif defined(__ARM_NEON) && !defined(GEF_DISABLE_SIMD)
 #include <arm_neon.h>
@@ -109,6 +109,28 @@ namespace gef {
                 G_plus->enable_select0();
                 G_minus->enable_select0();
             }
+        }
+
+        // L[index] without data-dependent branches: the field may span two
+        // words, and sdsl allocates one word past the last one. With b == 0 a
+        // zero mask discards a read from a static two-word stand-in.
+        [[gnu::always_inline]] uint64_t read_low_unchecked(size_t index) const {
+            static constexpr uint64_t no_low_words[2] = {0, 0};
+            // Select the pointer arithmetically: compilers otherwise branch on
+            // b, which mispredicts when partitions with b == 0 are interleaved.
+            const uintptr_t has_low = uintptr_t(0) - static_cast<uintptr_t>(b != 0);
+            const uint64_t* words = reinterpret_cast<const uint64_t*>(
+                (reinterpret_cast<uintptr_t>(L.data()) & has_low) |
+                (reinterpret_cast<uintptr_t>(no_low_words) & ~has_low));
+            const uint64_t bit = static_cast<uint64_t>(index) * b;
+            const unsigned offset = bit & 63;
+            const uint64_t* word = words + (bit >> 6);
+            const uint64_t window = (word[0] >> offset) | ((word[1] << 1) << (63 - offset));
+#if defined(__BMI2__)
+            return _bzhi_u64(window, b); // b >= 64 keeps every bit
+#else
+            return b >= 64 ? window : window & ((uint64_t(1) << b) - 1);
+#endif
         }
 
         // Position of the rank-th (1-based) zero of G_plus (side 0) or G_minus (side 1).
@@ -1148,13 +1170,10 @@ namespace gef {
                     index, scratch,
                     [this](size_t n, std::vector<T>& out) { return this->decode_prefix_no_support(n, out); });
             }
-            if (h == 0) [[unlikely]]
-                return base + (b > 0 ? L[index] : 0);
-            
             using U = std::make_unsigned_t<T>;
-
-            // Initiate L access early to hide memory latency while computing select0
-            const U low = (b > 0) ? static_cast<U>(L[index]) : U(0);
+            const U low = static_cast<U>(read_low_unchecked(index));
+            if (h == 0) [[unlikely]]
+                return static_cast<T>(static_cast<U>(base) + low);
 
             const size_t zero_rank = index + 1;
             const auto positions = zero_select.enabled() ? zero_select.select0_pair(zero_rank)
