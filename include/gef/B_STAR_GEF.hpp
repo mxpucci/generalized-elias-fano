@@ -1064,13 +1064,14 @@ namespace gef {
             uint64_t* plus_scratch = nullptr;
             uint64_t* minus_scratch = nullptr;
             [[maybe_unused]] size_t plus_capacity = 0, minus_capacity = 0;
+            size_t plus_words = 0, minus_words = 0;
             if (bounded_streams) {
                 const size_t last_high = static_cast<size_t>(
                     static_cast<U>(static_cast<U>(S[N - 1]) - static_cast<U>(base)) >> b);
                 std::tie(plus_capacity, minus_capacity) =
                     gap_stream_capacities(N, b, variation, last_high);
-                const size_t plus_words = plus_capacity / 64 + 1;
-                const size_t minus_words = minus_capacity / 64 + 1;
+                plus_words = plus_capacity / 64 + 1;
+                minus_words = minus_capacity / 64 + 1;
                 plus_scratch = gap_scratch(plus_words + minus_words, owned_scratch);
                 minus_scratch = plus_scratch + plus_words;
             } else {
@@ -1119,13 +1120,62 @@ namespace gef {
                     lastHighBits = currentHighBits;
                 }
                 low_writer.finish();
+            } else if (bounded_streams) {
+                // Both streams are all ones except one delimiting zero per
+                // element. With R_i the sum of the rises up to element i, the
+                // i-th zero of G+ is at i + R_i and, since the rises minus the
+                // falls telescope to the current high part c_i, the i-th zero of
+                // G- is at i + R_i - c_i. The scratch is filled with ones up to
+                // the proven capacity; each element then clears its zero in a
+                // register copy of the word holding it and stores that word.
+                // The store is unconditional and the word is reset with a
+                // select, so no branch depends on the gaps (a mispredicted
+                // word-boundary branch per stream was the cost of the writers).
+                std::fill_n(plus_scratch, plus_words + minus_words, ~uint64_t(0));
+                const auto populate = [&](auto with_lows) {
+                    U last = 0;
+                    uint64_t rises = 0;
+                    uint64_t plus_word = 0, minus_word = 0;
+                    uint64_t plus_bits = ~uint64_t(0), minus_bits = ~uint64_t(0);
+                    for (size_t i = 0; i < N; ++i) {
+                        const U element_u = static_cast<U>(S[i]) - static_cast<U>(base);
+                        if constexpr (with_lows) low_writer.append(static_cast<uint64_t>(element_u & low_mask), b);
+                        const U current = element_u >> b;
+                        rises += static_cast<uint64_t>(current > last ? current - last : U(0));
+                        last = current;
+                        const uint64_t plus_zero = i + rises;
+                        const uint64_t minus_zero = plus_zero - static_cast<uint64_t>(current);
+                        const uint64_t plus_index = plus_zero >> 6, minus_index = minus_zero >> 6;
+                        plus_bits = plus_index == plus_word ? plus_bits : ~uint64_t(0);
+                        minus_bits = minus_index == minus_word ? minus_bits : ~uint64_t(0);
+                        plus_bits &= ~(uint64_t(1) << (plus_zero & 63));
+                        minus_bits &= ~(uint64_t(1) << (minus_zero & 63));
+                        plus_scratch[plus_index] = plus_bits;
+                        minus_scratch[minus_index] = minus_bits;
+                        plus_word = plus_index;
+                        minus_word = minus_index;
+                    }
+                    return std::pair<uint64_t, uint64_t>{N + rises, N + rises - static_cast<uint64_t>(last)};
+                };
+                const auto [plus_length, minus_length] =
+                    b > 0 ? populate(std::true_type{}) : populate(std::false_type{});
+                low_writer.finish();
+                assert(plus_length <= plus_capacity && minus_length <= minus_capacity);
+                // Exact-length vectors with zero-filled tails, as allocated by
+                // the other paths: only the used bits of the last word are kept.
+                const auto materialize = [](uint64_t* words, size_t bits) {
+                    if (bits & 63) words[bits >> 6] &= (uint64_t(1) << (bits & 63)) - 1;
+                    auto vector = std::make_unique<GapBitVectorType>(bits);
+                    std::memcpy(vector->raw_data_ptr(), words, ((bits + 63) / 64) * sizeof(uint64_t));
+                    return vector;
+                };
+                G_plus = materialize(plus_scratch, plus_length);
+                G_minus = materialize(minus_scratch, minus_length);
             } else {
             // Register writers store each word once it is full. Rise and fall
             // are computed without a branch on the sign of the gap.
-            uint64_t* const plus_target = bounded_streams ? plus_scratch : G_plus->raw_data_ptr();
-            uint64_t* const minus_target = bounded_streams ? minus_scratch : G_minus->raw_data_ptr();
-            PackedBitWriter plus_writer(plus_target);
-            PackedBitWriter minus_writer(minus_target);
+            PackedBitWriter plus_writer(G_plus->raw_data_ptr());
+            PackedBitWriter minus_writer(G_minus->raw_data_ptr());
             const auto populate = [&](auto with_lows) {
                 U lastHighBits = 0;
                 for (size_t i = 0; i < N; ++i) {
@@ -1144,20 +1194,6 @@ namespace gef {
             plus_writer.finish();
             minus_writer.finish();
             low_writer.finish();
-            if (bounded_streams) {
-                // Exact-length vectors; their zero-filled tail words match
-                // the up-front allocation of the other paths.
-                const auto materialize = [](const uint64_t* words, size_t bits) {
-                    auto vector = std::make_unique<GapBitVectorType>(bits);
-                    std::memcpy(vector->raw_data_ptr(), words, ((bits + 63) / 64) * sizeof(uint64_t));
-                    return vector;
-                };
-                const size_t plus_bits = plus_writer.bits_written(plus_target);
-                const size_t minus_bits = minus_writer.bits_written(minus_target);
-                assert(plus_bits <= plus_capacity && minus_bits <= minus_capacity);
-                G_plus = materialize(plus_target, plus_bits);
-                G_minus = materialize(minus_target, minus_bits);
-            }
             }
             // ===== END POPULATION PHASE =====
 
