@@ -190,6 +190,11 @@ namespace gef {
         void finish() {
             if (bits_) *data_ = buffer_;
         }
+
+        /// Number of bits appended since construction on `begin`.
+        [[nodiscard]] size_t bits_written(const uint64_t* begin) const {
+            return static_cast<size_t>(data_ - begin) * 64 + bits_;
+        }
     };
 } // namespace gef
 

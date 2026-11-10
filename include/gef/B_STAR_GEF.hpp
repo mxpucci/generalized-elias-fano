@@ -236,83 +236,113 @@ namespace gef {
             }
         }
 
-        template<typename C>
-        static double approximated_optimal_split_point(const C &S, const T min, const T max) {
-            const double variation = static_cast<double>(exact_total_variation(S, min, max));
-            return variation > 0 ? std::log2(std::log(2.0) * variation / S.size()) : 0.0;
-        }
+        // ---- Two-pass approximate construction ----
+        //
+        // APPROXIMATE_SPLIT_POINT reads S twice: one estimation pass computes
+        // min, max and the total variation g(S) (with s_0 = base), and one
+        // construction pass writes L, G+ and G-. The split point is
+        //
+        //     b = max(0, floor(log2(g / n))),
+        //
+        // the witness used in the proof of the paper's B*-GEF space bound, so
+        // payload(b) <= n (b + 3) + floor(g / 2^b) <= n (4 + log2 max{1, g/n})
+        // (rank/select support and headers excluded). Raw bit-packing replaces
+        // it only when n * width is at most the matching lower bound
+        // n (b + 2) + max(0, floor(g / 2^b) - n) on payload(b): it is then never
+        // larger than b would be, so the guarantee holds without a statistics
+        // pass. (Testing against the upper bound instead also keeps the
+        // guarantee but bit-packs blocks that b stores smaller: +1.2% on WD.)
 
+        struct RangeAndVariation {
+            T minimum;
+            T maximum;
+            unsigned __int128 variation; // g(S) of S - minimum, with s_0 = 0
+        };
+
+        // One scan for min, max and the sum of |S[i] - S[i-1]|. Every term is
+        // a plain reduction, so the loop vectorizes like the min/max scan it
+        // replaces. 64-bit magnitudes are summed as two 32-bit halves, which
+        // cannot overflow a 64-bit accumulator before n reaches 2^32.
         template<typename C>
-        static std::pair<uint8_t, GapComputation> approximate_optimal_split_point(const C &S,
-            const T min, const T max) {
+        static RangeAndVariation range_and_variation(const C &S) {
             using U = std::make_unsigned_t<T>;
-            const uint8_t total_bits = value_width(min, max);
-            if (total_bits == 0) return {0, bitpack_statistics(S.size())};
-
-            const double approx_b = std::clamp(approximated_optimal_split_point(S, min, max),
-                                                0.0, static_cast<double>(total_bits));
-            const uint8_t floor_b = static_cast<uint8_t>(std::floor(approx_b));
-            const uint8_t ceil_b = static_cast<uint8_t>(std::ceil(approx_b));
-            if (floor_b == total_bits) return {total_bits, bitpack_statistics(S.size())};
-
-            GapComputation candidates[2]{};
-            const U maximum_high = static_cast<U>(static_cast<U>(max) - static_cast<U>(min)) >> floor_b;
-            if (maximum_high <= (SIZE_MAX - S.size()) / S.size()) {
-                // The bound also proves that the total absolute variation fits.
-                // Accumulate just that magnitude for each adjacent split. Since
-                // the first previous high part is zero, positive-negative=last;
-                // recover both stream lengths without per-value direction counts.
-                // Each previous high part is re-read from S, so no value is
-                // carried between iterations and the scan vectorizes.
-                const auto high = [&](size_t i) -> U {
-                    return static_cast<U>(static_cast<U>(S[i]) - static_cast<U>(min)) >> floor_b;
-                };
-                const auto distance = [](U x, U y) -> U { return x >= y ? x - y : y - x; };
-                size_t variation_floor = high(0);
-                size_t variation_ceil = high(0) >> 1;
-                if (ceil_b != floor_b) {
-                    for (size_t i = 1; i < S.size(); ++i) {
-                        const U current = high(i);
-                        const U previous = high(i - 1);
-                        variation_floor += distance(current, previous);
-                        variation_ceil += distance(current >> 1, previous >> 1);
-                    }
+            using Wide = unsigned __int128;
+            const size_t N = S.size();
+            T minimum = S[0];
+            T maximum = S[0];
+            if (N > UINT32_MAX) [[unlikely]] {
+                for (size_t i = 1; i < N; ++i) {
+                    minimum = std::min(minimum, static_cast<T>(S[i]));
+                    maximum = std::max(maximum, static_cast<T>(S[i]));
+                }
+                return {minimum, maximum, exact_total_variation(S, minimum, maximum)};
+            }
+            uint64_t low_sum = 0;
+            uint64_t high_sum = 0;
+            // Selects and a sign-mask absolute value instead of std::min/max
+            // and a conditional difference: GCC 13 if-converts and vectorizes
+            // this form (AVX2 and AVX-512), but not the conditional one.
+            for (size_t i = 1; i < N; ++i) {
+                const T current = S[i];
+                const T previous = S[i - 1];
+                minimum = current < minimum ? current : minimum;
+                maximum = current > maximum ? current : maximum;
+                const U sign = U(0) - static_cast<U>(current < previous);
+                const uint64_t magnitude = static_cast<U>(
+                    (static_cast<U>(static_cast<U>(current) - static_cast<U>(previous)) ^ sign) - sign);
+                if constexpr (sizeof(T) >= sizeof(uint64_t)) {
+                    low_sum += magnitude & UINT32_MAX;
+                    high_sum += magnitude >> 32;
                 } else {
-                    for (size_t i = 1; i < S.size(); ++i)
-                        variation_floor += distance(high(i), high(i - 1));
-                }
-                const U previous = high(S.size() - 1);
-                candidates[0].sum_of_negative_gaps = (variation_floor - previous) / 2;
-                candidates[0].sum_of_positive_gaps = candidates[0].sum_of_negative_gaps + previous;
-                if (ceil_b != floor_b) {
-                    candidates[1].sum_of_negative_gaps = (variation_ceil - (previous >> 1)) / 2;
-                    candidates[1].sum_of_positive_gaps = candidates[1].sum_of_negative_gaps + (previous >> 1);
-                }
-            } else {
-                candidates[0] = variation_of_shifted_vec(S, min, max, floor_b, ExceptionRule::None);
-                if (ceil_b != floor_b)
-                    candidates[1] = variation_of_shifted_vec(S, min, max, ceil_b, ExceptionRule::None);
-            }
-
-            uint8_t best_b = floor_b;
-            size_t best_space = evaluate_space(candidates[0], floor_b, total_bits, S.size());
-            GapComputation best_stats = candidates[0];
-            if (ceil_b != floor_b) {
-                const size_t ceil_space = evaluate_space(candidates[1], ceil_b, total_bits, S.size());
-                if (ceil_space < best_space) {
-                    best_b = ceil_b;
-                    best_space = ceil_space;
-                    best_stats = candidates[1];
+                    low_sum += magnitude;
                 }
             }
-            // With every bit in L, both high-part sums are known to be zero.
-            // Evaluating the bitpacking fallback does not require another scan.
-            const auto bitpack_stats = bitpack_statistics(S.size());
-            if (evaluate_space(bitpack_stats, total_bits, total_bits, S.size()) < best_space)
-                return {total_bits, bitpack_stats};
-            return {best_b, best_stats};
+            Wide variation = (static_cast<Wide>(high_sum) << 32) + low_sum;
+            variation += static_cast<U>(static_cast<U>(S[0]) - static_cast<U>(minimum));
+            return {minimum, maximum, variation};
         }
 
+        // Split point of the two-pass construction for n values of the given
+        // width and total variation. Returns width for raw bit-packing.
+        static uint8_t two_pass_split_point(const size_t n, const uint8_t width,
+                                            const unsigned __int128 variation) {
+            using Wide = unsigned __int128;
+            if (width == 0 || n == 0) return width;
+            // variation <= n * range, so the mean is below 2^width and the
+            // split is admissible (< width).
+            const uint64_t mean = static_cast<uint64_t>(variation / n);
+            const uint8_t split = mean ? static_cast<uint8_t>(std::bit_width(mean) - 1) : 0;
+            // sum |Gap_b(i)| > g / 2^b - n, so this never exceeds payload(split).
+            const Wide scaled = variation >> split;
+            const Wide lower_bound = static_cast<Wide>(n) * (split + 2u) + (scaled > n ? scaled - n : 0);
+            return static_cast<Wide>(n) * width <= lower_bound ? width : split;
+        }
+
+        // Upper bounds, in bits, of G+ and G- at split b < width. With
+        // P + M = sum |Gap_b(i)| <= floor(g / 2^b) + n (gaps between floors
+        // differ from the scaled gaps by less than one) and P - M = last high
+        // part (the high parts start from s_0 = 0), each stream holds its n
+        // delimiters plus at most (bound +- last) / 2 ones.
+        static std::pair<size_t, size_t> gap_stream_capacities(const size_t n, const uint8_t b,
+                                                               const unsigned __int128 variation,
+                                                               const size_t last_high) {
+            const size_t gap_bound = static_cast<size_t>(variation >> b) + n; // < 3n
+            assert(last_high <= gap_bound);
+            return {n + (gap_bound + last_high) / 2, n + (gap_bound - last_high) / 2};
+        }
+
+        // Write area for the gap streams before their exact lengths are known.
+        // Partition-sized requests reuse a per-thread buffer that stays in cache.
+        static uint64_t* gap_scratch(const size_t words, std::unique_ptr<uint64_t[]>& owned) {
+            constexpr size_t cached_words = size_t(1) << 17; // 1 MiB per thread
+            if (words <= cached_words) {
+                thread_local std::vector<uint64_t> cache;
+                if (cache.size() < words) cache.resize(words);
+                return cache.data();
+            }
+            owned.reset(new uint64_t[words]);
+            return owned.get();
+        }
 
         template<typename C>
         static std::pair<uint8_t, GapComputation>
@@ -904,13 +934,24 @@ namespace gef {
                 return;
             }
 
-            // Independent reductions avoid minmax_element's pairwise branch
-            // and let the compiler vectorize contiguous input scans.
-            auto minimum = *S.begin();
-            auto maximum = minimum;
-            for (const auto value : S) {
-                minimum = std::min(minimum, value);
-                maximum = std::max(maximum, value);
+            // The approximate strategy folds g(S) into the estimation pass and
+            // then needs only the construction pass (see two_pass_split_point).
+            const bool two_pass = !parameters && strategy == APPROXIMATE_SPLIT_POINT;
+            unsigned __int128 variation = 0;
+            T minimum = *S.begin();
+            T maximum = minimum;
+            if (two_pass) {
+                const auto estimate = range_and_variation(S);
+                minimum = estimate.minimum;
+                maximum = estimate.maximum;
+                variation = estimate.variation;
+            } else {
+                // Independent reductions avoid minmax_element's pairwise branch
+                // and let the compiler vectorize contiguous input scans.
+                for (const auto value : S) {
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                }
             }
             base = parameters ? parameters->base : minimum;
             const T max_val = maximum;
@@ -943,7 +984,13 @@ namespace gef {
                 }
             } else switch (strategy) {
                 case APPROXIMATE_SPLIT_POINT:
-                    std::tie(b, gap_computation) = approximate_optimal_split_point(S, base, max_val);
+                    b = two_pass_split_point(N, total_bits, variation);
+                    // MSB-first backends set ones in place and need exact
+                    // stream lengths up front: one statistics scan at b.
+                    if constexpr (GapBitVectorType::reverse_bit_order) {
+                        if (b < total_bits)
+                            gap_computation = variation_of_shifted_vec(S, base, max_val, b, ExceptionRule::None);
+                    }
                     break;
                 case OPTIMAL_SPLIT_POINT:
                     std::tie(b, gap_computation) = optimal_split_point(S, base, max_val);
@@ -1007,12 +1054,33 @@ namespace gef {
                 return;
             }
 
-            const size_t g_plus_bits = gap_computation.sum_of_positive_gaps + N;
-            const size_t g_minus_bits = gap_computation.sum_of_negative_gaps + N;
+            using U = std::make_unsigned_t<T>;
 
-            G_plus = std::make_unique<GapBitVectorType>(g_plus_bits);
-            G_minus = std::make_unique<GapBitVectorType>(g_minus_bits);
-            
+            // Two-pass construction writes the gap streams into scratch sized
+            // by their proven bounds; exact vectors are filled once the
+            // lengths are known. Other paths allocate exact vectors up front.
+            const bool bounded_streams = two_pass && !GapBitVectorType::reverse_bit_order;
+            std::unique_ptr<uint64_t[]> owned_scratch;
+            uint64_t* plus_scratch = nullptr;
+            uint64_t* minus_scratch = nullptr;
+            [[maybe_unused]] size_t plus_capacity = 0, minus_capacity = 0;
+            if (bounded_streams) {
+                const size_t last_high = static_cast<size_t>(
+                    static_cast<U>(static_cast<U>(S[N - 1]) - static_cast<U>(base)) >> b);
+                std::tie(plus_capacity, minus_capacity) =
+                    gap_stream_capacities(N, b, variation, last_high);
+                const size_t plus_words = plus_capacity / 64 + 1;
+                const size_t minus_words = minus_capacity / 64 + 1;
+                plus_scratch = gap_scratch(plus_words + minus_words, owned_scratch);
+                minus_scratch = plus_scratch + plus_words;
+            } else {
+                const size_t g_plus_bits = gap_computation.sum_of_positive_gaps + N;
+                const size_t g_minus_bits = gap_computation.sum_of_negative_gaps + N;
+
+                G_plus = std::make_unique<GapBitVectorType>(g_plus_bits);
+                G_minus = std::make_unique<GapBitVectorType>(g_minus_bits);
+            }
+
             // advise_huge_pages(G_plus->raw_data_ptr(), G_plus->size());
             // advise_huge_pages(G_minus->raw_data_ptr(), G_minus->size());
 
@@ -1029,7 +1097,6 @@ namespace gef {
             // ========== OPTIMIZED POPULATION PHASE ==========
             // Use direct bit manipulation to eliminate virtual function call overhead (~3N calls)
             // Both SDSL and SUX implementations provide raw_data_ptr() for this optimization
-            using U = std::make_unsigned_t<T>;
             const U low_mask = b ? (U(~U(0)) >> (sizeof(T) * 8 - b)) : U(0);
             
             PackedBitWriter low_writer(L.data());
@@ -1055,8 +1122,10 @@ namespace gef {
             } else {
             // Register writers store each word once it is full. Rise and fall
             // are computed without a branch on the sign of the gap.
-            PackedBitWriter plus_writer(G_plus->raw_data_ptr());
-            PackedBitWriter minus_writer(G_minus->raw_data_ptr());
+            uint64_t* const plus_target = bounded_streams ? plus_scratch : G_plus->raw_data_ptr();
+            uint64_t* const minus_target = bounded_streams ? minus_scratch : G_minus->raw_data_ptr();
+            PackedBitWriter plus_writer(plus_target);
+            PackedBitWriter minus_writer(minus_target);
             const auto populate = [&](auto with_lows) {
                 U lastHighBits = 0;
                 for (size_t i = 0; i < N; ++i) {
@@ -1075,6 +1144,20 @@ namespace gef {
             plus_writer.finish();
             minus_writer.finish();
             low_writer.finish();
+            if (bounded_streams) {
+                // Exact-length vectors; their zero-filled tail words match
+                // the up-front allocation of the other paths.
+                const auto materialize = [](const uint64_t* words, size_t bits) {
+                    auto vector = std::make_unique<GapBitVectorType>(bits);
+                    std::memcpy(vector->raw_data_ptr(), words, ((bits + 63) / 64) * sizeof(uint64_t));
+                    return vector;
+                };
+                const size_t plus_bits = plus_writer.bits_written(plus_target);
+                const size_t minus_bits = minus_writer.bits_written(minus_target);
+                assert(plus_bits <= plus_capacity && minus_bits <= minus_capacity);
+                G_plus = materialize(plus_target, plus_bits);
+                G_minus = materialize(minus_target, minus_bits);
+            }
             }
             // ===== END POPULATION PHASE =====
 
