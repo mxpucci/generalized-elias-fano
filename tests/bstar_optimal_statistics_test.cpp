@@ -56,12 +56,11 @@ std::pair<unsigned, unsigned> oracle_splits(const std::vector<T>& values) {
     for (unsigned b = 1; b <= width; ++b)
         if (bytes[b] < bytes[best]) best = b;
 
-    // Independent original approximate objective: floor/ceil of ln(2)*g/n + raw.
-    const double approx = std::clamp(std::log2(std::log(2.0) * double(variation) / values.size()), 0.0, double(width));
-    const unsigned floor_b = unsigned(std::floor(approx)), ceil_b = unsigned(std::ceil(approx));
-    unsigned approximate = floor_b;
-    if (bytes[ceil_b] < bytes[approximate]) approximate = ceil_b;
-    if (bytes[width] < bytes[approximate]) approximate = width;
+    // Two-pass approximate rule: b = max(0, floor(log2(g/n))), or raw
+    // bit-packing when n * width <= n (b + 2) + max(0, floor(g / 2^b) - n).
+    const unsigned split = mean ? std::bit_width(mean) - 1 : 0;
+    const Wide scaled = variation >> split;
+    const unsigned approximate = n * width <= n * (split + 2) + (scaled > n ? scaled - n : 0) ? width : split;
     return {best, approximate};
 }
 

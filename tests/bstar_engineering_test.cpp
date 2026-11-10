@@ -164,7 +164,7 @@ TEST(BStarEngineering, NarrowSignedOffsetsCrossZero) {
     }
 }
 
-TEST(BStarEngineering, ApproximationStillComparesOnlyAdjacentCandidatesAndBitpacking) {
+TEST(BStarEngineering, ApproximationUsesFloorLogMeanVariationOrBoundedBitpacking) {
     std::mt19937_64 random(721993);
     for (size_t trial = 0; trial < 64; ++trial) {
         std::vector<int64_t> values(31 + trial * 3);
@@ -178,21 +178,20 @@ TEST(BStarEngineering, ApproximationStillComparesOnlyAdjacentCandidatesAndBitpac
         uint64_t variation = values[0] - *min_it;
         for (size_t i = 1; i < values.size(); ++i)
             variation += values[i] > values[i - 1] ? values[i] - values[i - 1] : values[i - 1] - values[i];
-        const double estimate = variation ? std::clamp(std::log2(std::log(2.0) * variation / values.size()), 0.0, double(width)) : 0.0;
-        const uint8_t lower = static_cast<uint8_t>(std::floor(estimate));
-        const uint8_t upper = static_cast<uint8_t>(std::ceil(estimate));
-        uint8_t expected = lower;
-        size_t best_bytes = SIZE_MAX;
-        for (const uint8_t split : {lower, upper, width}) {
-            gef::BlockParameters<int64_t> parameters{*min_it, width, split};
-            gef::internal::B_STAR_GEF<int64_t> forced(values, parameters);
-            if (forced.theoretical_size_in_bytes() < best_bytes) {
-                expected = split;
-                best_bytes = forced.theoretical_size_in_bytes();
-            }
-        }
+        // b = max(0, floor(log2(g/n))); raw bit-packing iff n * width is at
+        // most the payload lower bound n (b + 2) + max(0, floor(g / 2^b) - n).
+        const uint64_t n = values.size();
+        const uint64_t mean = variation / n;
+        const uint8_t split = mean ? static_cast<uint8_t>(std::bit_width(mean) - 1) : 0;
+        const uint64_t scaled = variation >> split;
+        const uint64_t lower = n * (split + 2) + (scaled > n ? scaled - n : 0);
+        const uint8_t expected = width == 0 || n * width <= lower ? width : split;
         gef::internal::B_STAR_GEF<int64_t> codec(values);
         EXPECT_EQ(codec.split_point(), expected);
+        // Bounded scratch streams must equal an exact-size construction.
+        gef::internal::B_STAR_GEF<int64_t> forced(values, gef::BlockParameters<int64_t>{*min_it, width, expected});
+        EXPECT_EQ(codec.size_in_bytes(), forced.size_in_bytes());
+        EXPECT_EQ(codec.theoretical_size_in_bytes(), forced.theoretical_size_in_bytes());
         check_all_accesses(codec, values);
     }
 }

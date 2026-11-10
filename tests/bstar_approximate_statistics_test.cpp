@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "gef/B_STAR_GEF.hpp"
 #include <bit>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -24,10 +25,6 @@ void check_approximation(const std::vector<T>& input, bool compare_serialization
         const U magnitude = input[i] >= input[i - 1] ? current - previous : previous - current;
         variation += magnitude;
     }
-    const double estimate = variation ? std::clamp(
-        std::log2(std::log(2.0) * static_cast<double>(variation) / input.size()), 0.0, double(width)) : 0.0;
-    const uint8_t lower = static_cast<uint8_t>(std::floor(estimate));
-    const uint8_t upper = static_cast<uint8_t>(std::ceil(estimate));
     const auto cost = [&](uint8_t split) {
         const auto bytes = [](size_t bits) { return (bits + 7) / 8; };
         size_t result = sizeof(T) + 2 + bytes(input.size() * split);
@@ -43,14 +40,36 @@ void check_approximation(const std::vector<T>& input, bool compare_serialization
         return result + bytes(static_cast<size_t>(positive) + input.size())
                       + bytes(static_cast<size_t>(negative) + input.size());
     };
-    uint8_t expected = lower;
-    size_t best_cost = cost(lower);
-    for (const uint8_t candidate : {upper, width}) {
-        if (cost(candidate) < best_cost) {
-            best_cost = cost(candidate);
-            expected = candidate;
+    // Payload bits (no headers, no rank/select support) at a split point.
+    const auto payload_bits = [&](uint8_t split) -> unsigned __int128 {
+        const unsigned __int128 n = input.size();
+        if (split == width) return n * width;
+        unsigned __int128 magnitudes = 0;
+        U previous = 0;
+        for (const T value : input) {
+            const U current = static_cast<U>(static_cast<U>(value) - static_cast<U>(*minimum)) >> split;
+            magnitudes += current >= previous ? current - previous : previous - current;
+            previous = current;
         }
-    }
+        return n * (split + 2) + magnitudes;
+    };
+    // b = max(0, floor(log2(g/n))); raw bit-packing iff n * width <= its payload lower bound.
+    const unsigned __int128 n = input.size();
+    const uint64_t mean = static_cast<uint64_t>(variation / n);
+    const uint8_t bar_b = mean ? static_cast<uint8_t>(std::bit_width(mean) - 1) : 0;
+    const unsigned __int128 bound = n * (bar_b + 3u) + (variation >> bar_b);
+    const unsigned __int128 scaled = variation >> bar_b;
+    const unsigned __int128 lower = n * (bar_b + 2u) + (scaled > n ? scaled - n : 0);
+    const uint8_t expected = width == 0 || n * width <= lower ? width : bar_b;
+    // Bit-packing is only chosen when it is no larger than the split point.
+    if (expected == width && width != 0) EXPECT_LE(payload_bits(width), payload_bits(bar_b));
+    const size_t best_cost = cost(expected);
+    // The construction keeps the closed-form bound used in the paper's proof,
+    // hence its space guarantee n (4 + log2 max{1, g/n}).
+    EXPECT_LE(payload_bits(expected), bound);
+    const double ratio = std::max(1.0, static_cast<double>(variation) / static_cast<double>(input.size()));
+    EXPECT_LE(static_cast<double>(payload_bits(expected)),
+              static_cast<double>(input.size()) * (4.0 + std::log2(ratio)) * (1.0 + 1e-12) + 1e-6);
     Codec actual(input, gef::APPROXIMATE_SPLIT_POINT);
     EXPECT_EQ(actual.split_point(), expected);
     EXPECT_EQ(actual.theoretical_size_in_bytes(), best_cost);

@@ -84,6 +84,12 @@ Use `*_APPROXIMATE` variants for faster compression at slight space cost:
 gef::B_GEF_APPROXIMATE<uint64_t> fast_index(data);
 ```
 
+`B_STAR_GEF_APPROXIMATE` reads each block twice: one pass computes min, max and
+the total variation `g`, and one pass encodes. It uses `b = max(0, floor(log2(g/n)))`,
+the split point from the proof of the B*-GEF space bound, so every block takes
+at most `n*(4 + log2(max(1, g/n)))` payload bits. It falls back to raw bit-packing
+only when `n*W` is at most the payload lower bound `n*(b+2) + max(0, floor(g/2^b) - n)`.
+
 ### Variable partitions and cost oracles
 
 `PARTITIONED_B_STAR_GEF` and `PARTITIONED_RLE_GEF` use the native block
