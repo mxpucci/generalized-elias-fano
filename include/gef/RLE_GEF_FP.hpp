@@ -990,15 +990,167 @@ namespace gef {
             }
         }
 
-        // Double-output copy of the full-partition kernel (Partial = false): each 64-value
-        // block is decoded into an L1 scratch block and converted into `doutput`, so every
-        // output value is stored once, as a double. scale = 10^p, inv = 1 / scale.
-        template<uint8_t SPLIT_POINT>
-        void reconstruct_marker_words_fp(size_t count, double* doutput, double scale, double inv) const {
-            constexpr bool Partial = false;
-            constexpr size_t startIndex = 0;
-            alignas(64) T blk[64];
-            T* output = blk; (void)output;
+        // ---- Double-output copies of the helpers above (generated, see scripts/generate_fp_forks.py).
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_window4_fp(const uint64_t* words, __m256i highs, double* output, const fp::Scale& k) {
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + 4 * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT,
+                                                    SPLIT_POINT, 0);
+            const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+            const __m256i lows = _mm256_and_si256(_mm256_srlv_epi64(
+                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+            fp::store_i64x4(output + INDEX, _mm256_add_epi64(highs, lows), k);
+        }
+
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_window4_fp(const uint64_t* words, const uint64_t* bases,
+                                        const uint8_t* ranks, double* output, const fp::Scale& k) {
+            // Every selected rank refers to an initialized high base. Unlike
+            // a contiguous vector load, this needs no padding after the last run.
+            const __m256i highs = _mm256_set_epi64x(
+                std::bit_cast<int64_t>(bases[ranks[3]]),
+                std::bit_cast<int64_t>(bases[ranks[2]]),
+                std::bit_cast<int64_t>(bases[ranks[1]]),
+                std::bit_cast<int64_t>(bases[ranks[0]]));
+            reconstruct_window4_fp<SPLIT_POINT, INDEX>(words, highs, output, k);
+        }
+
+#if defined(__AVX512F__)
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_window8_fp(const uint64_t* words, __m512i highs, double* output, const fp::Scale& k) {
+            static_assert(sizeof(T) == 8 && SPLIT_POINT >= 1 && SPLIT_POINT <= 16 && INDEX % 8 == 0 && INDEX <= 56);
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            constexpr unsigned window_values = SPLIT_POINT <= 8 ? 8 : 4;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + window_values * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            __m512i source = _mm512_set1_epi64(std::bit_cast<int64_t>(window));
+            if constexpr (SPLIT_POINT > 8) {
+                // Each half retains the bounded four-value packed window.
+                constexpr size_t upper_word = ((INDEX + 4) * SPLIT_POINT) / 64;
+                constexpr unsigned upper_bit = ((INDEX + 4) * SPLIT_POINT) % 64;
+                uint64_t upper = words[upper_word] >> upper_bit;
+                if constexpr (upper_bit + 4 * SPLIT_POINT > 64)
+                    upper |= words[upper_word + 1] << (64 - upper_bit);
+                source = _mm512_mask_blend_epi64(0xf0, source,
+                    _mm512_set1_epi64(std::bit_cast<int64_t>(upper)));
+            }
+            constexpr unsigned upper_shift = SPLIT_POINT <= 8 ? 4 * SPLIT_POINT : 0;
+            const __m512i shifts = _mm512_set_epi64(upper_shift + 3 * SPLIT_POINT,
+                upper_shift + 2 * SPLIT_POINT, upper_shift + SPLIT_POINT, upper_shift,
+                3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+            const __m512i mask = _mm512_set1_epi64((uint64_t(1) << SPLIT_POINT) - 1);
+            const __m512i lows = _mm512_and_si512(_mm512_srlv_epi64(
+                source, shifts), mask);
+            fp::store_i64x8(output + INDEX, _mm512_add_epi64(highs, lows), k);
+        }
+
+#endif
+
+        template<uint8_t SPLIT_POINT, size_t... BYTES>
+        static void reconstruct_fused_block_fp(const uint64_t* words, uint64_t markers,
+                                            const uint64_t* bases, double* output, const fp::Scale& k,
+                                            std::index_sequence<BYTES...>) {
+            unsigned preceding = 0;
+            ([&] {
+                const unsigned byte = (markers >> (BYTES * 8)) & 255;
+                const auto& ranks = byte_prefix_ranks[byte];
+#if defined(__AVX512F__)
+                if constexpr (sizeof(T) == 8) {
+                    const __m512i highs = map_high_byte(bases + preceding, ranks.data(), byte);
+                    reconstruct_window8_fp<SPLIT_POINT, BYTES * 8>(words, highs, output, k);
+                } else
+#endif
+                {
+                    reconstruct_window4_fp<SPLIT_POINT, BYTES * 8>(
+                        words, bases + preceding, ranks.data(), output, k);
+                    reconstruct_window4_fp<SPLIT_POINT, BYTES * 8 + 4>(
+                        words, bases + preceding, ranks.data() + 4, output, k);
+                }
+                preceding += ranks[7];
+            }(), ...);
+        }
+
+#if defined(__AVX512F__) && defined(__BMI2__)
+        // One 64-value block without a run loop. Lane i of marker byte j
+        // belongs to run (runs before the byte) + ranks[i] - 1, so each byte
+        // expands the eight high parts that can occur there (the run carried
+        // in plus seven new ones) and selects lanes with a permute. Only a
+        // byte of eight markers needs the eight new runs instead. Requires a
+        // run before the block, high width <= 14 (four fields per 8-byte
+        // load), or <= 28 with WIDE_HIGHS (two fields per load), and eight
+        // real fields after the carried run.
+        // Out of line on purpose: get_elements_worker is [[gnu::flatten]], so
+        // inlining this kernel would copy it into every split point's decoder
+        // at each call site and more than double compile time (allocated_size_test
+        // at -O3: 65 s before this kernel, 148 s inlined, 98 s out of line) for a
+        // 4-5% gain on long ranges.
+        template<uint8_t SPLIT_POINT, bool WIDE_HIGHS, size_t... BYTES>
+        [[gnu::noinline]] static void reconstruct_block_by_bytes_fp(const uint64_t* low_words, const char* high_bytes,
+                                               unsigned high_width, __m512i high_shifts,
+                                               __m512i high_mask, __m512i base_vector,
+                                               uint64_t markers, size_t runs, const T* lows, double* output, const fp::Scale& k,
+                                               std::index_sequence<BYTES...>) {
+            const auto field_window = [&](uint64_t bit) {
+                uint64_t bytes;
+                std::memcpy(&bytes, high_bytes + (bit >> 3), sizeof(bytes));
+                return std::bit_cast<int64_t>(bytes >> (bit & 7));
+            };
+            // Eight consecutive high parts starting at field `first`.
+            const auto expand8 = [&](size_t first) {
+                const uint64_t bit = uint64_t(first) * high_width;
+                __m512i fields;
+                if constexpr (WIDE_HIGHS) {
+                    // Windows of fields {0,1}, {2,3}, {4,5}, {6,7}, each copied to both lanes.
+                    const __m256i windows = _mm256_set_epi64x(
+                        field_window(bit + 6 * high_width), field_window(bit + 4 * high_width),
+                        field_window(bit + 2 * high_width), field_window(bit));
+                    fields = _mm512_permutexvar_epi64(_mm512_set_epi64(3, 3, 2, 2, 1, 1, 0, 0),
+                                                      _mm512_castsi256_si512(windows));
+                } else {
+                    fields = _mm512_inserti64x4(
+                        _mm512_castsi256_si512(_mm256_set1_epi64x(field_window(bit))),
+                        _mm256_set1_epi64x(field_window(bit + 4 * high_width)), 1);
+                }
+                return _mm512_add_epi64(base_vector, _mm512_slli_epi64(
+                    _mm512_and_si512(_mm512_srlv_epi64(fields, high_shifts), high_mask), SPLIT_POINT));
+            };
+            ([&] {
+                const unsigned byte = (markers >> (BYTES * 8)) & 255;
+                __m512i highs;
+                if (byte == 255) [[unlikely]] {
+                    highs = expand8(runs);
+                } else {
+                    highs = _mm512_permutexvar_epi64(_mm512_cvtepu8_epi64(_mm_loadl_epi64(
+                        reinterpret_cast<const __m128i*>(byte_prefix_ranks[byte].data()))), expand8(runs - 1));
+                }
+                if constexpr (SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
+                    reconstruct_window8_fp<SPLIT_POINT, BYTES * 8>(low_words, highs, output, k);
+                } else {
+                    // Wider lows were unpacked into `lows` beforehand.
+                    if constexpr (SPLIT_POINT > 0)
+                        highs = _mm512_add_epi64(highs, _mm512_loadu_si512(lows + BYTES * 8));
+                    fp::store_i64x8(output + BYTES * 8, highs, k);
+                }
+                runs += std::popcount(byte);
+            }(), ...);
+        }
+#endif
+#endif
+
+
+        // Double-output copy of reconstruct_marker_words (generated): decoded values are converted
+        // in registers (fp::store_i64x8 / store_i64x4 / one) and stored once, as doubles.
+        template<uint8_t SPLIT_POINT, bool Partial = false>
+        void reconstruct_marker_words_fp(size_t count, double* doutput, const fp::Scale& k_in, size_t startIndex = 0) const {
+            const fp::Scale k = k_in; // local copy: stays in registers, output stores cannot alias it
+            alignas(64) T blk[64]; // low parts of one block (L1)
             using U = std::make_unsigned_t<T>;
             const uint64_t* bits = B->raw_data_ptr();
             const unsigned high_width = h;
@@ -1073,25 +1225,25 @@ namespace gef {
                 return by_bytes && runs_before_block != 0 && runs_before_block + 64 + 8 <= high_fields &&
                        block + 64 <= m_num_elements;
             };
-            const auto decode_block = [&](size_t block, size_t runs_before_block, T* dst) {
+            const auto decode_block = [&](size_t block, size_t runs_before_block, double* ddst) {
                 if constexpr (sizeof(T) == 8 && SPLIT_POINT < 64) {
                     const uint64_t* low_block = L.data() + ((uint64_t(block) * SPLIT_POINT) >> 6);
                     if constexpr (SPLIT_POINT > 16)
-                        unpack_aligned_block<SPLIT_POINT>(low_block, dst, 0, std::make_index_sequence<64>{});
+                        unpack_aligned_block<SPLIT_POINT>(low_block, blk, 0, std::make_index_sequence<64>{});
                     const char* high_bytes = reinterpret_cast<const char*>(high_words);
                     if (wide_highs)
-                        reconstruct_block_by_bytes<SPLIT_POINT, true>(
+                        reconstruct_block_by_bytes_fp<SPLIT_POINT, true>(
                             low_block, high_bytes, high_width, byte_high_shifts, byte_high_mask,
-                            byte_base, bits[block >> 6], runs_before_block, dst, std::make_index_sequence<8>{});
+                            byte_base, bits[block >> 6], runs_before_block, blk, ddst, k, std::make_index_sequence<8>{});
                     else
-                        reconstruct_block_by_bytes<SPLIT_POINT, false>(
+                        reconstruct_block_by_bytes_fp<SPLIT_POINT, false>(
                             low_block, high_bytes, high_width, byte_high_shifts, byte_high_mask,
-                            byte_base, bits[block >> 6], runs_before_block, dst, std::make_index_sequence<8>{});
+                            byte_base, bits[block >> 6], runs_before_block, blk, ddst, k, std::make_index_sequence<8>{});
                 }
             };
 #else
             const auto kernel_fits = [](size_t, size_t) { return false; };
-            const auto decode_block = [](size_t, size_t, T*) {};
+            const auto decode_block = [](size_t, size_t, double*) {};
 #endif
             size_t position = begin;
             if constexpr (Partial) {
@@ -1104,10 +1256,10 @@ namespace gef {
                     const size_t block_runs = runs - std::popcount(before);
                     if constexpr (sizeof(T) == 8 && SPLIT_POINT < 64) {
                         if (kernel_fits(block, block_runs)) {
-                            alignas(64) T scratch[64];
+                            alignas(64) double scratch[64];
                             decode_block(block, block_runs, scratch);
                             const size_t end = std::min(block + 64, count);
-                            std::copy(scratch + (position & 63), scratch + (end - block), output);
+                            std::copy(scratch + (position & 63), scratch + (end - block), doutput);
                             const uint64_t through = end - block == 64 ? ~uint64_t(0)
                                 : (uint64_t(1) << (end - block)) - 1;
                             runs += std::popcount(markers & through & ~before);
@@ -1119,20 +1271,19 @@ namespace gef {
                 for (; position < count && (position & 63); ++position) {
                     if ((bits[position >> 6] >> (position & 63)) & 1)
                         carry = run_value(runs++);
-                    output[position - begin] = static_cast<T>(carry +
-                        unpack_low<SPLIT_POINT>(L.data(), position));
+                    doutput[position - begin] = fp::one(static_cast<T>(carry +
+                        unpack_low<SPLIT_POINT>(L.data(), position)), k);
                 }
             }
             for (; count - position >= 64; position += 64) {
                 const uint64_t markers = bits[position >> 6];
                 const unsigned block_runs = std::popcount(markers);
-                T* block_output = blk;
+                double* block_output = doutput + (position - begin);
 #if GEF_FP_PREFETCH > 0
-                // The block is stored in one burst from L1: request its output lines
-                // for writing GEF_FP_PREFETCH blocks ahead, as the integer kernel
-                // implicitly does by writing low bits before reconstructing.
-                if (position + (GEF_FP_PREFETCH + 1) * 64 <= count) {
-                    const char* ahead = reinterpret_cast<const char*>(doutput + position + GEF_FP_PREFETCH * 64);
+                // Streaming outputs (Scale::stream): request the output lines
+                // GEF_FP_PREFETCH blocks ahead of the stores.
+                if (k.stream && position + (GEF_FP_PREFETCH + 1) * 64 <= count) {
+                    const char* ahead = reinterpret_cast<const char*>(block_output + GEF_FP_PREFETCH * 64);
                     for (int line = 0; line < 8; ++line) __builtin_prefetch(ahead + line * 64, 1, 3);
                 }
 #endif
@@ -1140,7 +1291,6 @@ namespace gef {
                     if (kernel_fits(position, runs)) [[likely]] {
                         decode_block(position, runs, block_output);
                         runs += block_runs;
-                        fp::scaled_to_double(blk, doutput + position, 64, scale, inv);
                         continue;
                     }
                 }
@@ -1150,17 +1300,16 @@ namespace gef {
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
                 if constexpr (sizeof(T) == 8 && SPLIT_POINT > 0 && SPLIT_POINT <= 16) {
                     // Unpack and reconstruct before the only output store.
-                    reconstruct_fused_block<SPLIT_POINT>(
+                    reconstruct_fused_block_fp<SPLIT_POINT>(
                         L.data() + ((uint64_t(position) * SPLIT_POINT) >> 6), markers,
-                        run_bases.data(), block_output, std::make_index_sequence<8>{});
-                    fp::scaled_to_double(blk, doutput + position, 64, scale, inv);
+                        run_bases.data(), block_output, k, std::make_index_sequence<8>{});
                     continue;
                 }
 #endif
                 // Reconstruct while this aligned low-bit block is still hot.
                 if constexpr (SPLIT_POINT > 0) {
                     unpack_aligned_block<SPLIT_POINT>(L.data() + ((uint64_t(position) * SPLIT_POINT) >> 6),
-                        block_output, 0, std::make_index_sequence<64>{});
+                        blk, 0, std::make_index_sequence<64>{});
                 }
                 // Each byte maps its eight values to consecutive high parts.
                 // The preceding rank carries runs across byte boundaries.
@@ -1168,96 +1317,112 @@ namespace gef {
                 for (unsigned byte = 0; byte < 8; ++byte) {
                     const unsigned marker_byte = (markers >> (byte * 8)) & 255;
                     const auto& ranks = byte_prefix_ranks[marker_byte];
-                    T* dst = block_output + byte * 8;
+                    T* dst = blk + byte * 8;
+                    double* ddst = block_output + byte * 8;
 #if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD)
                     if constexpr (sizeof(T) == 8) {
                         __m512i values = map_high_byte(run_bases.data() + preceding, ranks.data(), marker_byte);
                         if constexpr (SPLIT_POINT > 0)
                             values = _mm512_add_epi64(values, _mm512_loadu_si512(dst));
-                        _mm512_storeu_si512(dst, values);
+                        fp::store_i64x8(ddst, values, k);
                     } else
 #endif
                     {
                         for (unsigned lane = 0; lane < 8; ++lane) {
                             const uint64_t value = run_bases[preceding + ranks[lane]];
                             if constexpr (SPLIT_POINT == 0)
-                                dst[lane] = static_cast<T>(value);
+                                ddst[lane] = fp::one(static_cast<T>(value), k);
                             else
-                                dst[lane] = static_cast<T>(value + static_cast<U>(dst[lane]));
+                                ddst[lane] = fp::one(static_cast<T>(value + static_cast<U>(dst[lane])), k);
                         }
                     }
                     preceding += ranks[7];
                 }
-                fp::scaled_to_double(blk, doutput + position, 64, scale, inv);
             }
             if constexpr (Partial) {
                 // Likewise decode a complete last block and keep its head.
                 if constexpr (sizeof(T) == 8 && SPLIT_POINT < 64) {
                     if (position < count && kernel_fits(position, runs)) {
-                        alignas(64) T scratch[64];
+                        alignas(64) double scratch[64];
                         decode_block(position, runs, scratch);
-                        std::copy(scratch, scratch + (count - position), output + (position - begin));
+                        std::copy(scratch, scratch + (count - position), doutput + (position - begin));
                         return;
                     }
                 }
             }
-            if (position < count) {
-                const size_t tail = count - position;
-                if constexpr (SPLIT_POINT > 0) unpack_low_range<SPLIT_POINT>(position, count, blk, 0);
-                uint64_t carry = carried();
-                for (size_t i = 0; i < tail; ++i) {
-                    const size_t at = position + i;
-                    if ((bits[at >> 6] >> (at & 63)) & 1) carry = run_value(runs++);
-                    if constexpr (SPLIT_POINT == 0) blk[i] = static_cast<T>(carry);
-                    else blk[i] = static_cast<T>(carry + static_cast<U>(blk[i]));
-                }
-                fp::scaled_to_double(blk, doutput + position, tail, scale, inv);
+            const size_t tail_start = position; // fewer than 64 values remain
+            if constexpr (SPLIT_POINT > 0 && !Partial)
+                if (position < count) unpack_low_range<SPLIT_POINT>(position, count, blk, 0);
+            uint64_t carry = carried();
+            for (; position < count; ++position) {
+                if ((bits[position >> 6] >> (position & 63)) & 1)
+                    carry = run_value(runs++);
+                if constexpr (Partial)
+                    doutput[position - begin] = fp::one(static_cast<T>(carry +
+                        unpack_low<SPLIT_POINT>(L.data(), position)), k);
+                else if constexpr (SPLIT_POINT == 0)
+                    doutput[position] = fp::one(static_cast<T>(carry), k);
+                else
+                    doutput[position] = fp::one(static_cast<T>(carry + static_cast<U>(blk[position - tail_start])), k);
             }
         }
 
 
         template<uint8_t SPLIT_POINT>
-        size_t get_elements_fp_worker(size_t startIndex, size_t count, double* out, double scale, double inv) const {
+        size_t get_elements_fp_worker(size_t startIndex, size_t count, double* out, const fp::Scale& k) const {
             if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
             const size_t actual = std::min(count, m_num_elements - startIndex);
-            if constexpr (!ExceptionBitVectorType::reverse_bit_order) {
-                if (h != 0 && startIndex == 0 && actual == m_num_elements && actual >= 64) {
-                    reconstruct_marker_words_fp<SPLIT_POINT>(actual, out, scale, inv);
-                    return actual;
+            if (h != 0) {
+                if constexpr (!ExceptionBitVectorType::reverse_bit_order) {
+                    if (startIndex == 0 && actual == m_num_elements && actual >= 64) {
+                        reconstruct_marker_words_fp<SPLIT_POINT>(actual, out, k);
+                        return actual;
+                    }
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+                    if constexpr (sizeof(T) == 8 && SPLIT_POINT < 64) {
+                        if (actual >= 64 && ((64 - (startIndex & 63)) & 63) <= actual - 64) {
+                            reconstruct_marker_words_fp<SPLIT_POINT, true>(actual, out, k, startIndex);
+                            return actual;
+                        }
+                    }
+#endif
                 }
             }
-            // Other ranges: decode integers in L1-sized chunks (16 KB) and convert them.
+            // Remaining cases: decode integers in L1-sized chunks (16 KB) and convert them.
             alignas(64) T buffer[2048];
             for (size_t done = 0; done < actual; done += 2048) {
                 const size_t len = std::min<size_t>(2048, actual - done);
                 get_elements_worker<SPLIT_POINT>(startIndex + done, len, buffer);
-                fp::scaled_to_double(buffer, out + done, len, scale, inv);
+                fp::scaled_to_double(buffer, out + done, len, k);
             }
             return actual;
         }
 
         template <size_t... Is>
-        size_t dispatch_fp_worker(size_t b_val, size_t start, size_t count, double* out, double scale, double inv,
+        size_t dispatch_fp_worker(size_t b_val, size_t start, size_t count, double* out, const fp::Scale& k,
                                   std::index_sequence<Is...>) const {
-            using WorkerPtr = size_t (RLE_GEF_FP::*)(size_t, size_t, double*, double, double) const;
+            using WorkerPtr = size_t (RLE_GEF_FP::*)(size_t, size_t, double*, const fp::Scale&) const;
             static constexpr WorkerPtr table[] = { &RLE_GEF_FP::get_elements_fp_worker<Is>... };
             if (b_val >= sizeof...(Is)) throw std::invalid_argument("Invalid b value");
-            return (this->*table[b_val])(start, count, out, scale, inv);
+            return (this->*table[b_val])(start, count, out, k);
         }
 
     public:
-        // Decodes [startIndex, startIndex + count) as doubles v / scale (correctly rounded,
-        // inv = 1 / scale), converting in registers before the only store of each value.
-        size_t get_elements_into(size_t startIndex, size_t count, double* output, double scale, double inv) const {
+        // Decodes [startIndex, startIndex + count) as correctly rounded doubles v / scale
+        // (inv = 1 / scale), converting in registers before the only store of each value;
+        // `stream` marks outputs too large for the caches (see GEF_FP_PREFETCH_MIN_VALUES);
+        // `two_op` selects the cheaper conversion, which callers must have verified (FpConvert.hpp).
+        size_t get_elements_into(size_t startIndex, size_t count, double* output, double scale, double inv,
+                                 bool stream = false, bool two_op = false) const {
             if (count == 0 || startIndex >= m_num_elements) return 0;
             const size_t actual = std::min(count, m_num_elements - startIndex);
+            const fp::Scale k(scale, inv, stream, two_op);
             if constexpr (RandomAccess) {
-                return dispatch_fp_worker(b, startIndex, actual, output, scale, inv,
-                                          std::make_index_sequence<sizeof(T) * 8 + 1>{});
+                return dispatch_fp_worker(b, startIndex, actual, output, k, std::make_index_sequence<sizeof(T) * 8 + 1>{});
             } else {
                 std::vector<T> tmp(actual);
                 get_elements_into(startIndex, actual, tmp.data());
-                fp::scaled_to_double(tmp.data(), output, actual, scale, inv);
+                fp::scaled_to_double(tmp.data(), output, actual, k);
                 return actual;
             }
         }

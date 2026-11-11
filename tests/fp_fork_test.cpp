@@ -47,7 +47,9 @@ void check(const std::vector<int64_t>& v, int p) {
     Int integer(v);
     Fp fp(x.data(), n, p);
     ASSERT_EQ(fp.size(), n);
-    EXPECT_EQ(fp.size_in_bytes(), integer.size_in_bytes()) << "same encoding as the integer codec";
+    // Same encoding as the integer codec, plus one bit per partition for the conversion choice.
+    EXPECT_GE(fp.size_in_bytes(), integer.size_in_bytes());
+    EXPECT_LE(fp.size_in_bytes(), integer.size_in_bytes() + (n / 32000 + 1 + 7) / 8);
     std::vector<double> decoded(n + 1, -1.0);
     ASSERT_EQ(fp.get_doubles(0, n, decoded.data()), n);
     for (size_t i = 0; i < n; ++i) ASSERT_TRUE(same_bits(decoded[i], x[i])) << "full decode, i=" << i << " p=" << p;
