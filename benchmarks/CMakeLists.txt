@@ -25,3 +25,13 @@ target_compile_options(multithread_scalability PRIVATE -O3 -march=native)
 add_executable(bench_partition_size_tradeoff bench_partition_size_tradeoff.cpp)
 target_link_libraries(bench_partition_size_tradeoff PRIVATE gef benchmark::benchmark OpenMP::OpenMP_CXX)
 target_compile_options(bench_partition_size_tradeoff PRIVATE -O3 -march=native)
+
+# Conversion cost of the floating-point forks (gef_fp.hpp), with its control build.
+set_source_files_properties(fp_strict_divide.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+add_executable(bench_fp_conversion bench_fp_conversion.cpp fp_strict_divide.cpp)
+target_link_libraries(bench_fp_conversion PRIVATE gef OpenMP::OpenMP_CXX)
+target_compile_options(bench_fp_conversion PRIVATE -O3 -march=native)
+add_executable(bench_fp_conversion_control bench_fp_conversion.cpp fp_strict_divide.cpp)
+target_link_libraries(bench_fp_conversion_control PRIVATE gef OpenMP::OpenMP_CXX)
+target_compile_options(bench_fp_conversion_control PRIVATE -O3 -march=native)
+target_compile_definitions(bench_fp_conversion_control PRIVATE GEF_FP_IDENTITY_CONTROL)

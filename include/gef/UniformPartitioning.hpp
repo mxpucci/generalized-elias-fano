@@ -166,6 +166,44 @@ public:
     #endif
     }
 
+    /**
+     * @brief Calls f(partition, local_start, len, offset) for each partition piece of
+     * [start, start + count); offset is relative to start. Used by the FP forks.
+     */
+    template<class F>
+    void for_each_range(size_t start, size_t count, F&& f) const {
+        const size_t end = std::min(m_original_size, start + count);
+        if (start >= end) return;
+        for (size_t p = start / K; p <= (end - 1) / K; ++p) {
+            const size_t block_start = p * K;
+            const size_t range_start = std::max(start, block_start);
+            const size_t range_end = std::min(end, block_start + K);
+            f(partition(p), range_start - block_start, range_end - range_start, range_start - start);
+        }
+    }
+
+    /// Tag for the block-filling constructor.
+    struct from_blocks_t {};
+
+    /**
+     * @brief Builds each partition from a block of at most K values written by
+     * fill(start, len, T* dst) into a reused buffer, so the input never has to
+     * exist as one T array (e.g. when it is converted from another type on the fly).
+     */
+    template<class Fill>
+    UniformPartitioning(from_blocks_t, size_t n, Fill&& fill, CompressorArgs... args)
+    : m_original_size(n) {
+        const size_t num_partitions = (n + K - 1) / K;
+        m_partitions.resize(num_partitions);
+        std::vector<T> buffer(std::min(n, K));
+        for (size_t p = 0; p < num_partitions; ++p) {
+            const size_t start = p * K;
+            const size_t len = std::min(K, n - start);
+            fill(start, len, buffer.data());
+            m_partitions[p].emplace(Span<const T>(buffer.data(), len), args...);
+        }
+    }
+
 
     /**
      * @brief Default constructor. Used for loading from a stream.
