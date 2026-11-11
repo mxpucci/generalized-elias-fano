@@ -195,6 +195,26 @@ build and trusted input. An individual B*-GEF unary gap must fit in 32 bits,
 matching the native bulk decoder; explicit configurations exceeding this are
 rejected before allocation.
 
+### Floating-point data (`gef_fp.hpp`)
+
+`RLE_GEF_FP` and `B_STAR_GEF_APPROXIMATE_FP` compress `double` values with a known number of decimal digits `p` and return `double`s. They store exactly the same structure as `RLE_GEF` and `B_STAR_GEF_APPROXIMATE` over the scaled integers `v = x · 10^p` (same size in bytes); the conversions are part of the codec:
+
+- compression converts each 32,000-value partition into a reused buffer as it is built (`llrint(x · 10^p)`);
+- decompression converts in registers before each value's only store; point and range access convert what they return;
+- int → double is the correctly rounded `v / 10^p`, computed without a division (multiply by `10^-p`, one FMA correction) and written with intrinsics so that `-ffast-math` cannot change it.
+
+```cpp
+#include "gef/gef_fp.hpp"
+
+std::vector<double> x = /* values with at most p decimal digits */;
+gef::RLE_GEF_FP<int64_t> codec(x.data(), x.size(), /*p=*/2);
+std::vector<double> out(x.size());
+codec.get_doubles(0, x.size(), out.data());   // bit-identical to x
+double y = codec.at_double(42);
+```
+
+`RLE_GEF_FP.hpp` and `B_STAR_GEF_FP.hpp` are generated from the integer headers by `scripts/generate_fp_forks.py` (the integer classes are not modified); regenerate them after changing the integer decoders. `benchmarks/bench_fp_conversion` measures the cost of the conversions on dataset files; `bench_fp_conversion_control` is the same program with the conversion replaced by a copy.
+
 ## Building
 
 ```bash
