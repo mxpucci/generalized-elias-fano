@@ -778,8 +778,134 @@ namespace gef {
             return count;
         }
 
+        // ---- Double-output copies of the helpers above (generated, see scripts/generate_fp_forks.py).
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+        template<uint8_t SPLIT_POINT, size_t INDEX>
+        static void reconstruct_low8_fp(const uint64_t* words, const uint32_t* plus_positions,
+                                     const uint32_t* minus_positions, __m512i base_vector, double* output,
+                                     const fp::Scale& k) {
+            static_assert(sizeof(T) == 8 && sizeof(size_t) == 8 && SPLIT_POINT >= 1 &&
+                          SPLIT_POINT <= 16 && INDEX % 8 == 0 && INDEX <= 56);
+            constexpr size_t word = (INDEX * SPLIT_POINT) / 64;
+            constexpr unsigned bit = (INDEX * SPLIT_POINT) % 64;
+            constexpr unsigned window_values = SPLIT_POINT <= 8 ? 8 : 4;
+            uint64_t window = words[word] >> bit;
+            if constexpr (bit + window_values * SPLIT_POINT > 64)
+                window |= words[word + 1] << (64 - bit);
+            __m512i source = _mm512_set1_epi64(std::bit_cast<int64_t>(window));
+            if constexpr (SPLIT_POINT > 8) {
+                // Each half stays inside its bounded four-field low window.
+                constexpr size_t upper_word = ((INDEX + 4) * SPLIT_POINT) / 64;
+                constexpr unsigned upper_bit = ((INDEX + 4) * SPLIT_POINT) % 64;
+                uint64_t upper = words[upper_word] >> upper_bit;
+                if constexpr (upper_bit + 4 * SPLIT_POINT > 64)
+                    upper |= words[upper_word + 1] << (64 - upper_bit);
+                source = _mm512_mask_blend_epi64(0xf0, source,
+                    _mm512_set1_epi64(std::bit_cast<int64_t>(upper)));
+            }
+            constexpr unsigned upper_shift = SPLIT_POINT <= 8 ? 4 * SPLIT_POINT : 0;
+            const __m512i shifts = _mm512_set_epi64(upper_shift + 3 * SPLIT_POINT,
+                upper_shift + 2 * SPLIT_POINT, upper_shift + SPLIT_POINT, upper_shift,
+                3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+            const __m512i mask = _mm512_set1_epi64((uint64_t(1) << SPLIT_POINT) - 1);
+            const __m512i lows = _mm512_and_si512(_mm512_srlv_epi64(source, shifts), mask);
+            const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + INDEX));
+            const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + INDEX));
+            // Parent's BOTH-stream INT32 guard also bounds negative differences.
+            const __m512i high = _mm512_slli_epi64(
+                _mm512_cvtepi32_epi64(_mm256_sub_epi32(plus, minus)), SPLIT_POINT);
+            fp::store_i64x8(output + INDEX, _mm512_add_epi64(base_vector, _mm512_or_si512(high, lows)), k);
+        }
+#endif
+
+        // At an element index divisible by 64, the next 64 low parts occupy
+        // exactly SPLIT_POINT words. Constant indices remove per-value offset
+        // and word-crossing decisions without changing the packed representation.
+        template<uint8_t SPLIT_POINT, typename Position, size_t... I>
+        static void reconstruct_aligned64_fp(const uint64_t* low_data,
+                                          const Position* plus_positions,
+                                          const Position* minus_positions,
+                                          std::make_unsigned_t<T> base_u,
+                                          double* output, const fp::Scale& k,
+                                          std::index_sequence<I...>) {
+            static_assert(SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8);
+            static_assert(sizeof...(I) == 64);
+            using U = std::make_unsigned_t<T>;
+#if defined(__AVX2__) && defined(__AVX512F__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
+            if constexpr (sizeof(T) == 8 && sizeof(size_t) == 8 && sizeof(Position) == 4 &&
+                          !GapBitVectorType::reverse_bit_order && SPLIT_POINT <= 16) {
+                const __m512i base_vector = _mm512_set1_epi64(std::bit_cast<int64_t>(base_u));
+                ([&] {
+                    if constexpr (I % 8 == 0)
+                        reconstruct_low8_fp<SPLIT_POINT, I>(low_data, plus_positions, minus_positions, base_vector, output, k);
+                }(), ...);
+                return;
+            }
+#endif
+#if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD)
+            if constexpr (sizeof(T) == 8 && sizeof(size_t) == 8) {
+                // Pack four lows directly into registers, avoiding a low-part
+                // scratch array. Both position and output pointers may be unaligned.
+                const __m256i base_vector = _mm256_set1_epi64x(std::bit_cast<int64_t>(base_u));
+                ([&] {
+                    if constexpr (I % 4 == 0) {
+                        __m256i lows;
+                        if constexpr (SPLIT_POINT <= 16) {
+                            // Four lows fit in one 64-bit window, even when the
+                            // window spans two packed words. Both words remain
+                            // inside this complete 64-element input block.
+                            constexpr size_t word = (I * SPLIT_POINT) / 64;
+                            constexpr unsigned offset = (I * SPLIT_POINT) % 64;
+                            uint64_t window = low_data[word] >> offset;
+                            if constexpr (offset + 4 * SPLIT_POINT > 64)
+                                window |= low_data[word + 1] << (64 - offset);
+                            const __m256i shifts = _mm256_set_epi64x(3 * SPLIT_POINT, 2 * SPLIT_POINT, SPLIT_POINT, 0);
+                            const __m256i mask = _mm256_set1_epi64x((uint64_t(1) << SPLIT_POINT) - 1);
+                            lows = _mm256_and_si256(_mm256_srlv_epi64(
+                                _mm256_set1_epi64x(std::bit_cast<int64_t>(window)), shifts), mask);
+                        } else {
+                            lows = _mm256_set_epi64x(
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 3)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 2)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I + 1)),
+                                static_cast<int64_t>(read_low<SPLIT_POINT>(low_data, I)));
+                        }
+                        __m256i difference;
+                        if constexpr (sizeof(Position) == 4) {
+                            const __m128i plus = _mm_loadu_si128(reinterpret_cast<const __m128i*>(plus_positions + I));
+                            const __m128i minus = _mm_loadu_si128(reinterpret_cast<const __m128i*>(minus_positions + I));
+                            // Both absolute positions fit [0, INT32_MAX], so
+                            // their signed difference fits int32, even for
+                            // loaded streams whose plus-minus is negative.
+                            difference = _mm256_cvtepi32_epi64(_mm_sub_epi32(plus, minus));
+                        } else {
+                            const __m256i plus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + I));
+                            const __m256i minus = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + I));
+                            difference = _mm256_sub_epi64(plus, minus);
+                        }
+                        const __m256i high = _mm256_slli_epi64(difference, SPLIT_POINT);
+                        const __m256i values = _mm256_add_epi64(base_vector, _mm256_or_si256(high, lows));
+                        fp::store_i64x4(output + I, values, k);
+                    }
+                }(), ...);
+            } else
+#endif
+            {
+                ([&] {
+                    const U high = static_cast<U>(static_cast<size_t>(plus_positions[I]) -
+                                                  static_cast<size_t>(minus_positions[I])) << SPLIT_POINT;
+                    const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, I));
+                    output[I] = fp::one(static_cast<T>(base_u + (high | low)), k);
+                }(), ...);
+            }
+        }
+
+
+        // Double-output copy of decode_position_ranges (generated): values are converted in
+        // registers (fp::store_i64x8 / store_i64x4 / one) and stored once, as doubles.
         template<uint8_t SPLIT_POINT, typename Position>
-        size_t decode_position_ranges_fp(size_t startIndex, size_t count, double* doutput, double scale, double inv) const {
+        size_t decode_position_ranges_fp(size_t startIndex, size_t count, double* doutput, const fp::Scale& k_in) const {
+            const fp::Scale k = k_in; // local copy: stays in registers, output stores cannot alias it
             constexpr size_t MAX_BATCH = sizeof(Position) < sizeof(size_t) ? 2048 : 256;
             using U = std::make_unsigned_t<T>;
             const U base_u = static_cast<U>(base);
@@ -790,7 +916,10 @@ namespace gef {
             ZeroPositionReader minus(G_minus->raw_data_ptr(), minus_start);
             alignas(64) Position plus_positions[MAX_BATCH];
             alignas(64) Position minus_positions[MAX_BATCH];
-            alignas(64) T batch_values[MAX_BATCH]; // L1: reconstructed, then converted
+            // Without the aligned SIMD path (split point 0 or 64) every value is reconstructed
+            // by the scalar loop: keep it integer (vectorizable) and convert the batch at once.
+            constexpr bool scalar_batches = !(SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8);
+            alignas(64) T batch_values[scalar_batches ? MAX_BATCH : 1];
             // End the first batch on a low-block boundary; later batches stay aligned.
             const size_t first_batch = MAX_BATCH -
                 ((SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8) ? (startIndex & 63) : 0);
@@ -804,22 +933,59 @@ namespace gef {
                         high = static_cast<U>(static_cast<size_t>(plus_positions[i]) -
                                               static_cast<size_t>(minus_positions[i])) << SPLIT_POINT;
                     const U low = static_cast<U>(read_low<SPLIT_POINT>(low_data, startIndex + produced + i));
-                    batch_values[i] = static_cast<T>(base_u + (high | low));
+                    if constexpr (scalar_batches) batch_values[i] = static_cast<T>(base_u + (high | low));
+                    else doutput[produced + i] = fp::one(static_cast<T>(base_u + (high | low)), k);
                 };
                 size_t i = 0;
                 if constexpr (SPLIT_POINT > 0 && SPLIT_POINT < sizeof(T) * 8) {
                     const size_t prefix = std::min(batch, (64 - ((startIndex + produced) & 63)) & 63);
                     for (; i < prefix; ++i) reconstruct_scalar(i);
                     for (; batch - i >= 64; i += 64) {
+#if GEF_FP_PREFETCH > 0
+                        // Streaming outputs (Scale::stream): request output lines ahead.
+                        if (k.stream && produced + i + (GEF_FP_PREFETCH + 1) * 64 <= count) {
+                            const char* ahead = reinterpret_cast<const char*>(doutput + produced + i + GEF_FP_PREFETCH * 64);
+                            for (int line = 0; line < 8; ++line) __builtin_prefetch(ahead + line * 64, 1, 3);
+                        }
+#endif
                         const uint64_t* block = low_data + ((startIndex + produced + i) / 64) * SPLIT_POINT;
-                        reconstruct_aligned64<SPLIT_POINT>(block, plus_positions + i, minus_positions + i,
-                                                           base_u, batch_values + i,
+                        reconstruct_aligned64_fp<SPLIT_POINT>(block, plus_positions + i, minus_positions + i,
+                                                           base_u, doutput + produced + i, k,
                                                            std::make_index_sequence<64>{});
                     }
                 }
+#if defined(GEF_FP_VECTOR) && defined(__AVX512F__)
+                if constexpr (SPLIT_POINT == 0 && sizeof(T) == 8) {
+                    // No low parts: value = base + plus - minus, eight at a time, stored as doubles.
+                    // Positions are bounded by the INT32 guard, so 32-bit differences cannot overflow.
+                    const __m512i base_vector = _mm512_set1_epi64(std::bit_cast<int64_t>(static_cast<uint64_t>(base_u)));
+                    for (; batch - i >= 8; i += 8) {
+                        __m512i difference;
+                        if constexpr (sizeof(Position) == 4)
+                            difference = _mm512_cvtepi32_epi64(_mm256_sub_epi32(
+                                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(plus_positions + i)),
+                                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(minus_positions + i))));
+                        else
+                            difference = _mm512_sub_epi64(_mm512_loadu_si512(plus_positions + i),
+                                                          _mm512_loadu_si512(minus_positions + i));
+                        fp::store_i64x8(doutput + produced + i, _mm512_add_epi64(base_vector, difference), k);
+                    }
+                }
+#endif
+                const size_t scalar_from = i;
                 for (; i < batch; ++i) reconstruct_scalar(i);
-                fp::scaled_to_double_prefetch(batch_values, doutput + produced, batch, scale, inv,
-                                              doutput + count);
+                if constexpr (scalar_batches) {
+                    for (size_t done = scalar_from; done < batch; done += 64) {
+#if GEF_FP_PREFETCH > 0
+                        if (k.stream && produced + done + (GEF_FP_PREFETCH + 1) * 64 <= count) {
+                            const char* ahead = reinterpret_cast<const char*>(doutput + produced + done + GEF_FP_PREFETCH * 64);
+                            for (int line = 0; line < 8; ++line) __builtin_prefetch(ahead + line * 64, 1, 3);
+                        }
+#endif
+                        fp::scaled_to_double(batch_values + done, doutput + produced + done,
+                                             std::min<size_t>(64, batch - done), k);
+                    }
+                }
                 produced += batch;
             }
             return count;
@@ -827,41 +993,44 @@ namespace gef {
 
 
         template<uint8_t SPLIT_POINT>
-        size_t get_elements_fp_worker(size_t startIndex, size_t count, double* out, double scale, double inv) const {
+        size_t get_elements_fp_worker(size_t startIndex, size_t count, double* out, const fp::Scale& k) const {
             if (count == 0 || startIndex >= m_num_elements) [[unlikely]] return 0;
-            count = std::min(count, m_num_elements - startIndex);
+            const size_t actual = std::min(count, m_num_elements - startIndex);
             if (h != 0) {
 #if defined(__AVX2__) && !defined(GEF_DISABLE_SIMD) && SIZE_MAX == UINT64_MAX
                 if constexpr (sizeof(T) == 8 && !GapBitVectorType::reverse_bit_order) {
                     if (G_plus->size() <= INT32_MAX && G_minus->size() <= INT32_MAX)
-                        return decode_position_ranges_fp<SPLIT_POINT, uint32_t>(startIndex, count, out, scale, inv);
+                        return decode_position_ranges_fp<SPLIT_POINT, uint32_t>(startIndex, actual, out, k);
                 }
 #endif
-                return decode_position_ranges_fp<SPLIT_POINT, size_t>(startIndex, count, out, scale, inv);
+                return decode_position_ranges_fp<SPLIT_POINT, size_t>(startIndex, actual, out, k);
             }
+            // Remaining cases: decode integers in L1-sized chunks (16 KB) and convert them.
             alignas(64) T buffer[2048];
-            for (size_t done = 0; done < count; done += 2048) {
-                const size_t len = std::min<size_t>(2048, count - done);
+            for (size_t done = 0; done < actual; done += 2048) {
+                const size_t len = std::min<size_t>(2048, actual - done);
                 get_elements_worker<SPLIT_POINT>(startIndex + done, len, buffer);
-                fp::scaled_to_double(buffer, out + done, len, scale, inv);
+                fp::scaled_to_double(buffer, out + done, len, k);
             }
-            return count;
+            return actual;
         }
 
         template <size_t... Is>
-        size_t dispatch_fp_worker(size_t b_val, size_t start, size_t count, double* out, double scale, double inv,
+        size_t dispatch_fp_worker(size_t b_val, size_t start, size_t count, double* out, const fp::Scale& k,
                                   std::index_sequence<Is...>) const {
-            using WorkerPtr = size_t (B_STAR_GEF_FP::*)(size_t, size_t, double*, double, double) const;
+            using WorkerPtr = size_t (B_STAR_GEF_FP::*)(size_t, size_t, double*, const fp::Scale&) const;
             static constexpr WorkerPtr table[] = { &B_STAR_GEF_FP::get_elements_fp_worker<Is>... };
             if (b_val >= sizeof...(Is)) throw std::invalid_argument("Invalid b value");
-            return (this->*table[b_val])(start, count, out, scale, inv);
+            return (this->*table[b_val])(start, count, out, k);
         }
 
     public:
         // Decodes [startIndex, startIndex + count) as correctly rounded doubles v / scale.
-        size_t get_elements_into(size_t startIndex, size_t count, double* output, double scale, double inv) const
+        size_t get_elements_into(size_t startIndex, size_t count, double* output, double scale, double inv,
+                                 bool stream = false, bool two_op = false) const
             requires (RandomAccess) {
-            return dispatch_fp_worker(b, startIndex, count, output, scale, inv, std::make_index_sequence<65>{});
+            const fp::Scale k(scale, inv, stream, two_op);
+            return dispatch_fp_worker(b, startIndex, count, output, k, std::make_index_sequence<65>{});
         }
     private:
         template<uint8_t SPLIT_POINT>

@@ -54,7 +54,7 @@ void run(const char* codec, const std::string& name, const std::vector<int64_t>&
     });
     const double build_fp = best_of_5([&] { P c(x.data(), n, p); sink += c.size_in_bytes(); });
     std::printf("%s,%s,%zu,%s,%zu,%.3f,%.3f,%.3f,%.3f,%.3f\n", codec, name.c_str(), n,
-                integer.size_in_bytes() == fp.size_in_bytes() ? "equal" : "DIFFER", mismatches,
+                fp.size_in_bytes() - integer.size_in_bytes() <= (n / 32000 + 8) / 8 ? "equal+flags" : "DIFFER", mismatches,
                 gb / decode_int, gb / decode_fp, gb / build_int, gb / build_copy, gb / build_fp + 0 * double(sink));
     std::fflush(stdout);
 }
